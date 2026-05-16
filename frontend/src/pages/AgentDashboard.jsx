@@ -32,6 +32,7 @@ export default function AgentDashboard() {
   const [loading, setLoading] = useState(true);
   const user = auth.getUser();
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [status]);
   const load = async () => {
     setLoading(true);

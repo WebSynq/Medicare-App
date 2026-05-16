@@ -22,6 +22,7 @@ export default function AuditLog() {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(true);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); loadSummary(); }, []);
   const load = async () => {
     setLoading(true);

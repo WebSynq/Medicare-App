@@ -16,6 +16,7 @@ export default function LeadDetail() {
   const [soa, setSoa] = useState(null);
   const [syncing, setSyncing] = useState(false);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [id]);
   const load = async () => {
     try {
