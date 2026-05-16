@@ -1,0 +1,53 @@
+# Render Blueprint — one-click deploy of the FastAPI backend.
+# Use this from Render: Dashboard → New → Blueprint → connect your GitHub repo.
+# Render will read this file and create the service.
+
+services:
+  - type: web
+    name: gruening-medicare-api
+    runtime: python
+    rootDir: backend
+    plan: starter           # upgrade to "standard" or "pro" for production; "team" plan needed for BAA
+    region: oregon
+    branch: main
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: MONGO_URL
+        sync: false          # set manually in Render dashboard (MongoDB Atlas connection string)
+      - key: DB_NAME
+        value: gruening_medicare
+      - key: CORS_ORIGINS
+        sync: false          # set to your Vercel / frontend URL
+      - key: JWT_SECRET
+        generateValue: true  # Render generates a strong random value
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: JWT_EXPIRES_MINUTES
+        value: "60"
+      - key: DOC_ENCRYPTION_KEY
+        sync: false          # generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - key: DOC_STORAGE_PATH
+        value: /var/secure_storage
+      - key: GHL_BASE_URL
+        value: https://services.leadconnectorhq.com
+      - key: GHL_PRIVATE_TOKEN
+        sync: false
+      - key: GHL_LOCATION_ID
+        sync: false
+      - key: GHL_PIPELINE_ID
+        sync: false
+      - key: GHL_PIPELINE_STAGE_ID
+        sync: false
+      - key: GHL_API_VERSION
+        value: "2021-07-28"
+      - key: SEED_ADMIN_EMAIL
+        value: admin@grueninghw.com
+      - key: SEED_ADMIN_PASSWORD
+        sync: false          # set a strong one, then rotate after first login
+    disk:
+      name: secure-storage
+      mountPath: /var/secure_storage
+      sizeGB: 5              # MVP only — migrate to S3 SSE-KMS before real PHI
