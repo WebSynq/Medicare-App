@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ShieldCheck, Lock, FileSignature, Upload, Cable, ClipboardList, ArrowRight, CheckCircle2 } from "lucide-react";
+import { ShieldCheck, Lock, FileSignature, Upload, Cable, ClipboardList, ArrowRight, CheckCircle2, AlertTriangle, X, ScrollText, Scale } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -139,11 +139,145 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* WHY UPGRADE FROM N8N */}
+      <WhyUpgradeSection />
+
       {/* SCOPE / COST */}
       <ScopeAndCostSection />
 
       <Footer />
     </div>
+  );
+}
+
+function WhyUpgradeSection() {
+  const comparison = [
+    {
+      capability: "PHI encryption at rest",
+      regulation: "HIPAA Security Rule · 45 CFR §164.312(a)(2)(iv)",
+      n8n: { ok: false, text: "Files sit in n8n storage / Google Drive without dedicated encryption keys. No KMS, no rotation." },
+      new: { ok: true, text: "AES-128 Fernet today; AWS KMS-managed keys in production. Per-document encryption, rotatable." },
+    },
+    {
+      capability: "Scope of Appointment (SOA)",
+      regulation: "CMS Medicare Marketing Guidelines · 42 CFR §422.2264 (mandatory before MA / PDP discussion)",
+      n8n: { ok: false, text: "Not captured. Discussing MA/PDP without a documented SOA is a Medicare marketing violation that can trigger CMS sanctions on the FMO." },
+      new: { ok: true, text: "Canvas e-signature with timestamp, IP, user-agent, plan types acknowledged. Stored immutably in audit log. Provable on CMS audit." },
+    },
+    {
+      capability: "Multi-Factor Authentication",
+      regulation: "HIPAA Security Rule · 45 CFR §164.308(a)(5)(ii)(D) + NIST 800-63B AAL2",
+      n8n: { ok: false, text: "Whoever has the n8n password — or a leaked Google Workspace cookie — can read every Medicare card uploaded." },
+      new: { ok: true, text: "TOTP MFA enforced on every agent / admin / compliance account. JWT carries an explicit mfa_verified claim." },
+    },
+    {
+      capability: "Audit log of access to PHI",
+      regulation: "HIPAA Security Rule · 45 CFR §164.312(b) — Audit Controls",
+      n8n: { ok: false, text: "n8n execution logs are operational, not forensic. No record of who viewed which Medicare card, when, from what IP." },
+      new: { ok: true, text: "Append-only log of every login, lead read, document download, SOA signature and GHL sync. Filterable by event type, actor, target." },
+    },
+    {
+      capability: "Role-based access control",
+      regulation: "HIPAA Security Rule · 45 CFR §164.308(a)(4) — Information Access Management",
+      n8n: { ok: false, text: "n8n is admin-or-nothing. No way to restrict a junior agent from seeing every beneficiary's MBI." },
+      new: { ok: true, text: "Agent / Admin / Compliance Officer roles enforced server-side. Compliance has read-only access to audit + leads, never to credentials." },
+    },
+    {
+      capability: "Breach notification readiness",
+      regulation: "HITECH Act / HHS Breach Notification Rule · 45 CFR §164.404 (60-day window)",
+      n8n: { ok: false, text: "Without an audit trail you can't determine scope of breach — meaning you must notify ALL beneficiaries, every time. Reputation + legal cost." },
+      new: { ok: true, text: "Audit log scopes any incident to specific records and individuals, dramatically reducing notification exposure and PR fallout." },
+    },
+    {
+      capability: "Business Associate Agreements (BAA)",
+      regulation: "HIPAA Privacy Rule · 45 CFR §164.502(e) — required with every PHI-handling vendor",
+      n8n: { ok: false, text: "n8n Cloud does not sign HIPAA BAAs on standard plans. Storing PHI there is technically out of compliance from day one." },
+      new: { ok: true, text: "Architected for BAA-covered infra: AWS, MongoDB Atlas (HIPAA tier), Postmark/Paubox for email. GHL already on a BAA-eligible plan." },
+    },
+    {
+      capability: "Data integrity / non-repudiation",
+      regulation: "HIPAA Security Rule · 45 CFR §164.312(c)(1) + state insurance e-signature laws",
+      n8n: { ok: false, text: "A simple form submission can be tampered with or replayed; no cryptographic signature on the consent record." },
+      new: { ok: true, text: "Beneficiary signature stored as a captured raster + timestamp + IP. Audit log entry is hashable for tamper-evidence." },
+    },
+  ];
+
+  return (
+    <section id="why-upgrade" className="bg-surface border-t border-border">
+      <div className="max-w-7xl mx-auto px-6 lg:px-10 py-20">
+        <div className="grid lg:grid-cols-[1fr_2fr] gap-10 mb-12">
+          <div>
+            <Badge className="rounded-full bg-secondary text-secondary-foreground border-0 mb-4">
+              <Scale className="w-3.5 h-3.5 mr-1.5" /> Why this matters
+            </Badge>
+            <h2 className="text-3xl sm:text-4xl font-bold tracking-tight" style={{fontFamily:'Outfit'}}>
+              The current n8n form works.<br />It just isn't defensible.
+            </h2>
+          </div>
+          <div className="space-y-4 text-foreground/85 leading-relaxed">
+            <p>The n8n workflow you have today moves data — and that's all it does. It does not document consent, doesn't restrict who can read PHI, doesn't prove who looked at which Medicare card, and runs on infrastructure that won't sign a Business Associate Agreement.</p>
+            <p>For a Medicare FMO, that gap is not theoretical. CMS audits, OIG complaints, state DOI inquiries and beneficiary complaints all require evidence that you are following the same rules every carrier in your portfolio is contractually obligating you to follow. A working form is not evidence. A platform with audit, MFA, encryption, RBAC, and SOA capture is.</p>
+            <p className="text-sm text-muted-foreground border-l-2 border-accent pl-4 italic">Translation for Gruening: today the agency carries personal liability for any beneficiary whose MBI is mishandled. Tomorrow it carries documented technical safeguards that satisfy HIPAA, HITECH, CMS Marketing Guidelines, and the carrier compliance agreements you already signed.</p>
+          </div>
+        </div>
+
+        {/* Side-by-side header */}
+        <div className="grid grid-cols-1 lg:grid-cols-[1.1fr_1fr_1fr] gap-0 rounded-xl border border-border overflow-hidden">
+          <div className="hidden lg:block bg-muted/40 px-5 py-4 border-r border-border">
+            <span className="text-xs uppercase tracking-widest text-muted-foreground">Capability &amp; regulation</span>
+          </div>
+          <div className="bg-destructive/5 px-5 py-4 border-r border-border flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-destructive" />
+            <span className="text-sm font-semibold text-destructive">Today · n8n + form</span>
+          </div>
+          <div className="bg-primary/5 px-5 py-4 flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-primary" />
+            <span className="text-sm font-semibold text-primary">New · Gruening Secure Intake</span>
+          </div>
+
+          {comparison.map((row, i) => (
+            <div key={row.capability} className={`contents ${i === comparison.length - 1 ? "" : ""}`}>
+              <div className={`bg-surface px-5 py-4 border-t border-border lg:border-r`}>
+                <div className="text-sm font-semibold" style={{fontFamily:'Outfit'}}>{row.capability}</div>
+                <div className="text-xs text-muted-foreground mt-1 flex items-start gap-1.5"><ScrollText className="w-3 h-3 mt-0.5 shrink-0" />{row.regulation}</div>
+              </div>
+              <div className="bg-destructive/[0.03] px-5 py-4 border-t border-border lg:border-r">
+                <div className="flex gap-2.5 text-sm">
+                  <X className="w-4 h-4 text-destructive mt-0.5 shrink-0" />
+                  <span className="text-foreground/85 leading-relaxed">{row.n8n.text}</span>
+                </div>
+              </div>
+              <div className="bg-primary/[0.04] px-5 py-4 border-t border-border">
+                <div className="flex gap-2.5 text-sm">
+                  <CheckCircle2 className="w-4 h-4 text-primary mt-0.5 shrink-0" />
+                  <span className="text-foreground/85 leading-relaxed">{row.new.text}</span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Business case */}
+        <div className="grid md:grid-cols-3 gap-5 mt-10">
+          {[
+            { h: "Carrier &amp; FMO trust", b: "Carriers increasingly require attestation that downstream agencies use HIPAA-aligned tooling. A documented platform is now table-stakes for retaining contracts with UHC, Humana, Aetna, and BCBS plans." },
+            { h: "Enterprise valuation", b: "Agencies that get acquired trade at higher multiples when they can show signed BAAs, audit logs, and pen-test reports. Compliance infrastructure is operating leverage at exit." },
+            { h: "Lower insurance premiums", b: "Cyber-liability carriers underwrite based on technical safeguards. MFA, encryption at rest, and audit controls typically reduce premiums 20–35% vs an n8n-only setup." },
+          ].map((c) => (
+            <Card key={c.h} className="border-border bg-surface">
+              <CardContent className="p-6">
+                <div className="text-sm font-semibold mb-2" style={{fontFamily:'Outfit'}} dangerouslySetInnerHTML={{__html: c.h}} />
+                <p className="text-sm text-muted-foreground leading-relaxed">{c.b}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+
+        <div className="mt-8 rounded-xl border border-border bg-secondary/40 p-6 text-sm text-foreground/85 leading-relaxed">
+          <strong className="text-foreground">Bottom line:</strong> n8n was the right MVP for "can we collect a lead at all?" The platform on this preview answers a different — and far more valuable — question: <em>"Can we prove we collected it the way Medicare and HIPAA require?"</em> Once that answer is yes, every carrier, every audit, and every acquirer treats Gruening Health &amp; Wealth as a different class of business.
+        </div>
+      </div>
+    </section>
   );
 }
 
