@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from models import SOASignRequest, SOARecord
-from deps import get_db, write_audit, get_client_ip
+from deps import get_db, get_current_user, write_audit, get_client_ip
 
 
 router = APIRouter(prefix="/soa", tags=["soa"])
@@ -56,6 +56,7 @@ async def sign_soa(
 async def get_soa_for_lead(
     lead_id: str,
     db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     doc = await db.soa_records.find_one({"lead_id": lead_id}, {"_id": 0})
     if not doc:
