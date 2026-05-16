@@ -1,0 +1,89 @@
+{
+  "project_name": "Gruening Health and Wealth - Secure Medicare Intake & Agent Portal",
+  "theme": "light",
+  "archetype": "1_organic_and_earthy",
+  "emotional_tone": "Secure, Trustworthy, Empathetic, Authoritative",
+  "colors": {
+    "background": "#FDFBF7",
+    "foreground": "#1A1F1C",
+    "primary": "#14532D",
+    "primary_foreground": "#FFFFFF",
+    "secondary": "#E9EFEA",
+    "secondary_foreground": "#14532D",
+    "muted": "#F3F4F6",
+    "muted_foreground": "#4B5563",
+    "accent": "#D4A373",
+    "accent_foreground": "#1A1F1C",
+    "surface": "#FFFFFF",
+    "border": "#E5E7EB",
+    "destructive": "#991B1B",
+    "success": "#166534"
+  },
+  "typography": {
+    "fonts": {
+      "headings": "Outfit, sans-serif",
+      "body": "IBM Plex Sans, sans-serif"
+    },
+    "rules": [
+      "DO NOT use Inter, Roboto, or standard system fonts for headings.",
+      "H1/H2 must have tight tracking (tracking-tight) to feel modern and authoritative.",
+      "Body text must use leading-relaxed for maximal legibility for the 65+ demographic.",
+      "Input labels and help text must be at least text-sm and high contrast."
+    ]
+  },
+  "spacing_and_layout": {
+    "intake_portal": {
+      "strategy": "Generous Spacing Philosophy",
+      "rules": "1-column layout max-w-2xl centered. Use massive padding (p-8 to p-16) to reduce cognitive load. Form inputs must be large (min h-12) for older demographics."
+    },
+    "dashboard": {
+      "strategy": "Control Room Grid",
+      "rules": "High density, strict grid hierarchy. Use p-4 to p-6 inside cards. 1px borders (border-border), flat backgrounds, no heavy drop shadows."
+    },
+    "corners": "rounded-lg (8px) for structural elements, rounded-full for pills and indicators."
+  },
+  "components": {
+    "forms": "Use Shadcn Form + Zod. Inputs MUST have highly visible focus states (focus:ring-2 focus:ring-primary). Never rely on color alone for errors.",
+    "cards": "Flat background (bg-surface), 1px subtle border (border-border), no shadow. For interactive cards on hover: -translate-y-0.5 and subtle shadow.",
+    "navigation": "Sticky header. Use 'Crystal Glass' strategy for public site (backdrop-blur-xl bg-white/80 border-b border-border/50). Nav links must be visible on desktop.",
+    "buttons": "Primary buttons in Deep Forest Green (primary). Disabled states must remain accessible. Minimum tap target 48x48px on mobile.",
+    "security_signals": "CRITICAL: Place lock icons (lucide-react) near all submit buttons. Include 'HIPAA Compliant | 256-bit Encryption' badges in the footer and near document uploads.",
+    "file_upload": "Drag and drop zone with dashed border, muted background. Include explicit helper text regarding secure, encrypted upload for Medicare cards/IDs."
+  },
+  "media": {
+    "image_urls": {
+      "brand_logo": {
+        "url": "https://static.prod-images.emergentagent.com/jobs/778a7dbc-8686-4d3e-87fc-fce3fac48f67/images/d9e4917fca60f50e0d0b7e77eb895d8d4ad479851a6f9096325eeb5ac7b331f3.png",
+        "description": "Abstract geometric logo for Gruening Health and Wealth",
+        "category": "branding"
+      },
+      "hero_background": {
+        "url": "https://static.prod-images.emergentagent.com/jobs/778a7dbc-8686-4d3e-87fc-fce3fac48f67/images/bcce0aae6e4600a7d511d4a7490ed04419512e890a959bd46527182b19272479.png",
+        "description": "Warm medical consultation office with golden hour sunlight conveying wealth management and security",
+        "category": "marketing_hero"
+      },
+      "intake_demographic": {
+        "url": "https://images.unsplash.com/photo-1761839257647-df30867afd54?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NjZ8MHwxfHNlYXJjaHwxfHxzZW5pb3IlMjBjb3VwbGUlMjBzbWlsaW5nJTIwb3V0ZG9vcnN8ZW58MHx8fHwxNzc4OTUzOTc2fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Elderly couple sitting together outdoors smiling",
+        "category": "trust_signals_seniors"
+      },
+      "professional_consultation": {
+        "url": "https://images.unsplash.com/photo-1631217868264-e5b90bb7e133?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzV8MHwxfHNlYXJjaHwxfHxtZWRpY2FsJTIwcHJvZmVzc2lvbmFsJTIwY29uc3VsdGF0aW9ufGVufDB8fHx8MTc3ODk1Mzk3Nnww&ixlib=rb-4.1.0&q=85",
+        "description": "Medical professional in white scrub suit",
+        "category": "trust_signals_agents"
+      }
+    }
+  },
+  "instructions_to_main_agent": [
+    "Install 'framer-motion' for multi-step form transitions, and 'react-dropzone' for the secure document upload.",
+    "Implement the landing page first to showcase trust, utilizing the 'hero_background' and 'intake_demographic' images. Follow this with the multi-step intake flow.",
+    "For the multi-step intake form: prioritize a step-by-step wizard (Personal Info -> Medicare Details -> SOA e-Signature -> Uploads) to avoid overwhelming users.",
+    "SOA E-Signature step MUST look like a formal document canvas. Provide clear 'Sign Here' indicators.",
+    "Agent Dashboard must utilize Shadcn Data-Table with robust filtering (e.g., Lead Pipeline, GHL Sync Status).",
+    "GHL Sync Status should be visually represented (e.g., green dot 'Synced', yellow dot 'Pending', red dot 'Error').",
+    "Implement TOTP MFA UI (QR code scanning screen) for agent logins using the already installed 'input-otp' library.",
+    "All interactive elements (buttons, inputs) MUST include a 'data-testid' attribute (e.g., 'data-testid=\"submit-intake-button\"').",
+    "Do NOT use HTML-based components for complex interactions; use Shadcn equivalents heavily customized to match the spacing guidelines.",
+    "Render the cost analysis and architectural breakdown as a simulated view inside the 'Admin/Compliance Panel' or present it in the README."
+  ]
+}
