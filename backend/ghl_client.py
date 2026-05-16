@@ -1,0 +1,121 @@
+"""GoHighLevel API v2 client (Private Integration Token auth).
+
+When GHL_PRIVATE_TOKEN is empty, runs in MOCK mode for MVP/demo without breaking flows.
+"""
+import os
+from typing import Dict, Any, List, Optional
+import httpx
+
+
+class GHLClient:
+    def __init__(self):
+        self.base_url = os.environ.get("GHL_BASE_URL", "https://services.leadconnectorhq.com").rstrip("/")
+        self.token = os.environ.get("GHL_PRIVATE_TOKEN", "").strip()
+        self.location_id = os.environ.get("GHL_LOCATION_ID", "").strip()
+        self.pipeline_id = os.environ.get("GHL_PIPELINE_ID", "").strip()
+        self.stage_id = os.environ.get("GHL_PIPELINE_STAGE_ID", "").strip()
+        self.api_version = os.environ.get("GHL_API_VERSION", "2021-07-28")
+
+    @property
+    def mock_mode(self) -> bool:
+        return not (self.token and self.location_id)
+
+    def _headers(self, content_type: str = "application/json") -> Dict[str, str]:
+        h = {
+            "Authorization": f"Bearer {self.token}",
+            "Version": self.api_version,
+            "Accept": "application/json",
+        }
+        if content_type:
+            h["Content-Type"] = content_type
+        return h
+
+    async def upsert_contact(self, lead: Dict[str, Any]) -> Dict[str, Any]:
+        if self.mock_mode:
+            return {"mock": True, "contact": {"id": f"mock_{lead.get('id', 'unknown')}"}}
+
+        payload = {
+            "locationId": self.location_id,
+            "firstName": lead.get("first_name"),
+            "lastName": lead.get("last_name"),
+            "email": lead.get("email"),
+            "phone": lead.get("phone"),
+            "address1": lead.get("address_line1"),
+            "city": lead.get("city"),
+            "state": lead.get("state"),
+            "postalCode": lead.get("zip_code"),
+            "dateOfBirth": lead.get("date_of_birth"),
+            "customFields": _build_custom_fields(lead),
+            "tags": ["Medicare-Lead"],
+        }
+        payload = {k: v for k, v in payload.items() if v is not None}
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{self.base_url}/contacts/upsert",
+                headers=self._headers(),
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def add_tags(self, contact_id: str, tags: List[str]) -> Dict[str, Any]:
+        if self.mock_mode:
+            return {"mock": True, "added": tags}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{self.base_url}/contacts/{contact_id}/tags",
+                headers=self._headers(),
+                json={"tags": tags},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def create_opportunity(self, contact_id: str, title: str,
+                                 monetary_value: Optional[float] = None) -> Dict[str, Any]:
+        if self.mock_mode or not self.pipeline_id:
+            return {"mock": True, "opportunity": {"id": f"mock_opp_{contact_id}"}}
+        payload = {
+            "pipelineId": self.pipeline_id,
+            "locationId": self.location_id,
+            "name": title,
+            "pipelineStageId": self.stage_id,
+            "status": "open",
+            "contactId": contact_id,
+        }
+        if monetary_value is not None:
+            payload["monetaryValue"] = monetary_value
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{self.base_url}/opportunities/",
+                headers=self._headers(),
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+
+def _build_custom_fields(lead: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Build GHL custom field array. Keys assume custom fields exist in the GHL location.
+    Replace with actual custom field IDs from the location."""
+    fields = []
+    mapping = {
+        "mbi_number": "mbi_number",
+        "medicare_part_a_effective": "medicare_part_a_effective",
+        "medicare_part_b_effective": "medicare_part_b_effective",
+        "current_carrier": "current_carrier",
+        "current_plan": "current_plan",
+        "soa_signed": "soa_signed",
+        "preferred_contact_time": "preferred_contact_time",
+    }
+    for local_key, ghl_key in mapping.items():
+        val = lead.get(local_key)
+        if val is None or val == "":
+            continue
+        fields.append({"key": ghl_key, "field_value": str(val)})
+
+    if lead.get("doctors"):
+        fields.append({"key": "doctors", "field_value": ", ".join(lead["doctors"])})
+    if lead.get("prescriptions"):
+        fields.append({"key": "prescriptions", "field_value": ", ".join(lead["prescriptions"])})
+    return fields

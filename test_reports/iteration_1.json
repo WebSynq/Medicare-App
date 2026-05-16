@@ -1,0 +1,47 @@
+{
+  "summary": "Backend-only testing for Gruening Health & Wealth Medicare Intake API. Wrote 30 pytest tests across health, auth (login/register/MFA), leads (CRUD + GHL mock sync), documents (upload/list/download + 415/413/empty/missing-lead), SOA sign + retrieve, and audit (RBAC + filters + summary). All 30 tests passed against the public REACT_APP_BACKEND_URL.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/auth/register", "issue": "Returns 200 instead of 201 (response_model=UserPublic with no status_code declared). Functionally fine but inconsistent with other POSTs that explicitly use 201."},
+      {"endpoint": "POST /api/leads/{id}/sync-ghl", "issue": "When GHLClient.upsert_contact returns mock payload, `contact_id` is set to e.g. 'mock_<lead_id>' but then later, the on-error branch wraps any exception with HTTP 502. Currently fine because mock branch raises nothing, but an error raised inside the try raises HTTPException(502) AND attempts to mutate db inside an HTTPException — acceptable but worth a code review."},
+      {"endpoint": "GET /api/soa/by-lead/{lead_id}", "issue": "Endpoint is unauthenticated. SOA records contain PHI (signature, beneficiary_name, plan_types, IP, UA). Per HIPAA stance of the rest of the app, this should require auth (admin/agent/compliance)."},
+      {"endpoint": "POST /api/documents/upload/{lead_id}", "issue": "Endpoint is public (per spec) but the entire file is read into memory before size check. A malicious caller can DoS by streaming >15MB; consider using request.stream() or starlette's UploadFile.spool with explicit size guard before full read."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_backend.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Make GET /api/soa/by-lead/{lead_id} require auth (admin/agent/compliance) since it returns PHI including the signature image.",
+    "(Optional) Standardize POST /api/auth/register to return 201 Created.",
+    "(Optional) Enforce 15MB cap before fully reading the upload to avoid memory DoS.",
+    "(Nice-to-have) Add an index on db.documents `id` and db.users `id` for primary key lookups (currently only email+timestamp+lead_id are indexed)."
+  ],
+  "critical_code_review_comments": [
+    "PHI exposure: GET /api/soa/by-lead/{lead_id} is public — SOA records (signature image, beneficiary name, IP/UA) should not be readable without auth.",
+    "Document upload reads full file into memory before enforcing MAX_BYTES; recommend streaming check.",
+    "GHL sync: pipeline_id/stage_id are read on construction; if env reloaded mid-process they won't refresh — acceptable for MVP.",
+    "auth_router.login: when MFA is enabled and pre-auth token is issued, response still uses LoginResponse schema with full UserPublic — fine, but make sure UI does not treat the pre-auth token as a real session.",
+    "deps.get_current_user: after MFA enrollment, decode_token may return mfa_verified=False even though user.mfa_enabled became True; the dep correctly rejects with 401, but UX: existing tokens get invalidated on enrolment — document this.",
+    "documents_router uploads have `uploaded_by=None` because the route is unauthenticated; consider capturing IP/UA in metadata for traceability."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py (new)",
+    "/app/backend/tests/test_backend.py (new)"
+  ],
+  "success_rate": {"backend": "100% (30/30)", "frontend": "n/a (skipped per request)"},
+  "test_credentials": "admin@grueninghw.com / ChangeMe!2026Admin (seeded admin)",
+  "seed_data_creation": "Tests create TEST_-prefixed leads, agents, and MFA users in MongoDB. They are not cleaned up automatically; safe to leave for the next iteration.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All backend endpoints from the review request are working including MFA enroll/verify (via pyotp), GHL mock sync, Fernet-encrypted doc upload/download, SOA signing with consent gating, and audit RBAC + filters + summary. Pytest suite at /app/backend/tests/test_backend.py is the regression suite — re-run with: `cd /app/backend/tests && pytest -v`. For the next pass, focus on the React frontend at REACT_APP_BACKEND_URL and verify the public intake page → SOA → document upload → agent dashboard → admin audit views.",
+  "rca of the issue": "No bugs to RCA — every endpoint behaved per spec on first run."
+}
