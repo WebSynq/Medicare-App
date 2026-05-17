@@ -108,5 +108,24 @@ async def on_startup():
     await db.audit_logs.create_index("timestamp")
     await db.commission_syncs.create_index("agent_id")
     await db.commission_syncs.create_index("uploaded_at")
+
+    # Brute-force protection — login attempt tracking
+    await db.login_attempts.create_index("email")
+    await db.login_attempts.create_index("attempted_at")
+    await db.login_attempts.create_index(
+        "locked_until",
+        expireAfterSeconds=7200,  # TTL index: auto-delete lockout records after 2 hours
+    )
+
+    # Invite-only registration — single-use, 24h TTL tokens
+    # NOTE: FRONTEND_URL env var must be set on Render so invite emails
+    # use the correct origin (e.g. https://medicare-app-sandy-tau.vercel.app).
+    await db.invite_tokens.create_index("token_hash", unique=True)
+    await db.invite_tokens.create_index("email")
+    await db.invite_tokens.create_index(
+        "expires_at",
+        expireAfterSeconds=0,  # TTL: MongoDB auto-deletes expired tokens
+    )
+
     await seed_admin(db)
     logger.info("Startup complete. Admin seeded if missing.")

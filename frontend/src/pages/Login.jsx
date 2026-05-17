@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Lock, ShieldCheck, ArrowRight } from "lucide-react";
@@ -17,6 +17,14 @@ export default function Login() {
   const [mfaCode, setMfaCode] = useState("");
   const [needsMfa, setNeedsMfa] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("reason") === "session_expired") {
+      setSessionExpired(true);
+    }
+  }, []);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -70,6 +78,11 @@ export default function Login() {
               <div className="text-xs uppercase tracking-widest text-primary mb-2">Agent sign in</div>
               <h2 className="text-2xl font-bold tracking-tight" style={{fontFamily:'Outfit'}}>Welcome back</h2>
             </div>
+            {sessionExpired && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-sm mb-4" data-testid="session-expired-banner">
+                Your session expired due to inactivity. Please sign in again.
+              </div>
+            )}
             <form onSubmit={submit} className="space-y-4">
               <div>
                 <Label className="text-sm">Email</Label>

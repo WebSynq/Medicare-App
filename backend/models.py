@@ -41,11 +41,29 @@ class UserInDB(UserBase):
 
 
 class AgentRegistrationRequest(BaseModel):
-    """Public self-service registration. Always creates a pending agent."""
+    """Invite-only agent registration. Requires a valid invite_token."""
     full_name: str
     email: EmailStr
     password: str
     agency_name: str
+    invite_token: Optional[str] = None
+
+
+class InviteToken(BaseModel):
+    id: str
+    token: str  # UUID4 — stored hashed in DB
+    email: str  # Pre-assigned email (agent must register with this email)
+    created_by: str  # admin user id
+    created_at: str
+    expires_at: str
+    used: bool = False
+    used_at: Optional[str] = None
+
+
+class InviteRequest(BaseModel):
+    email: EmailStr
+    full_name: Optional[str] = None
+    agency_name: Optional[str] = None
 
 
 # ----- Auth -----

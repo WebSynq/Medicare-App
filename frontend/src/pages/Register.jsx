@@ -1,13 +1,38 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ShieldCheck, ArrowRight, CheckCircle2 } from "lucide-react";
+import { ShieldCheck, ArrowRight, CheckCircle2, XCircle } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+
+// ── Password strength helper (mirrors backend validate_password_strength) ──
+function getPasswordStrength(password) {
+  if (!password) return { score: 0, label: "", color: "", checks: {} };
+
+  const checks = {
+    length: password.length >= 12,
+    upper: /[A-Z]/.test(password),
+    lower: /[a-z]/.test(password),
+    number: /\d/.test(password),
+    special: /[!@#$%^&*(),.?":{}|<>_\-+=[\]\\;'/`~]/.test(password),
+  };
+
+  const score = Object.values(checks).filter(Boolean).length;
+
+  const labels = ["", "Very Weak", "Weak", "Fair", "Good", "Strong"];
+  const colors = ["", "bg-red-500", "bg-orange-500", "bg-yellow-500", "bg-blue-500", "bg-green-500"];
+
+  return {
+    score,
+    label: labels[score] || "",
+    color: colors[score] || "",
+    checks,
+  };
+}
 
 export default function Register() {
   const [fullName, setFullName] = useState("");
@@ -17,12 +42,45 @@ export default function Register() {
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
-  const submit = async (e) => {
-    e.preventDefault();
-    if (password.length < 8) {
-      toast.error("Password must be at least 8 characters");
+  // Invite flow
+  const [inviteToken, setInviteToken] = useState("");
+  const [inviteState, setInviteState] = useState("checking"); // checking | valid | invalid | missing
+  const [inviteError, setInviteError] = useState("");
+
+  // Validate invite token on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token");
+    if (!token) {
+      setInviteState("missing");
       return;
     }
+    setInviteToken(token);
+    api
+      .get(`/auth/invite/validate?token=${encodeURIComponent(token)}`)
+      .then((res) => {
+        setEmail(res.data.email || "");
+        setFullName(res.data.full_name || "");
+        setAgencyName(res.data.agency_name || "");
+        setInviteState("valid");
+      })
+      .catch((err) => {
+        setInviteError(err?.response?.data?.detail || "Invite link is invalid or has expired.");
+        setInviteState("invalid");
+      });
+  }, []);
+
+  const submit = async (e) => {
+    e.preventDefault();
+
+    const strength = getPasswordStrength(password);
+    if (strength.score < 5) {
+      toast.error("Password does not meet security requirements", {
+        description: "Use 12+ chars with upper, lower, number, and special character.",
+      });
+      return;
+    }
+
     setLoading(true);
     try {
       await api.post("/auth/register", {
@@ -30,37 +88,47 @@ export default function Register() {
         agency_name: agencyName,
         email,
         password,
+        invite_token: inviteToken,
       });
       setSubmitted(true);
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Registration failed");
+      const detail = err?.response?.data?.detail;
+      if (detail && typeof detail === "object" && detail.requirements) {
+        toast.error(detail.message || "Password does not meet requirements", {
+          description: detail.requirements.join(" "),
+        });
+      } else {
+        toast.error(typeof detail === "string" ? detail : "Registration failed");
+      }
     } finally {
       setLoading(false);
     }
   };
+
+  const strength = getPasswordStrength(password);
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2">
       <div className="hidden lg:flex flex-col justify-between p-12 bg-primary text-primary-foreground relative">
         <div className="grain-overlay relative">
           <Link to="/" className="flex items-center gap-2.5" data-testid="register-brand">
-            <div className="w-9 h-9 rounded-lg bg-primary-foreground/15 grid place-items-center font-bold" style={{fontFamily:'Outfit'}}>G</div>
+            <div className="w-9 h-9 rounded-lg bg-primary-foreground/15 grid place-items-center font-bold" style={{ fontFamily: "Outfit" }}>G</div>
             <div>
-              <div className="text-sm font-semibold tracking-tight" style={{fontFamily:'Outfit'}}>Gruening · Console</div>
-              <div className="text-xs text-primary-foreground/70 -mt-0.5">Request agent access</div>
+              <div className="text-sm font-semibold tracking-tight" style={{ fontFamily: "Outfit" }}>Gruening · Console</div>
+              <div className="text-xs text-primary-foreground/70 -mt-0.5">Complete your registration</div>
             </div>
           </Link>
         </div>
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.7 }}>
-          <h1 className="text-4xl xl:text-5xl font-bold leading-tight tracking-tight mb-5" style={{fontFamily:'Outfit'}}>
-            Apply to join the Gruening agent network.
+          <h1 className="text-4xl xl:text-5xl font-bold leading-tight tracking-tight mb-5" style={{ fontFamily: "Outfit" }}>
+            Set up your Gruening agent account.
           </h1>
           <p className="text-primary-foreground/85 leading-relaxed max-w-md">
-            New accounts are reviewed and approved by a Gruening administrator before sign-in is enabled. You'll get an update once your request has been reviewed.
+            Registration is by invitation only. Use the invite link your administrator sent you to finish creating your account.
           </p>
         </motion.div>
         <div className="flex items-center gap-2 text-xs text-primary-foreground/80">
-          <ShieldCheck className="w-4 h-4" /> HIPAA-aligned · Admin-approved access
+          <ShieldCheck className="w-4 h-4" /> HIPAA-aligned · Invite-only access
         </div>
       </div>
 
@@ -72,9 +140,39 @@ export default function Register() {
                 <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-700 grid place-items-center mb-4">
                   <CheckCircle2 className="w-6 h-6" />
                 </div>
-                <h2 className="text-2xl font-bold tracking-tight mb-2" style={{fontFamily:'Outfit'}}>Request submitted</h2>
+                <h2 className="text-2xl font-bold tracking-tight mb-2" style={{ fontFamily: "Outfit" }}>Registration complete</h2>
                 <p className="text-sm text-muted-foreground leading-relaxed mb-6">
-                  Thanks, {fullName.split(" ")[0] || "there"}. Your request is pending administrator approval. You'll be able to sign in once it's approved.
+                  Thanks, {fullName.split(" ")[0] || "there"}. Your account is pending administrator approval. You'll be able to sign in once it's approved.
+                </p>
+                <Link to="/login" className="text-sm text-primary hover:underline inline-flex items-center" data-testid="register-back-to-login">
+                  Back to sign in <ArrowRight className="w-4 h-4 ml-1" />
+                </Link>
+              </div>
+            ) : inviteState === "checking" ? (
+              <div className="text-center py-6 text-sm text-muted-foreground" data-testid="register-invite-checking">
+                Validating your invite link…
+              </div>
+            ) : inviteState === "missing" ? (
+              <div data-testid="register-invite-missing">
+                <div className="w-12 h-12 rounded-full bg-amber-100 text-amber-700 grid place-items-center mb-4">
+                  <ShieldCheck className="w-6 h-6" />
+                </div>
+                <h2 className="text-2xl font-bold tracking-tight mb-2" style={{ fontFamily: "Outfit" }}>Invite required</h2>
+                <p className="text-sm text-muted-foreground leading-relaxed mb-6">
+                  Registration is by invitation only. Please contact your Gruening administrator to receive an invite link.
+                </p>
+                <Link to="/login" className="text-sm text-primary hover:underline inline-flex items-center" data-testid="register-back-to-login">
+                  Back to sign in <ArrowRight className="w-4 h-4 ml-1" />
+                </Link>
+              </div>
+            ) : inviteState === "invalid" ? (
+              <div data-testid="register-invite-invalid">
+                <div className="w-12 h-12 rounded-full bg-red-100 text-red-700 grid place-items-center mb-4">
+                  <XCircle className="w-6 h-6" />
+                </div>
+                <h2 className="text-2xl font-bold tracking-tight mb-2" style={{ fontFamily: "Outfit" }}>Invite link invalid</h2>
+                <p className="text-sm text-muted-foreground leading-relaxed mb-6">
+                  {inviteError}
                 </p>
                 <Link to="/login" className="text-sm text-primary hover:underline inline-flex items-center" data-testid="register-back-to-login">
                   Back to sign in <ArrowRight className="w-4 h-4 ml-1" />
@@ -84,8 +182,8 @@ export default function Register() {
               <>
                 <div className="mb-6">
                   <div className="text-xs uppercase tracking-widest text-primary mb-2">Agent registration</div>
-                  <h2 className="text-2xl font-bold tracking-tight" style={{fontFamily:'Outfit'}}>Request access</h2>
-                  <p className="text-sm text-muted-foreground mt-1">An administrator will review and approve your request.</p>
+                  <h2 className="text-2xl font-bold tracking-tight" style={{ fontFamily: "Outfit" }}>Create your account</h2>
+                  <p className="text-sm text-muted-foreground mt-1">Your invite is valid. Set a password to finish signing up.</p>
                 </div>
                 <form onSubmit={submit} className="space-y-4">
                   <div>
@@ -98,12 +196,56 @@ export default function Register() {
                   </div>
                   <div>
                     <Label className="text-sm">Email</Label>
-                    <Input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="h-11 mt-1.5" data-testid="register-email" />
+                    <Input
+                      type="email"
+                      required
+                      value={email}
+                      readOnly
+                      className="h-11 mt-1.5 bg-muted/40 cursor-not-allowed"
+                      data-testid="register-email"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">Locked to the address your invite was sent to.</p>
                   </div>
                   <div>
                     <Label className="text-sm">Password</Label>
-                    <Input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} minLength={8} className="h-11 mt-1.5" data-testid="register-password" />
-                    <p className="text-xs text-muted-foreground mt-1">Minimum 8 characters.</p>
+                    <Input
+                      type="password"
+                      required
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      minLength={12}
+                      className="h-11 mt-1.5"
+                      data-testid="register-password"
+                    />
+                    {/* Password strength indicator */}
+                    {password && (
+                      <div className="mt-2 space-y-1" data-testid="register-password-strength">
+                        <div className="flex gap-1">
+                          {[1, 2, 3, 4, 5].map((i) => (
+                            <div
+                              key={i}
+                              className={`h-1 flex-1 rounded-full transition-colors ${
+                                i <= strength.score ? strength.color : "bg-gray-200"
+                              }`}
+                            />
+                          ))}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {strength.label}
+                          {strength.score < 5 && " — needs: "}
+                          {!strength.checks.length && "12+ chars "}
+                          {!strength.checks.upper && "uppercase "}
+                          {!strength.checks.lower && "lowercase "}
+                          {!strength.checks.number && "number "}
+                          {!strength.checks.special && "special char"}
+                        </p>
+                      </div>
+                    )}
+                    {!password && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Minimum 12 characters with upper, lower, number, and special character.
+                      </p>
+                    )}
                   </div>
                   <Button type="submit" disabled={loading} className="w-full h-11 rounded-full text-base" data-testid="register-submit">
                     {loading ? "Submitting..." : <>Submit request <ArrowRight className="w-4 h-4 ml-2" /></>}

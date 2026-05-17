@@ -1,8 +1,9 @@
 """Security utilities: password hashing, JWT, doc encryption."""
 import os
+import re
 import base64
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import bcrypt
 import jwt
@@ -11,6 +12,30 @@ from cryptography.fernet import Fernet
 JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRES_MINUTES = int(os.environ.get("JWT_EXPIRES_MINUTES", "60"))
+
+
+def validate_password_strength(password: str) -> List[str]:
+    """
+    Returns a list of unmet requirements.
+    Empty list = password is strong enough.
+
+    HIPAA NOTE: Strong passwords are a technical safeguard requirement
+    under the HIPAA Security Rule (§164.312(d)).
+    """
+    errors: List[str] = []
+
+    if len(password) < 12:
+        errors.append("Password must be at least 12 characters long.")
+    if not re.search(r"[A-Z]", password):
+        errors.append("Password must contain at least one uppercase letter.")
+    if not re.search(r"[a-z]", password):
+        errors.append("Password must contain at least one lowercase letter.")
+    if not re.search(r"\d", password):
+        errors.append("Password must contain at least one number.")
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>_\-+=\[\]\\;'/`~]", password):
+        errors.append("Password must contain at least one special character (!@#$%^&* etc.).")
+
+    return errors
 
 
 def hash_password(password: str) -> str:

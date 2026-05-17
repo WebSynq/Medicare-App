@@ -1,9 +1,12 @@
 """Authentication routes: register, login, MFA enroll/verify, me, approval."""
 import io
+import os
 import base64
+import hashlib
 import logging
+import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import pyotp
 import qrcode
@@ -13,10 +16,16 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from models import (
     UserPublic, LoginRequest, LoginResponse,
     MfaEnrollResponse, MfaVerifyRequest,
-    AgentRegistrationRequest,
+    AgentRegistrationRequest, InviteRequest,
 )
-from security import hash_password, verify_password, create_access_token
-from deps import get_db, get_current_user, require_roles, write_audit
+from security import (
+    hash_password, verify_password, create_access_token,
+    validate_password_strength,
+)
+from deps import (
+    get_db, get_current_user, require_roles, write_audit,
+    is_account_locked, check_and_record_login_attempt,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -40,25 +49,78 @@ def _user_public(user: dict) -> UserPublic:
 
 @router.post("/register", response_model=UserPublic, status_code=201)
 async def register(
-    payload: AgentRegistrationRequest,
+    body: AgentRegistrationRequest,
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    """Public self-service agent registration. Creates a *pending* agent that
-    cannot log in until an admin approves the request."""
-    email = payload.email.lower().strip()
+    """
+    Register a new agent using a valid invite token.
+    Open registration is disabled — all agents must be invited by an admin.
+    """
+    # Require invite token
+    if not body.invite_token:
+        raise HTTPException(
+            status_code=403,
+            detail="Registration requires an invite. "
+                   "Contact your administrator to receive an invite link.",
+        )
+
+    # Validate the invite token
+    token_hash = hashlib.sha256(body.invite_token.encode()).hexdigest()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    invite = await db.invite_tokens.find_one({
+        "token_hash": token_hash,
+        "used": False,
+        "expires_at": {"$gt": now_iso},
+    })
+
+    if not invite:
+        raise HTTPException(
+            status_code=400,
+            detail="This invite link is invalid or has expired. "
+                   "Please contact your administrator for a new invite.",
+        )
+
+    # Email must match the invite
+    if body.email.lower().strip() != invite["email"].lower().strip():
+        raise HTTPException(
+            status_code=400,
+            detail="The email address does not match this invite. "
+                   "Please register with the email address your invite was sent to.",
+        )
+
+    # Validate password strength
+    pw_errors = validate_password_strength(body.password)
+    if pw_errors:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Password does not meet security requirements.",
+                "requirements": pw_errors,
+            },
+        )
+
+    # Invalidate the token IMMEDIATELY (before creating user)
+    await db.invite_tokens.update_one(
+        {"token_hash": token_hash},
+        {"$set": {"used": True, "used_at": datetime.now(timezone.utc).isoformat()}},
+    )
+
+    # ── existing registration logic ────────────────────────────────────────
+    email = body.email.lower().strip()
     existing = await db.users.find_one({"email": email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     user_doc = {
         "id": str(uuid.uuid4()),
         "email": email,
-        "full_name": payload.full_name.strip(),
+        "full_name": body.full_name.strip(),
         "role": "agent",
         "is_active": False,
         "status": "pending",
-        "agency_name": payload.agency_name.strip(),
-        "hashed_password": hash_password(payload.password),
+        "agency_name": body.agency_name.strip(),
+        "hashed_password": hash_password(body.password),
         "mfa_secret": None,
         "mfa_enabled": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -67,22 +129,65 @@ async def register(
     await write_audit(db, "agent_registration_requested", actor_email=email,
                       target_type="user", target_id=user_doc["id"], request=request,
                       metadata={"agency_name": user_doc["agency_name"],
-                                "full_name": user_doc["full_name"]})
+                                "full_name": user_doc["full_name"],
+                                "invite_id": invite["id"]})
+    await write_audit(db, "invite_used", actor_email=email,
+                      target_type="invite", target_id=invite["id"],
+                      metadata={"invited_email": invite["email"]})
     # Notification hook — replace with email/Slack later. Logging only for now.
     logger.info(
-        "[notification] Agent access requested: %s (%s) — agency=%s. "
+        "[notification] Agent registered via invite: %s (%s) — agency=%s. "
         "Approve at /api/auth/users/%s/approve",
         user_doc["full_name"], email, user_doc["agency_name"], user_doc["id"],
     )
     return _user_public(user_doc)
 
 
+def _format_unlock_message(unlock_at: datetime) -> str:
+    return (
+        "Account temporarily locked due to too many failed attempts. "
+        f"Try again at {unlock_at.strftime('%H:%M')} UTC."
+    )
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(payload: LoginRequest, request: Request, db: AsyncIOMotorDatabase = Depends(get_db)):
-    user = await db.users.find_one({"email": payload.email.lower().strip()}, {"_id": 0})
+    email = payload.email.lower().strip()
+
+    # 1. Check existing lockout BEFORE verifying password
+    lock_state = await is_account_locked(db, email)
+    if lock_state["locked"]:
+        await write_audit(db, "login_failed", actor_email=payload.email,
+                          request=request,
+                          metadata={"reason": "locked", "unlock_at": lock_state["unlock_at"].isoformat()})
+        raise HTTPException(
+            status_code=423,
+            detail=_format_unlock_message(lock_state["unlock_at"]),
+        )
+
+    user = await db.users.find_one({"email": email}, {"_id": 0})
     if not user or not verify_password(payload.password, user["hashed_password"]):
+        # 2. Record the failed attempt — may trigger a lockout
+        attempt_result = await check_and_record_login_attempt(db, email, success=False)
+        if attempt_result["locked"]:
+            await write_audit(db, "account_locked", actor_email=payload.email,
+                              actor_id=user.get("id") if user else None,
+                              target_type="user",
+                              target_id=user.get("id") if user else None,
+                              request=request,
+                              metadata={
+                                  "unlock_at": attempt_result["unlock_at"].isoformat(),
+                                  "attempts": attempt_result["attempts"],
+                              })
+            await write_audit(db, "login_failed", actor_email=payload.email, request=request,
+                              metadata={"reason": "locked_now"})
+            raise HTTPException(
+                status_code=423,
+                detail=_format_unlock_message(attempt_result["unlock_at"]),
+            )
         await write_audit(db, "login_failed", actor_email=payload.email, request=request,
-                          metadata={"reason": "invalid_credentials"})
+                          metadata={"reason": "invalid_credentials",
+                                    "attempts": attempt_result["attempts"]})
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     status_value = user.get("status", "active")
@@ -128,6 +233,8 @@ async def login(payload: LoginRequest, request: Request, db: AsyncIOMotorDatabas
         {"sub": user["id"], "email": user["email"], "role": user["role"],
          "mfa_verified": mfa_verified or not user.get("mfa_enabled", False)}
     )
+    # Successful auth — clear any tracked failed attempts for this email
+    await check_and_record_login_attempt(db, email, success=True)
     await write_audit(db, "login_success", actor_email=user["email"], actor_id=user["id"],
                       request=request, metadata={"mfa": user.get("mfa_enabled", False)})
     return LoginResponse(access_token=token, mfa_required=False, user=_user_public(user))
@@ -250,3 +357,143 @@ async def reject_agent(
                       request=request, metadata={"email": user["email"]})
     fresh = await db.users.find_one({"id": user_id}, {"_id": 0})
     return _user_public(fresh)
+
+
+# ----- Admin: invite + unlock -----
+
+@router.post("/invite", status_code=201)
+async def create_invite(
+    invite: InviteRequest,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    """
+    Admin creates an invite link for a new agent.
+    The raw token is returned ONCE — it is stored hashed in MongoDB.
+    """
+    now = datetime.now(timezone.utc)
+    # Check no pending invite already exists for this email
+    existing = await db.invite_tokens.find_one({
+        "email": invite.email,
+        "used": False,
+        "expires_at": {"$gt": now.isoformat()},
+    })
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An active invite already exists for {invite.email}. "
+                   f"It expires at {existing['expires_at']}.",
+        )
+
+    # Generate token
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    expires = now + timedelta(hours=24)
+
+    invite_doc = {
+        "id": str(uuid.uuid4()),
+        "token_hash": token_hash,
+        "email": invite.email,
+        "full_name": invite.full_name or "",
+        "agency_name": invite.agency_name or "",
+        "created_by": current_user["id"],
+        "created_at": now.isoformat(),
+        "expires_at": expires.isoformat(),
+        "used": False,
+        "used_at": None,
+    }
+    await db.invite_tokens.insert_one(invite_doc)
+
+    await write_audit(
+        db=db,
+        event_type="invite_created",
+        actor_email=current_user.get("email"),
+        actor_id=current_user["id"],
+        target_type="invite",
+        target_id=invite_doc["id"],
+        metadata={"invited_email": invite.email, "expires_at": expires.isoformat()},
+    )
+
+    # Render needs FRONTEND_URL set in env (e.g. https://medicare-app-sandy-tau.vercel.app)
+    frontend_url = os.getenv("FRONTEND_URL", "https://medicare-app-sandy-tau.vercel.app")
+    invite_url = f"{frontend_url}/register?token={raw_token}"
+
+    return {
+        "message": f"Invite created for {invite.email}",
+        "invite_url": invite_url,
+        "expires_at": expires.isoformat(),
+        "token": raw_token,  # Raw token returned once for the admin to copy/send
+    }
+
+
+@router.get("/invite/validate")
+async def validate_invite(
+    token: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """
+    Frontend calls this before showing the registration form.
+    Returns the pre-filled email if token is valid.
+    """
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    invite = await db.invite_tokens.find_one({
+        "token_hash": token_hash,
+        "used": False,
+        "expires_at": {"$gt": now_iso},
+    })
+
+    if not invite:
+        raise HTTPException(
+            status_code=400,
+            detail="This invite link is invalid or has expired. "
+                   "Please contact your administrator for a new invite.",
+        )
+
+    return {
+        "valid": True,
+        "email": invite["email"],
+        "full_name": invite.get("full_name", ""),
+        "agency_name": invite.get("agency_name", ""),
+    }
+
+
+@router.get("/invites")
+async def list_invites(
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    """List all active (unused, non-expired) invite tokens."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cursor = db.invite_tokens.find(
+        {"used": False, "expires_at": {"$gt": now_iso}},
+        {"_id": 0, "token_hash": 0},  # Never return the hash
+    ).sort("created_at", -1).limit(50)
+    invites = await cursor.to_list(length=50)
+    return {"invites": invites, "total": len(invites)}
+
+
+@router.post("/users/{user_id}/unlock")
+async def unlock_account(
+    user_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    """Admin manually unlocks a locked account."""
+    user = await db.users.find_one({"id": user_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    await db.login_attempts.delete_many({"email": user["email"]})
+
+    await write_audit(
+        db=db,
+        event_type="account_unlocked",
+        actor_email=current_user.get("email"),
+        actor_id=current_user["id"],
+        target_type="user",
+        target_id=user_id,
+        metadata={"unlocked_email": user["email"]},
+    )
+    return {"message": f"Account {user['email']} has been unlocked."}

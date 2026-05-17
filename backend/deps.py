@@ -90,3 +90,90 @@ async def write_audit(
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     await db.audit_logs.insert_one(doc)
+
+
+# ── Brute-force protection ────────────────────────────────────────────────────
+
+async def is_account_locked(db, email: str) -> dict:
+    """Check if account is currently locked without recording a new attempt."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    lock_record = await db.login_attempts.find_one({
+        "email": email,
+        "locked_until": {"$gt": now}
+    })
+    if lock_record:
+        return {"locked": True, "unlock_at": lock_record["locked_until"]}
+    return {"locked": False, "unlock_at": None}
+
+
+async def check_and_record_login_attempt(
+    db, email: str, success: bool
+) -> dict:
+    """
+    Track login attempts. Returns:
+    {
+        "locked": bool,
+        "unlock_at": datetime | None,
+        "attempts": int
+    }
+    HIPAA NOTE: We track attempts by email only — no PII stored in this collection.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(minutes=15)
+    MAX_ATTEMPTS = 5
+    LOCKOUT_MINUTES = 30
+
+    coll = db.login_attempts
+
+    # Clean up old attempts outside the window first
+    await coll.delete_many({
+        "email": email,
+        "attempted_at": {"$lt": window_start},
+        "locked_until": None  # Only clean up non-lockout records
+    })
+
+    # Check if currently locked
+    lock_record = await coll.find_one({
+        "email": email,
+        "locked_until": {"$gt": now}
+    })
+    if lock_record:
+        return {
+            "locked": True,
+            "unlock_at": lock_record["locked_until"],
+            "attempts": MAX_ATTEMPTS,
+        }
+
+    if success:
+        # Clear all attempts on successful login
+        await coll.delete_many({"email": email})
+        return {"locked": False, "unlock_at": None, "attempts": 0}
+
+    # Record this failed attempt
+    await coll.insert_one({
+        "email": email,
+        "attempted_at": now,
+        "locked_until": None,
+    })
+
+    # Count recent failed attempts
+    recent_count = await coll.count_documents({
+        "email": email,
+        "attempted_at": {"$gte": window_start},
+        "locked_until": None,
+    })
+
+    if recent_count >= MAX_ATTEMPTS:
+        unlock_at = now + timedelta(minutes=LOCKOUT_MINUTES)
+        # Record the lockout
+        await coll.insert_one({
+            "email": email,
+            "attempted_at": now,
+            "locked_until": unlock_at,
+        })
+        return {"locked": True, "unlock_at": unlock_at, "attempts": recent_count}
+
+    return {"locked": False, "unlock_at": None, "attempts": recent_count}
