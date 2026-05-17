@@ -60,10 +60,11 @@
     -webkit-touch-callout: none;
 }
 
-/* Minimum touch target size for accessibility */
-button, [role="button"], input[type="submit"], a {
-    min-height: 44px;
-    min-width: 44px;
+/* Minimum touch target size for accessibility — mobile only */
+@media (max-width: 768px) {
+    button, [role="button"], input[type="submit"], a {
+        min-height: 44px;
+    }
 }
 
 /* Better scrolling on mobile */
