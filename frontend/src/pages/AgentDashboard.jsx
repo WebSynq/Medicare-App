@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, ArrowUpRight, Filter, ShieldCheck, AlertCircle, FileSignature, UserCheck, UserX, UserPlus, Plus } from "lucide-react";
+import { Search, ArrowUpRight, Filter, ShieldCheck, AlertCircle, FileSignature, UserCheck, UserX, UserPlus } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
 import { api, auth } from "@/lib/api";
@@ -27,6 +27,7 @@ const SYNC_DOT = {
 };
 
 export default function AgentDashboard() {
+  const navigate = useNavigate();
   const [leads, setLeads] = useState([]);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
@@ -78,33 +79,31 @@ export default function AgentDashboard() {
     <div className="min-h-screen flex flex-col">
       <AppHeader />
       <main className="flex-1 max-w-[1400px] mx-auto w-full px-6 py-8">
-        <div className="flex items-end justify-between mb-7">
-          <div>
-            <div className="text-xs uppercase tracking-widest text-primary mb-2">Lead pipeline</div>
-            <h1 className="text-3xl font-bold tracking-tight" style={{fontFamily:'Outfit'}}>Welcome, {user?.full_name || user?.email}</h1>
-            <p className="text-muted-foreground mt-1">Review encrypted intake submissions and sync to GoHighLevel.</p>
-          </div>
-          <div className="flex items-center gap-3 flex-wrap justify-end">
-            {!user?.mfa_enabled && (
-              <Link to="/mfa-setup" data-testid="mfa-banner">
-                <Button variant="outline" className="rounded-full">
-                  <ShieldCheck className="w-4 h-4 mr-2 text-primary" /> Enable MFA on your account
-                </Button>
-              </Link>
-            )}
-            <Button
-              asChild
-              className="rounded-full bg-[#e85d2f] hover:bg-[#d04d22] text-white border-transparent shadow-sm"
-              data-testid="new-intake-btn"
+        {/* Welcome row */}
+        <div className="mb-6">
+          <p className="text-xs uppercase tracking-widest text-muted-foreground mb-1">
+            Lead Pipeline
+          </p>
+          <h1 className="text-2xl font-bold text-[#1e2d3d]">
+            Welcome, {user?.full_name || user?.email?.split("@")[0] || "Administrator"}
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Review encrypted intake submissions and sync to GoHighLevel.
+          </p>
+          {!user?.mfa_enabled && (
+            <button
+              type="button"
+              onClick={() => navigate("/mfa-setup")}
+              className="mt-3 flex items-center gap-2 text-sm text-[#1e2d3d] border border-[#1e2d3d]/20 rounded-lg px-3 py-2 hover:bg-[#1e2d3d]/5 transition-colors"
+              data-testid="mfa-banner"
             >
-              <Link to="/intake">
-                <Plus className="w-4 h-4 mr-2" /> New Intake
-              </Link>
-            </Button>
-          </div>
+              <span>🛡️</span>
+              <span>Enable MFA on your account</span>
+            </button>
+          )}
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 w-full overflow-hidden mb-7">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 w-full overflow-hidden mb-6">
           <StatCard label="Total leads" value={counts.total} />
           <StatCard label="New" value={counts.new} accent />
           <StatCard label="SOA signed" value={counts.soa} icon={FileSignature} />
@@ -242,6 +241,28 @@ export default function AgentDashboard() {
           </CardContent>
         </Card>
       </main>
+
+      {/* FAB — New Intake — always visible, bottom right */}
+      <Link
+        to="/intake"
+        className="fixed z-50 flex items-center justify-center shadow-lg transition-transform hover:scale-105 active:scale-95 bottom-[4.5rem] md:bottom-6 right-6"
+        style={{
+          width: "56px",
+          height: "56px",
+          borderRadius: "50%",
+          background: "#e85d2f",
+          color: "white",
+          boxShadow: "0 4px 14px rgba(232, 93, 47, 0.4)",
+        }}
+        aria-label="New Intake"
+        title="New Intake"
+        data-testid="new-intake-fab"
+      >
+        <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+        </svg>
+      </Link>
+
       <Footer />
     </div>
   );
