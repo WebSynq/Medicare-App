@@ -16,9 +16,7 @@ export function PublicHeader() {
           </div>
         </Link>
         <nav className="hidden md:flex items-center gap-7 text-sm">
-          <a href="#how" className="text-foreground/80 hover:text-primary transition">How it works</a>
-          <a href="#security" className="text-foreground/80 hover:text-primary transition">Security</a>
-          <a href="#scope" className="text-foreground/80 hover:text-primary transition">Project Scope</a>
+          <Link to="/security" className="text-foreground/80 hover:text-primary transition">Security</Link>
         </nav>
         <div className="flex items-center gap-3">
           <Link to="/login" className="text-sm text-foreground/80 hover:text-primary hidden sm:inline" data-testid="header-agent-login">Agent Login</Link>
