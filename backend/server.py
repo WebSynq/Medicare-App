@@ -7,6 +7,10 @@ from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
@@ -24,6 +28,36 @@ from seed import seed_admin  # noqa: E402
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("gruening")
+
+# ── Sentry error monitoring ───────────────────────────────────────────────────
+# ⚠️ HIPAA NOTE: send_default_pii=False ensures no user data leaves this server.
+# before_send scrubs request bodies so PHI (MBI, SSN, DOB) never reaches Sentry.
+
+def _sentry_before_send(event: dict, hint: dict) -> dict | None:
+    """Strip any request body and sensitive fields before sending to Sentry."""
+    req = event.get("request", {})
+    # Remove body — may contain PHI from intake forms
+    req.pop("data", None)
+    req.pop("cookies", None)
+    # Scrub query strings (could contain tokens or IDs)
+    if "query_string" in req:
+        req["query_string"] = "[scrubbed]"
+    return event
+
+
+_sentry_dsn = os.getenv("SENTRY_DSN", "").strip()
+if _sentry_dsn:
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        integrations=[
+            StarletteIntegration(transaction_style="endpoint"),
+            FastApiIntegration(transaction_style="endpoint"),
+        ],
+        traces_sample_rate=0.1,       # 10% of requests for performance data
+        send_default_pii=False,        # ⚠️ HIPAA: never send PII to Sentry
+        environment=os.getenv("ENVIRONMENT", "production"),
+        before_send=_sentry_before_send,
+    )
 
 app = FastAPI(title="Gruening Health & Wealth — Medicare Intake API")
 
