@@ -198,7 +198,10 @@ class TestLeads:
         assert d["first_name"] == "TEST_John"
         assert d["status"] == "new"
         assert d["soa_signed"] is False
-        assert d["ghl_sync_status"] == "pending"
+        # Intake auto-syncs to GHL; tests run without GHL_PRIVATE_TOKEN so the
+        # client is in mock mode and the response reflects that immediately.
+        assert d["ghl_sync_status"] == "mock"
+        assert d["ghl_contact_id"] and d["ghl_contact_id"].startswith("mock_")
         # store for downstream
         pytest.LEAD_ID = d["id"]
         pytest.LEAD_EMAIL = d["email"]
