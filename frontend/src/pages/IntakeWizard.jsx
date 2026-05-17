@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate, Link } from "react-router-dom";
 import { useDropzone } from "react-dropzone";
-import { ShieldCheck, Lock, ArrowRight, ArrowLeft, Upload, FileText, IdCard, Building2, CheckCircle2, X, FileSignature } from "lucide-react";
+import { ShieldCheck, Lock, ArrowRight, ArrowLeft, Upload, FileText, IdCard, Building2, CheckCircle2, X, FileSignature, ClipboardList, Paperclip } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,11 +11,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { PublicHeader, Footer } from "@/components/Layout";
 
-const STEPS = ["Personal", "Medicare", "SOA Signature", "Documents", "Review"];
+const STEPS = ["Personal", "Medicare", "Application Details", "SOA Signature", "Documents", "Review"];
 
 export default function IntakeWizard() {
   const nav = useNavigate();
@@ -30,6 +31,17 @@ export default function IntakeWizard() {
     doctors: "", prescriptions: "",
     preferred_contact_time: "Anytime",
     notes: "",
+    // Application Details (GHW app sale submission)
+    sales_submitting_agent: "",
+    agency_or_personal: "",
+    new_or_current_client: "",
+    number_of_apps: "",
+    replacement_app: "",
+    lead_source: "",
+    plan_type_premium: "",
+    underwriting_approved: "",
+    cancel_old_plan: "",
+    admin_requests: "",
     consent_acknowledged: false,
     plan_types: { MA: false, MAPD: false, PDP: false, MedSupp: false },
   });
@@ -42,6 +54,9 @@ export default function IntakeWizard() {
   const submitLead = async () => {
     setSubmitting(true);
     try {
+      const numApps = data.number_of_apps === "" || data.number_of_apps == null
+        ? undefined
+        : Number(data.number_of_apps);
       const payload = {
         first_name: data.first_name,
         last_name: data.last_name,
@@ -61,6 +76,17 @@ export default function IntakeWizard() {
         prescriptions: data.prescriptions ? data.prescriptions.split(",").map((s) => s.trim()).filter(Boolean) : [],
         preferred_contact_time: data.preferred_contact_time || undefined,
         notes: data.notes || undefined,
+        // Application Details
+        sales_submitting_agent: data.sales_submitting_agent || undefined,
+        agency_or_personal: data.agency_or_personal || undefined,
+        new_or_current_client: data.new_or_current_client || undefined,
+        number_of_apps: Number.isFinite(numApps) ? numApps : undefined,
+        replacement_app: data.replacement_app || undefined,
+        lead_source: data.lead_source || undefined,
+        plan_type_premium: data.plan_type_premium || undefined,
+        underwriting_approved: data.underwriting_approved || undefined,
+        cancel_old_plan: data.cancel_old_plan || undefined,
+        admin_requests: data.admin_requests || undefined,
       };
       const res = await api.post("/leads", payload);
       setCreatedLeadId(res.data.id);
@@ -106,23 +132,24 @@ export default function IntakeWizard() {
             >
               {step === 0 && <PersonalStep data={data} update={update} />}
               {step === 1 && <MedicareStep data={data} update={update} />}
-              {step === 2 && <SoaStep data={data} update={update} createdLeadId={createdLeadId} ensureLead={ensureLead} onSigned={() => next()} />}
-              {step === 3 && <DocumentsStep leadId={createdLeadId} />}
-              {step === 4 && <ReviewStep data={data} leadId={createdLeadId} onDone={() => nav(`/intake-complete?lead=${createdLeadId}`)} />}
+              {step === 2 && <ApplicationDetailsStep data={data} update={update} />}
+              {step === 3 && <SoaStep data={data} update={update} createdLeadId={createdLeadId} ensureLead={ensureLead} onSigned={() => next()} />}
+              {step === 4 && <DocumentsStep leadId={createdLeadId} />}
+              {step === 5 && <ReviewStep data={data} leadId={createdLeadId} onDone={() => nav(`/intake-complete?lead=${createdLeadId}`)} />}
             </motion.div>
           </AnimatePresence>
 
-          {step !== 2 && step !== 4 && (
+          {step !== 3 && step !== 5 && step !== 4 && (
             <div className="flex justify-between mt-8">
               <Button variant="ghost" onClick={back} disabled={step === 0} data-testid="wizard-back">
                 <ArrowLeft className="w-4 h-4 mr-2" /> Back
               </Button>
-              {step === 1 ? (
+              {step === 2 ? (
                 <Button
                   className="rounded-full px-6 h-11"
                   disabled={!personalValid || submitting}
                   onClick={async () => { try { await ensureLead(); next(); } catch (_) { /* toast already shown */ } }}
-                  data-testid="wizard-next-after-medicare"
+                  data-testid="wizard-next-after-app-details"
                 >
                   {submitting ? "Securing..." : "Continue to SOA"} <ArrowRight className="w-4 h-4 ml-2" />
                 </Button>
@@ -139,7 +166,7 @@ export default function IntakeWizard() {
             </div>
           )}
 
-          {step === 3 && (
+          {step === 4 && (
             <div className="flex justify-between mt-8">
               <Button variant="ghost" onClick={back} data-testid="wizard-back-docs"><ArrowLeft className="w-4 h-4 mr-2" /> Back</Button>
               <Button className="rounded-full px-6 h-11" onClick={next} data-testid="wizard-review">Review &amp; finish <ArrowRight className="w-4 h-4 ml-2" /></Button>
@@ -227,6 +254,117 @@ function MedicareStep({ data, update }) {
           </Field>
           <Field label="Anything else?" className="sm:col-span-2">
             <Textarea rows={3} value={data.notes} onChange={(e) => update("notes", e.target.value)} data-testid="intake-notes" />
+          </Field>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ApplicationDetailsStep({ data, update }) {
+  return (
+    <Card className="border-border bg-surface">
+      <CardContent className="p-8 lg:p-10">
+        <div className="flex items-center gap-2 mb-2">
+          <ClipboardList className="w-5 h-5 text-primary" />
+          <h2 className="text-2xl font-bold tracking-tight" style={{ fontFamily: "Outfit" }}>Application Details</h2>
+        </div>
+        <p className="text-muted-foreground mb-7">Sales submission details for the back-office team. Skip anything that doesn't apply yet — these can be updated later.</p>
+        <div className="grid sm:grid-cols-2 gap-5">
+          <Field label="Sales submitting agent">
+            <Input
+              className="h-12 text-base"
+              value={data.sales_submitting_agent}
+              onChange={(e) => update("sales_submitting_agent", e.target.value)}
+              placeholder="Agent name"
+              data-testid="intake-sales-agent"
+            />
+          </Field>
+          <Field label="Agency or Personal">
+            <Select value={data.agency_or_personal} onValueChange={(v) => update("agency_or_personal", v)}>
+              <SelectTrigger className="h-12 text-base" data-testid="intake-agency-or-personal"><SelectValue placeholder="Select…" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Agency">Agency</SelectItem>
+                <SelectItem value="Personal">Personal</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="New or Current client">
+            <Select value={data.new_or_current_client} onValueChange={(v) => update("new_or_current_client", v)}>
+              <SelectTrigger className="h-12 text-base" data-testid="intake-new-or-current"><SelectValue placeholder="Select…" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="New">New</SelectItem>
+                <SelectItem value="Current">Current</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Number of apps">
+            <Input
+              type="number"
+              min={0}
+              step={1}
+              className="h-12 text-base"
+              value={data.number_of_apps}
+              onChange={(e) => update("number_of_apps", e.target.value)}
+              placeholder="e.g. 1"
+              data-testid="intake-number-of-apps"
+            />
+          </Field>
+          <Field label="Replacement app">
+            <Select value={data.replacement_app} onValueChange={(v) => update("replacement_app", v)}>
+              <SelectTrigger className="h-12 text-base" data-testid="intake-replacement-app"><SelectValue placeholder="Select…" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Yes">Yes</SelectItem>
+                <SelectItem value="No">No</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Lead source">
+            <Input
+              className="h-12 text-base"
+              value={data.lead_source}
+              onChange={(e) => update("lead_source", e.target.value)}
+              placeholder="Referral, web, AEP mailer…"
+              data-testid="intake-lead-source"
+            />
+          </Field>
+          <Field label="Plan type / Premium" className="sm:col-span-2">
+            <Input
+              className="h-12 text-base"
+              value={data.plan_type_premium}
+              onChange={(e) => update("plan_type_premium", e.target.value)}
+              placeholder="e.g. MAPD HMO — $0 / mo"
+              data-testid="intake-plan-premium"
+            />
+          </Field>
+          <Field label="Underwriting approved">
+            <Select value={data.underwriting_approved} onValueChange={(v) => update("underwriting_approved", v)}>
+              <SelectTrigger className="h-12 text-base" data-testid="intake-underwriting"><SelectValue placeholder="Select…" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Yes">Yes</SelectItem>
+                <SelectItem value="No">No</SelectItem>
+                <SelectItem value="Pending">Pending</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Cancel old plan">
+            <Select value={data.cancel_old_plan} onValueChange={(v) => update("cancel_old_plan", v)}>
+              <SelectTrigger className="h-12 text-base" data-testid="intake-cancel-old"><SelectValue placeholder="Select…" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Yes">Yes</SelectItem>
+                <SelectItem value="No">No</SelectItem>
+                <SelectItem value="N/A">N/A</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Admin requests" className="sm:col-span-2">
+            <Textarea
+              rows={3}
+              value={data.admin_requests}
+              onChange={(e) => update("admin_requests", e.target.value)}
+              placeholder="Anything the back-office team should know — special requests, urgency, follow-ups."
+              data-testid="intake-admin-requests"
+            />
           </Field>
         </div>
       </CardContent>
@@ -365,18 +503,20 @@ function DocumentsStep({ leadId }) {
     <Card className="border-border bg-surface">
       <CardContent className="p-8 lg:p-10">
         <h2 className="text-2xl font-bold tracking-tight mb-2" style={{fontFamily:'Outfit'}}>Upload documents</h2>
-        <p className="text-muted-foreground mb-7">PDF or image (JPG, PNG, WEBP) up to 15MB each. Files are encrypted on our servers — they never appear in URLs or logs.</p>
+        <p className="text-muted-foreground mb-7">Up to 5 documents. PDF or image (JPG, PNG, WEBP) up to 15MB each. Files are encrypted on our servers — they never appear in URLs or logs.</p>
         <div className="space-y-5">
-          <DropZone leadId={leadId} docType="medicare_card" icon={IdCard} label="Medicare card" hint="Front and back if possible" />
-          <DropZone leadId={leadId} docType="id" icon={FileText} label="Government ID" hint="Driver's license or state ID" />
-          <DropZone leadId={leadId} docType="voided_check" icon={Building2} label="Voided check (optional)" hint="Only if you'd like premium auto-pay" />
+          <DropZone leadId={leadId} docType="medicare_card" icon={IdCard} label="1 · Medicare card" hint="Front and back if possible" />
+          <DropZone leadId={leadId} docType="id" icon={FileText} label="2 · Government ID" hint="Driver's license or state ID" />
+          <DropZone leadId={leadId} docType="voided_check" icon={Building2} label="3 · Voided check (optional)" hint="Only if you'd like premium auto-pay" />
+          <DropZone leadId={leadId} docType="other" icon={Paperclip} label="4 · Additional document" hint="Application form, prescription list, etc." testIdSuffix="other-1" />
+          <DropZone leadId={leadId} docType="other" icon={Paperclip} label="5 · Additional document" hint="Anything else the back-office team needs" testIdSuffix="other-2" />
         </div>
       </CardContent>
     </Card>
   );
 }
 
-function DropZone({ leadId, docType, icon: Icon, label, hint }) {
+function DropZone({ leadId, docType, icon: Icon, label, hint, testIdSuffix }) {
   const [files, setFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
 
@@ -414,7 +554,7 @@ function DropZone({ leadId, docType, icon: Icon, label, hint }) {
       <div
         {...getRootProps()}
         className={`rounded-xl border-2 border-dashed p-6 cursor-pointer transition-colors ${isDragActive ? "border-primary bg-secondary/60" : "border-border bg-muted/40 hover:border-primary/50"}`}
-        data-testid={`dropzone-${docType}`}
+        data-testid={`dropzone-${testIdSuffix || docType}`}
       >
         <input {...getInputProps()} />
         <div className="flex items-center gap-3 text-sm">

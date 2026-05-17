@@ -100,6 +100,7 @@ def _build_custom_fields(lead: Dict[str, Any]) -> List[Dict[str, Any]]:
     Replace with actual custom field IDs from the location."""
     fields = []
     mapping = {
+        # Medicare
         "mbi_number": "mbi_number",
         "medicare_part_a_effective": "medicare_part_a_effective",
         "medicare_part_b_effective": "medicare_part_b_effective",
@@ -107,6 +108,17 @@ def _build_custom_fields(lead: Dict[str, Any]) -> List[Dict[str, Any]]:
         "current_plan": "current_plan",
         "soa_signed": "soa_signed",
         "preferred_contact_time": "preferred_contact_time",
+        # Application details (GHW app sale submission)
+        "sales_submitting_agent": "sales_submitting_agent",
+        "agency_or_personal": "agency_or_personal",
+        "new_or_current_client": "new_or_current_client",
+        "number_of_apps": "number_of_apps",
+        "replacement_app": "replacement_app",
+        "lead_source": "lead_source",
+        "plan_type_premium": "plan_type_premium",
+        "underwriting_approved": "underwriting_approved",
+        "cancel_old_plan": "cancel_old_plan",
+        "admin_requests": "admin_requests",
     }
     for local_key, ghl_key in mapping.items():
         val = lead.get(local_key)

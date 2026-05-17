@@ -94,6 +94,17 @@ class LeadBase(BaseModel):
     prescriptions: List[str] = []
     preferred_contact_time: Optional[str] = None
     notes: Optional[str] = None
+    # ----- Application details (GHW app sale submission) -----
+    sales_submitting_agent: Optional[str] = None
+    agency_or_personal: Optional[Literal["Agency", "Personal"]] = None
+    new_or_current_client: Optional[Literal["New", "Current"]] = None
+    number_of_apps: Optional[int] = None
+    replacement_app: Optional[Literal["Yes", "No"]] = None
+    lead_source: Optional[str] = None
+    plan_type_premium: Optional[str] = None
+    underwriting_approved: Optional[Literal["Yes", "No", "Pending"]] = None
+    cancel_old_plan: Optional[Literal["Yes", "No", "N/A"]] = None
+    admin_requests: Optional[str] = None
 
 
 class LeadCreate(LeadBase):
