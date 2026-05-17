@@ -55,6 +55,19 @@ export default function LeadDetail() {
     } catch (e) { toast.error("Download failed"); }
   };
 
+  const downloadPdf = async () => {
+    try {
+      const res = await api.get(`/leads/${id}/pdf`, { responseType: "blob" });
+      const disposition = res.headers?.["content-disposition"] || "";
+      const match = /filename\s*=\s*"?([^"]+)"?/i.exec(disposition);
+      const fallback = `lead_${(lead.first_name || "").trim()}_${(lead.last_name || "").trim()}.pdf`.replace(/\s+/g, "_");
+      const filename = match?.[1] || fallback;
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { toast.error("PDF export failed"); }
+  };
+
   if (!lead) return <div className="min-h-screen"><AppHeader /><div className="max-w-5xl mx-auto px-6 py-12 text-muted-foreground">Loading...</div></div>;
 
   return (
@@ -80,6 +93,10 @@ export default function LeadDetail() {
                 <SelectItem value="lost">Lost</SelectItem>
               </SelectContent>
             </Select>
+            <Button variant="outline" onClick={downloadPdf} className="rounded-full" data-testid="download-pdf-btn">
+              <Download className="w-4 h-4 mr-2" />
+              Download PDF
+            </Button>
             <Button onClick={sync} disabled={syncing} className="rounded-full" data-testid="sync-ghl-btn">
               {syncing ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Cable className="w-4 h-4 mr-2" />}
               Sync to GHL

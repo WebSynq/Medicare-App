@@ -1,14 +1,18 @@
 """Lead CRUD + GHL sync."""
+import io
 import logging
+import re
 from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from models import Lead, LeadCreate, LeadUpdate
 from deps import get_db, get_current_user, write_audit
 from ghl_client import GHLClient
+from pdf_export import generate_lead_pdf
 
 
 logger = logging.getLogger(__name__)
@@ -165,6 +169,36 @@ async def update_lead(
                       request=request, metadata={"fields": list(updates.keys())})
     doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
     return Lead(**doc)
+
+
+@router.get("/{lead_id}/pdf")
+async def export_lead_pdf(
+    lead_id: str,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Render the lead's intake record as a downloadable PDF."""
+    lead_doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    if not lead_doc:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    soa_doc = await db.soa_records.find_one({"lead_id": lead_id}, {"_id": 0})
+
+    pdf_bytes = generate_lead_pdf(lead_doc, soa_doc)
+
+    await write_audit(db, "lead_pdf_exported", actor_email=current_user["email"],
+                      actor_id=current_user["id"], target_type="lead", target_id=lead_id,
+                      request=request)
+
+    name_part = f"{lead_doc.get('first_name','')}_{lead_doc.get('last_name','')}".strip("_")
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", name_part) or lead_id[:8]
+    filename = f"lead_{safe_name}.pdf"
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/{lead_id}/sync-ghl", response_model=Lead)
