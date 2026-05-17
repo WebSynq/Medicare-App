@@ -14,6 +14,7 @@ from deps import get_db  # noqa: E402
 from auth_router import router as auth_router  # noqa: E402
 from leads_router import router as leads_router  # noqa: E402
 from documents_router import router as documents_router  # noqa: E402
+from commissions_router import router as commissions_router  # noqa: E402
 from soa_router import router as soa_router  # noqa: E402
 from audit_router import router as audit_router  # noqa: E402
 from seed import seed_admin  # noqa: E402
@@ -48,6 +49,7 @@ app.include_router(api_router)
 app.include_router(auth_router, prefix="/api")
 app.include_router(leads_router, prefix="/api")
 app.include_router(documents_router, prefix="/api")
+app.include_router(commissions_router, prefix="/api")
 app.include_router(soa_router, prefix="/api")
 app.include_router(audit_router, prefix="/api")
 
@@ -68,5 +70,7 @@ async def on_startup():
     await db.leads.create_index("created_at")
     await db.documents.create_index("lead_id")
     await db.audit_logs.create_index("timestamp")
+    await db.commission_syncs.create_index("agent_id")
+    await db.commission_syncs.create_index("uploaded_at")
     await seed_admin(db)
     logger.info("Startup complete. Admin seeded if missing.")

@@ -43,6 +43,12 @@ export function AppHeader() {
           </Link>
           <nav className="flex items-center gap-1 text-sm">
             <Link to="/dashboard" className="px-3 py-1.5 rounded-md hover:bg-secondary" data-testid="nav-dashboard">Leads</Link>
+            <Link
+              to="/commissions"
+              className="text-sm font-medium hover:text-[#e85d2f] transition-colors"
+            >
+              Commissions
+            </Link>
             {(user?.role === "admin" || user?.role === "compliance") && (
               <>
                 <Link to="/audit" className="px-3 py-1.5 rounded-md hover:bg-secondary" data-testid="nav-audit">Audit Log</Link>

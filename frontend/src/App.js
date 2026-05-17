@@ -11,6 +11,7 @@ import AgentDashboard from "@/pages/AgentDashboard";
 import LeadDetail from "@/pages/LeadDetail";
 import AuditLog from "@/pages/AuditLog";
 import CompliancePanel from "@/pages/CompliancePanel";
+import CommissionsDashboard from "@/pages/CommissionsDashboard";
 import { auth } from "@/lib/api";
 
 function Protected({ children, roles }) {
@@ -31,6 +32,14 @@ export default function App() {
         <Route path="/register" element={<Register />} />
         <Route path="/mfa-setup" element={<Protected><MfaSetup /></Protected>} />
         <Route path="/dashboard" element={<Protected><AgentDashboard /></Protected>} />
+        <Route
+          path="/commissions"
+          element={
+            <Protected>
+              <CommissionsDashboard />
+            </Protected>
+          }
+        />
         <Route path="/leads/:id" element={<Protected><LeadDetail /></Protected>} />
         <Route path="/audit" element={<Protected roles={["admin","compliance"]}><AuditLog /></Protected>} />
         <Route path="/admin/compliance" element={<Protected roles={["admin","compliance"]}><CompliancePanel /></Protected>} />
