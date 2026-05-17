@@ -505,8 +505,8 @@ function DocumentsStep({ leadId }) {
         <h2 className="text-2xl font-bold tracking-tight mb-2" style={{fontFamily:'Outfit'}}>Upload documents</h2>
         <p className="text-muted-foreground mb-7">Up to 5 documents. PDF or image (JPG, PNG, WEBP) up to 15MB each. Files are encrypted on our servers — they never appear in URLs or logs.</p>
         <div className="space-y-5">
-          <DropZone leadId={leadId} docType="medicare_card" icon={IdCard} label="1 · Medicare card" hint="Front and back if possible" />
-          <DropZone leadId={leadId} docType="id" icon={FileText} label="2 · Government ID" hint="Driver's license or state ID" />
+          <DropZone leadId={leadId} docType="medicare_card" icon={IdCard} label="1 · Medicare card" hint="Front and back if possible" capture="environment" />
+          <DropZone leadId={leadId} docType="id" icon={FileText} label="2 · Government ID" hint="Driver's license or state ID" capture="environment" />
           <DropZone leadId={leadId} docType="voided_check" icon={Building2} label="3 · Voided check (optional)" hint="Only if you'd like premium auto-pay" />
           <DropZone leadId={leadId} docType="other" icon={Paperclip} label="4 · Additional document" hint="Application form, prescription list, etc." testIdSuffix="other-1" />
           <DropZone leadId={leadId} docType="other" icon={Paperclip} label="5 · Additional document" hint="Anything else the back-office team needs" testIdSuffix="other-2" />
@@ -516,7 +516,7 @@ function DocumentsStep({ leadId }) {
   );
 }
 
-function DropZone({ leadId, docType, icon: Icon, label, hint, testIdSuffix }) {
+function DropZone({ leadId, docType, icon: Icon, label, hint, testIdSuffix, capture }) {
   const [files, setFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
 
@@ -556,7 +556,7 @@ function DropZone({ leadId, docType, icon: Icon, label, hint, testIdSuffix }) {
         className={`rounded-xl border-2 border-dashed p-6 cursor-pointer transition-colors ${isDragActive ? "border-primary bg-secondary/60" : "border-border bg-muted/40 hover:border-primary/50"}`}
         data-testid={`dropzone-${testIdSuffix || docType}`}
       >
-        <input {...getInputProps()} />
+        <input {...getInputProps(capture ? { capture } : {})} />
         <div className="flex items-center gap-3 text-sm">
           <div className="w-10 h-10 rounded-lg bg-surface border border-border grid place-items-center">
             <Upload className="w-4 h-4 text-primary" />

@@ -2,8 +2,20 @@
 <html lang="en">
     <head>
         <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="theme-color" content="#1e2d3d" />
+
+        <!-- PWA iOS Support -->
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <meta name="apple-mobile-web-app-title" content="GHW Portal" />
+        <meta name="mobile-web-app-capable" content="yes" />
+
+        <!-- PWA Android / Chrome -->
+        <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+
+        <!-- Prevent zoom on input focus (mobile UX) -->
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+
         <meta name="description" content="Gruening Health & Wealth — Agent Portal for Medicare & retirement planning." />
         <link rel="icon" type="image/svg+xml" href="%PUBLIC_URL%/favicon.svg" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />

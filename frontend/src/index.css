@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -12,14 +13,16 @@
         --card-foreground: 140 11% 11%;
         --popover: 0 0% 100%;
         --popover-foreground: 140 11% 11%;
-        --primary: 142 56% 19%;
+        /* Override shadcn primary with brand orange */
+        --primary: 20 73% 55%;
         --primary-foreground: 0 0% 100%;
         --secondary: 130 13% 93%;
         --secondary-foreground: 142 56% 19%;
         --muted: 220 14% 96%;
         --muted-foreground: 220 9% 38%;
-        --accent: 28 50% 64%;
-        --accent-foreground: 140 11% 11%;
+        /* Override shadcn accent with brand navy */
+        --accent: 211 32% 18%;
+        --accent-foreground: 0 0% 100%;
         --destructive: 0 70% 35%;
         --destructive-foreground: 0 0% 100%;
         --border: 220 13% 91%;
@@ -30,10 +33,48 @@
         --chart-3: 220 14% 50%;
         --chart-4: 168 60% 35%;
         --chart-5: 38 60% 50%;
-        --radius: 0.625rem;
+        /* Tighter border radius for more professional look */
+        --radius: 0.5rem;
         --success: 142 47% 26%;
         --warning: 35 90% 45%;
+
+        /* GHW Brand */
+        --brand-navy: #1e2d3d;
+        --brand-navy-light: #2a3f56;
+        --brand-navy-dark: #141f2b;
+        --brand-orange: #e85d2f;
+        --brand-orange-light: #f07048;
+        --brand-orange-dark: #c94d22;
+
+        /* Safe area insets for mobile notch */
+        --safe-top: env(safe-area-inset-top, 0px);
+        --safe-bottom: env(safe-area-inset-bottom, 0px);
+        --safe-left: env(safe-area-inset-left, 0px);
+        --safe-right: env(safe-area-inset-right, 0px);
     }
+}
+
+/* Base mobile improvements */
+* {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+}
+
+/* Minimum touch target size for accessibility */
+button, [role="button"], input[type="submit"], a {
+    min-height: 44px;
+    min-width: 44px;
+}
+
+/* Better scrolling on mobile */
+html {
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* Prevent horizontal scroll on mobile */
+body {
+    overflow-x: hidden;
 }
 
 @layer base {

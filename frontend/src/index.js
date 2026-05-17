@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/react";
+import * as serviceWorkerRegistration from './serviceWorkerRegistration';
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "@/index.css";
@@ -36,3 +37,13 @@ root.render(
     <App />
   </React.StrictMode>,
 );
+
+serviceWorkerRegistration.register({
+  onUpdate: registration => {
+    // When a new version is available, reload to get fresh content
+    if (registration && registration.waiting) {
+      registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+      window.location.reload();
+    }
+  }
+});

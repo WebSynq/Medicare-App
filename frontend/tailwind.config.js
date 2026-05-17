@@ -12,7 +12,26 @@ module.exports = {
   			md: 'calc(var(--radius) - 2px)',
   			sm: 'calc(var(--radius) - 4px)'
   		},
+  		fontFamily: {
+  			sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+  		},
+  		boxShadow: {
+  			card:           '0 1px 3px 0 rgba(0,0,0,0.08), 0 1px 2px -1px rgba(0,0,0,0.06)',
+  			'card-hover':   '0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.06)',
+  			sidebar:        '2px 0 8px 0 rgba(0,0,0,0.12)',
+  		},
+  		screens: {
+  			xs: '375px',
+  		},
   		colors: {
+  			brand: {
+  				navy:           '#1e2d3d',
+  				'navy-light':   '#2a3f56',
+  				'navy-dark':    '#141f2b',
+  				orange:         '#e85d2f',
+  				'orange-light': '#f07048',
+  				'orange-dark':  '#c94d22',
+  			},
   			background: 'hsl(var(--background))',
   			foreground: 'hsl(var(--foreground))',
   			card: {
