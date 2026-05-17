@@ -6,7 +6,7 @@ from fastapi.security import OAuth2PasswordBearer
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from datetime import datetime, timezone
 
-from security import decode_token
+from security import decode_token  # noqa: F401 — used by get_current_user + get_optional_user
 
 
 _mongo_client: Optional[AsyncIOMotorClient] = None
@@ -24,6 +24,29 @@ def get_db() -> AsyncIOMotorDatabase:
 
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
+
+
+async def get_optional_user(
+    token: Optional[str] = Depends(oauth2_scheme),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+) -> Optional[dict]:
+    """Returns the current user if authenticated, None if not.
+
+    Used by endpoints that accept both anonymous (public intake) and
+    authenticated (agent-on-behalf-of-client) traffic.
+    """
+    if not token:
+        return None
+    try:
+        payload = decode_token(token)
+        user = await db.users.find_one({"id": payload.get("sub")}, {"_id": 0})
+        if not user:
+            return None
+        if not user.get("is_active", True):
+            return None
+        return user
+    except Exception:
+        return None
 
 
 async def get_current_user(
