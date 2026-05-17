@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="GHW">
+  <rect width="64" height="64" rx="12" fill="#1e2d3d"/>
+  <rect x="6" y="46" width="52" height="6" rx="3" fill="#e85d2f"/>
+  <text x="32" y="38" font-family="'Inter','Segoe UI',system-ui,sans-serif"
+        font-weight="800" font-size="22" letter-spacing="1.5"
+        fill="#ffffff" text-anchor="middle" dominant-baseline="middle">GHW</text>
+</svg>

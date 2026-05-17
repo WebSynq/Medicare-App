@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import "@/App.css";
 
-import Landing from "@/pages/Landing";
+import HomePortal from "@/pages/HomePortal";
 import IntakeWizard from "@/pages/IntakeWizard";
 import Login from "@/pages/Login";
 import Register from "@/pages/Register";
@@ -25,7 +25,7 @@ export default function App() {
     <BrowserRouter>
       <Toaster richColors position="top-right" />
       <Routes>
-        <Route path="/" element={<Landing />} />
+        <Route path="/" element={<HomePortal />} />
         <Route path="/intake" element={<IntakeWizard />} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
