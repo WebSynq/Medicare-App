@@ -6,7 +6,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PublicHeader, Footer } from "@/components/Layout";
 
-const HERO_IMG = "https://static.prod-images.emergentagent.com/jobs/778a7dbc-8686-4d3e-87fc-fce3fac48f67/images/bcce0aae6e4600a7d511d4a7490ed04419512e890a959bd46527182b19272479.png";
 const COUPLE_IMG = "https://images.unsplash.com/photo-1761839257647-df30867afd54?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NjZ8MHwxfHNlYXJjaHwxfHxzZW5pb3IlMjBjb3VwbGUlMjBzbWlsaW5nJTIwb3V0ZG9vcnN8ZW58MHx8fHwxNzc4OTUzOTc2fDA&ixlib=rb-4.1.0&q=85";
 
 const fade = (delay = 0) => ({
@@ -56,9 +55,22 @@ export default function Landing() {
           </motion.div>
 
           <motion.div {...fade(0.15)} className="relative">
-            <div className="relative rounded-2xl overflow-hidden border border-border shadow-sm">
-              <img src={HERO_IMG} alt="Medicare consultation office" className="w-full h-[440px] object-cover" />
-              <div className="absolute inset-0 bg-gradient-to-tr from-primary/30 via-transparent to-transparent" />
+            <div
+              className="relative rounded-2xl overflow-hidden border border-border shadow-sm w-full h-[440px] grid place-items-center text-primary-foreground"
+              style={{ background: "linear-gradient(135deg, #1e2d3d 0%, #2a4159 55%, #e85d2f 130%)" }}
+              role="img"
+              aria-label="Medicare consultation"
+            >
+              <div className="text-center px-10">
+                <ShieldCheck className="w-12 h-12 mx-auto mb-4 opacity-90" />
+                <div className="text-2xl font-semibold tracking-tight" style={{ fontFamily: "Outfit" }}>
+                  Secure Medicare Intake
+                </div>
+                <div className="text-sm mt-2 opacity-80 max-w-sm mx-auto">
+                  HIPAA-aligned safeguards from first contact through enrollment.
+                </div>
+              </div>
+              <div className="absolute inset-0 bg-gradient-to-tr from-primary/20 via-transparent to-transparent pointer-events-none" />
             </div>
             <motion.div {...fade(0.4)} className="absolute -bottom-6 -left-6 bg-surface border border-border rounded-xl p-4 shadow-sm w-64 hidden sm:block">
               <div className="flex items-center gap-2 mb-2">

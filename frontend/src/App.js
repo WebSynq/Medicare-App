@@ -26,7 +26,7 @@ export default function App() {
       <Toaster richColors position="top-right" />
       <Routes>
         <Route path="/" element={<HomePortal />} />
-        <Route path="/intake" element={<IntakeWizard />} />
+        <Route path="/intake" element={<Protected><IntakeWizard /></Protected>} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/mfa-setup" element={<Protected><MfaSetup /></Protected>} />

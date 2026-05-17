@@ -143,7 +143,7 @@ export default function CompliancePanel() {
         <div className="mt-7 grid md:grid-cols-3 gap-5 text-sm">
           <Card className="border-border bg-secondary/40"><CardContent className="p-5">
             <div className="flex items-center gap-2 mb-2"><Lock className="w-4 h-4 text-primary" /><span className="font-semibold">Phase 1 — MVP</span></div>
-            <p className="text-muted-foreground">Multi-step intake, SOA e-sign, encrypted upload, agent dashboard, GHL sync (mock), audit log. Built on Emergent.</p>
+            <p className="text-muted-foreground">Multi-step intake, SOA e-sign, encrypted upload, agent dashboard, GHL sync (mock), audit log.</p>
           </CardContent></Card>
           <Card className="border-border bg-secondary/40"><CardContent className="p-5">
             <div className="flex items-center gap-2 mb-2"><FileSignature className="w-4 h-4 text-primary" /><span className="font-semibold">Phase 2 — Hardening</span></div>

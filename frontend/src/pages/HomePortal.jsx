@@ -172,13 +172,10 @@ export default function HomePortal() {
               {loading ? "Signing in..." : <>Sign in <ArrowRight className="w-4 h-4 ml-2" /></>}
             </button>
 
-            <div className="flex items-center justify-between pt-1 text-xs text-slate-500">
+            <div className="flex items-center pt-1 text-xs text-slate-500">
               <span className="inline-flex items-center gap-1.5">
                 <Lock className="w-3 h-3" /> Secured with TOTP MFA
               </span>
-              <Link to="/intake" className="hover:text-slate-700" data-testid="home-to-intake">
-                Start a new intake
-              </Link>
             </div>
 
             <div className="border-t border-slate-200 pt-4 text-center text-sm text-slate-600">
