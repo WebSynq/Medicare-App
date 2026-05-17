@@ -82,7 +82,7 @@ export default function LeadDetail() {
             <h1 className="text-3xl font-bold tracking-tight" style={{fontFamily:'Outfit'}}>{lead.first_name} {lead.last_name}</h1>
             <p className="text-muted-foreground mt-1 text-sm">{lead.email || "—"} · {lead.phone || "—"}</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             <Select value={lead.status} onValueChange={updateStatus}>
               <SelectTrigger className="w-40" data-testid="status-select"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -160,7 +160,7 @@ export default function LeadDetail() {
                   <span className={`w-2 h-2 rounded-full ${lead.ghl_sync_status === "synced" || lead.ghl_sync_status === "mock" ? "bg-emerald-500" : lead.ghl_sync_status === "error" ? "bg-destructive" : "bg-amber-500"}`} />
                 </div>
                 <div className="text-sm capitalize">{lead.ghl_sync_status}</div>
-                {lead.ghl_contact_id && <div className="text-xs text-muted-foreground mt-1 font-mono">{lead.ghl_contact_id}</div>}
+                {lead.ghl_contact_id && <div className="text-xs text-muted-foreground mt-1 font-mono break-all">{lead.ghl_contact_id}</div>}
                 {lead.ghl_synced_at && <div className="text-xs text-muted-foreground mt-1">Last: {new Date(lead.ghl_synced_at).toLocaleString()}</div>}
                 {lead.ghl_sync_error && <div className="text-xs text-destructive mt-2 break-all">{lead.ghl_sync_error}</div>}
               </CardContent>
@@ -198,9 +198,9 @@ export default function LeadDetail() {
 
 function KV({ label, v, fullWidth }) {
   return (
-    <div className={fullWidth ? "sm:col-span-2" : ""}>
+    <div className={`min-w-0 ${fullWidth ? "sm:col-span-2" : ""}`}>
       <dt className="text-xs uppercase tracking-widest text-muted-foreground">{label}</dt>
-      <dd className="mt-0.5 text-foreground">{v || <span className="text-muted-foreground">—</span>}</dd>
+      <dd className="mt-0.5 text-foreground break-words">{v || <span className="text-muted-foreground">—</span>}</dd>
     </div>
   );
 }
