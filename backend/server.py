@@ -61,6 +61,12 @@ if _sentry_dsn:
 
 app = FastAPI(title="Gruening Health & Wealth — Medicare Intake API")
 
+
+@app.get("/api/sentry-debug")
+async def sentry_debug():
+    division_by_zero = 1 / 0
+
+
 api_router = APIRouter(prefix="/api")
 
 
