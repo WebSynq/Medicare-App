@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, ArrowUpRight, Filter, ShieldCheck, AlertCircle, FileSignature, UserCheck, UserX, UserPlus } from "lucide-react";
+import { Search, ArrowUpRight, Filter, ShieldCheck, AlertCircle, FileSignature, UserCheck, UserX, UserPlus, Plus } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
 import { api, auth } from "@/lib/api";
@@ -84,13 +84,24 @@ export default function AgentDashboard() {
             <h1 className="text-3xl font-bold tracking-tight" style={{fontFamily:'Outfit'}}>Welcome, {user?.full_name || user?.email}</h1>
             <p className="text-muted-foreground mt-1">Review encrypted intake submissions and sync to GoHighLevel.</p>
           </div>
-          {!user?.mfa_enabled && (
-            <Link to="/mfa-setup" data-testid="mfa-banner">
-              <Button variant="outline" className="rounded-full">
-                <ShieldCheck className="w-4 h-4 mr-2 text-primary" /> Enable MFA on your account
-              </Button>
-            </Link>
-          )}
+          <div className="flex items-center gap-3 flex-wrap justify-end">
+            {!user?.mfa_enabled && (
+              <Link to="/mfa-setup" data-testid="mfa-banner">
+                <Button variant="outline" className="rounded-full">
+                  <ShieldCheck className="w-4 h-4 mr-2 text-primary" /> Enable MFA on your account
+                </Button>
+              </Link>
+            )}
+            <Button
+              asChild
+              className="rounded-full bg-[#e85d2f] hover:bg-[#d04d22] text-white border-transparent shadow-sm"
+              data-testid="new-intake-btn"
+            >
+              <Link to="/intake">
+                <Plus className="w-4 h-4 mr-2" /> New Intake
+              </Link>
+            </Button>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-7">
