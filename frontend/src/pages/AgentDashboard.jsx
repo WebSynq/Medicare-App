@@ -10,6 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { toast } from "sonner";
 import { api, auth } from "@/lib/api";
 import { AppHeader, Footer } from "@/components/Layout";
+import InviteAgentModal from "@/components/InviteAgentModal";
 
 const STATUS_COLORS = {
   new: "bg-secondary text-secondary-foreground",
@@ -34,6 +35,7 @@ export default function AgentDashboard() {
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState([]);
   const [pendingBusy, setPendingBusy] = useState(null);
+  const [showInvite, setShowInvite] = useState(false);
   const user = auth.getUser();
   const isAdmin = user?.role === "admin";
 
@@ -80,25 +82,37 @@ export default function AgentDashboard() {
       <AppHeader />
       <main className="flex-1 max-w-[1400px] mx-auto w-full px-6 py-8">
         {/* Welcome row */}
-        <div className="mb-6">
-          <p className="text-xs uppercase tracking-widest text-muted-foreground mb-1">
-            Lead Pipeline
-          </p>
-          <h1 className="text-2xl font-bold text-[#1e2d3d]">
-            Welcome, {user?.full_name || user?.email?.split("@")[0] || "Administrator"}
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Review encrypted intake submissions and sync to GoHighLevel.
-          </p>
-          {!user?.mfa_enabled && (
+        <div className="mb-6 flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-widest text-muted-foreground mb-1">
+              Lead Pipeline
+            </p>
+            <h1 className="text-2xl font-bold text-[#1e2d3d]">
+              Welcome, {user?.full_name || user?.email?.split("@")[0] || "Administrator"}
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Review encrypted intake submissions and sync to GoHighLevel.
+            </p>
+            {!user?.mfa_enabled && (
+              <button
+                type="button"
+                onClick={() => navigate("/mfa-setup")}
+                className="mt-3 flex items-center gap-2 text-sm text-[#1e2d3d] border border-[#1e2d3d]/20 rounded-lg px-3 py-2 hover:bg-[#1e2d3d]/5 transition-colors"
+                data-testid="mfa-banner"
+              >
+                <span>🛡️</span>
+                <span>Enable MFA on your account</span>
+              </button>
+            )}
+          </div>
+          {user?.role === "admin" && (
             <button
-              type="button"
-              onClick={() => navigate("/mfa-setup")}
-              className="mt-3 flex items-center gap-2 text-sm text-[#1e2d3d] border border-[#1e2d3d]/20 rounded-lg px-3 py-2 hover:bg-[#1e2d3d]/5 transition-colors"
-              data-testid="mfa-banner"
+              onClick={() => setShowInvite(true)}
+              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium flex-shrink-0"
+              style={{ border: "1px solid #1e2d3d", color: "#1e2d3d" }}
+              data-testid="invite-agent-header"
             >
-              <span>🛡️</span>
-              <span>Enable MFA on your account</span>
+              + Invite Agent
             </button>
           )}
         </div>
@@ -119,7 +133,19 @@ export default function AgentDashboard() {
                   <UserPlus className="w-4 h-4 text-primary" />
                   <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Pending agents ({pending.length})</h3>
                 </div>
-                <Button variant="ghost" size="sm" onClick={loadPending} data-testid="pending-refresh">Refresh</Button>
+                <div className="flex items-center gap-2">
+                  {user?.role === "admin" && (
+                    <button
+                      onClick={() => setShowInvite(true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium"
+                      style={{ background: "rgba(30,45,61,0.08)", color: "#1e2d3d", border: "1px solid rgba(30,45,61,0.2)" }}
+                      data-testid="invite-agent-pending"
+                    >
+                      + Invite Agent
+                    </button>
+                  )}
+                  <Button variant="ghost" size="sm" onClick={loadPending} data-testid="pending-refresh">Refresh</Button>
+                </div>
               </div>
               <div className="overflow-x-auto w-full">
                 <Table>
@@ -264,6 +290,8 @@ export default function AgentDashboard() {
       </Link>
 
       <Footer />
+
+      {showInvite && <InviteAgentModal onClose={() => setShowInvite(false)} />}
     </div>
   );
 }
