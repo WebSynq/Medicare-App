@@ -15,6 +15,12 @@ import CommissionsDashboard from "@/pages/CommissionsDashboard";
 import AdminCommissions from "@/pages/AdminCommissions";
 import { auth } from "@/lib/api";
 
+if (process.env.REACT_APP_SENTRY_DSN) {
+  console.log("Sentry DSN is set");
+} else {
+  console.log("Sentry DSN is NOT set");
+}
+
 function Protected({ children, roles }) {
   const user = auth.getUser();
   if (!user) return <Navigate to="/login" replace />;
