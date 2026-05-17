@@ -18,6 +18,8 @@ async def seed_admin(db) -> None:
         "full_name": "Administrator",
         "role": "admin",
         "is_active": True,
+        "status": "active",
+        "agency_name": None,
         "hashed_password": hash_password(password),
         "mfa_secret": None,
         "mfa_enabled": False,

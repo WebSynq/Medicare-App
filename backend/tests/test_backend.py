@@ -15,6 +15,23 @@ import pytest
 from conftest import BASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD
 
 
+def _register_and_approve_agent(admin_headers, label="agent"):
+    """Public register + admin approve. Returns {email, password, id}."""
+    email = f"TEST_{label}_{uuid.uuid4().hex[:8]}@grueninghw.com"
+    pw = "AgentPass!2026"
+    r = requests.post(f"{BASE_URL}/api/auth/register",
+                      json={"email": email, "password": pw,
+                            "full_name": f"Test {label.capitalize()}",
+                            "agency_name": "Test Agency"},
+                      timeout=30)
+    assert r.status_code == 201, r.text
+    user_id = r.json()["id"]
+    r = requests.post(f"{BASE_URL}/api/auth/users/{user_id}/approve",
+                      headers=admin_headers, timeout=30)
+    assert r.status_code == 200, r.text
+    return {"email": email, "password": pw, "id": user_id}
+
+
 # ---------------- Health ----------------
 class TestHealth:
     def test_root(self):
@@ -66,70 +83,80 @@ class TestAuth:
         r = requests.get(f"{BASE_URL}/api/auth/me", timeout=30)
         assert r.status_code == 401
 
-    def test_register_requires_admin(self):
-        # No token at all -> 401
-        r = requests.post(f"{BASE_URL}/api/auth/register",
-                          json={"email": "x@y.com", "password": "abc12345",
-                                "full_name": "X", "role": "agent"},
-                          timeout=30)
-        assert r.status_code == 401
-
-    def test_register_creates_agent_and_rejects_duplicate(self, admin_headers):
-        unique_email = f"TEST_agent_{uuid.uuid4().hex[:8]}@grueninghw.com"
-        body = {"email": unique_email, "password": "AgentPass!2026",
-                "full_name": "Test Agent", "role": "agent"}
-        r = requests.post(f"{BASE_URL}/api/auth/register",
-                          headers=admin_headers, json=body, timeout=30)
-        assert r.status_code == 200, r.text
+    def test_register_is_public_and_creates_pending_agent(self):
+        # Public — no auth header needed
+        email = f"TEST_pubreg_{uuid.uuid4().hex[:8]}@grueninghw.com"
+        body = {"email": email, "password": "AgentPass!2026",
+                "full_name": "Public Pending", "agency_name": "Acme Health"}
+        r = requests.post(f"{BASE_URL}/api/auth/register", json=body, timeout=30)
+        assert r.status_code == 201, r.text
         d = r.json()
-        assert d["email"] == unique_email
+        assert d["email"] == email
         assert d["role"] == "agent"
-        assert d["is_active"] is True
-        assert d["mfa_enabled"] is False
+        assert d["status"] == "pending"
+        assert d["is_active"] is False
+        assert d["agency_name"] == "Acme Health"
 
-        # duplicate
-        r2 = requests.post(f"{BASE_URL}/api/auth/register",
-                           headers=admin_headers, json=body, timeout=30)
+        # Pending users cannot log in
+        login = requests.post(f"{BASE_URL}/api/auth/login",
+                              json={"email": email, "password": "AgentPass!2026"},
+                              timeout=30)
+        assert login.status_code == 403
+        assert "pending" in login.json()["detail"].lower()
+
+        # Duplicate email is rejected
+        r2 = requests.post(f"{BASE_URL}/api/auth/register", json=body, timeout=30)
         assert r2.status_code == 400
 
-    def test_register_rejected_for_non_admin(self, admin_headers):
-        # Create an agent and login as that agent — try to register another user
-        agent_email = f"TEST_agent2_{uuid.uuid4().hex[:8]}@grueninghw.com"
-        agent_pw = "AgentPass!2026"
-        r = requests.post(f"{BASE_URL}/api/auth/register",
-                          headers=admin_headers,
-                          json={"email": agent_email, "password": agent_pw,
-                                "full_name": "Agent2", "role": "agent"},
-                          timeout=30)
+    def test_pending_list_requires_admin(self, admin_headers):
+        # No token -> 401
+        r = requests.get(f"{BASE_URL}/api/auth/pending", timeout=30)
+        assert r.status_code == 401
+        # Admin -> 200 with a list
+        r = requests.get(f"{BASE_URL}/api/auth/pending",
+                         headers=admin_headers, timeout=30)
         assert r.status_code == 200
+        assert isinstance(r.json(), list)
 
+    def test_admin_approves_agent_and_agent_can_login(self, admin_headers):
+        agent = _register_and_approve_agent(admin_headers, label="approveflow")
         login = requests.post(f"{BASE_URL}/api/auth/login",
-                              json={"email": agent_email, "password": agent_pw},
+                              json={"email": agent["email"], "password": agent["password"]},
                               timeout=30)
         assert login.status_code == 200, login.text
-        agent_token = login.json()["access_token"]
-        h = {"Authorization": f"Bearer {agent_token}", "Content-Type": "application/json"}
+        assert login.json()["user"]["status"] == "active"
+        assert login.json()["user"]["role"] == "agent"
 
-        r2 = requests.post(f"{BASE_URL}/api/auth/register",
-                           headers=h,
-                           json={"email": f"TEST_x_{uuid.uuid4().hex[:8]}@y.com",
-                                 "password": "abc12345", "full_name": "X", "role": "agent"},
-                           timeout=30)
-        assert r2.status_code == 403
+    def test_rejected_agent_cannot_login(self, admin_headers):
+        # Register a pending agent
+        email = f"TEST_rej_{uuid.uuid4().hex[:8]}@grueninghw.com"
+        pw = "AgentPass!2026"
+        r = requests.post(f"{BASE_URL}/api/auth/register",
+                          json={"email": email, "password": pw,
+                                "full_name": "To Be Rejected",
+                                "agency_name": "Reject Co"},
+                          timeout=30)
+        assert r.status_code == 201
+        user_id = r.json()["id"]
+        # Admin rejects
+        r = requests.post(f"{BASE_URL}/api/auth/users/{user_id}/reject",
+                          headers=admin_headers, timeout=30)
+        assert r.status_code == 200
+        assert r.json()["status"] == "rejected"
+        # Login is blocked
+        login = requests.post(f"{BASE_URL}/api/auth/login",
+                              json={"email": email, "password": pw}, timeout=30)
+        assert login.status_code == 403
+        assert "denied" in login.json()["detail"].lower()
 
 
 # ---------------- MFA flow (on a fresh test agent so we don't lock the admin) ----------------
 class TestMFAFlow:
     def test_mfa_enroll_verify_login(self, admin_headers):
-        # 1) create a fresh user
-        email = f"TEST_mfa_{uuid.uuid4().hex[:8]}@grueninghw.com"
-        pw = "MfaPass!2026"
-        r = requests.post(f"{BASE_URL}/api/auth/register",
-                          headers=admin_headers,
-                          json={"email": email, "password": pw,
-                                "full_name": "MFA User", "role": "agent"},
-                          timeout=30)
-        assert r.status_code == 200
+        # 1) register a fresh agent + approve so they can sign in
+        agent = _register_and_approve_agent(admin_headers, label="mfa")
+        email = agent["email"]
+        pw = agent["password"]
 
         # 2) login -> token
         r = requests.post(f"{BASE_URL}/api/auth/login",
@@ -390,17 +417,10 @@ class TestSOA:
 # ---------------- Audit ----------------
 class TestAudit:
     def test_agent_forbidden(self, admin_headers):
-        # create an agent and login
-        agent_email = f"TEST_aud_{uuid.uuid4().hex[:6]}@grueninghw.com"
-        agent_pw = "AgentPass!2026"
-        r = requests.post(f"{BASE_URL}/api/auth/register",
-                          headers=admin_headers,
-                          json={"email": agent_email, "password": agent_pw,
-                                "full_name": "Aud Agent", "role": "agent"},
-                          timeout=30)
-        assert r.status_code == 200
+        # Register + approve an agent, then verify audit endpoint forbids them
+        agent = _register_and_approve_agent(admin_headers, label="aud")
         login = requests.post(f"{BASE_URL}/api/auth/login",
-                              json={"email": agent_email, "password": agent_pw},
+                              json={"email": agent["email"], "password": agent["password"]},
                               timeout=30)
         agent_token = login.json()["access_token"]
         r = requests.get(f"{BASE_URL}/api/audit",

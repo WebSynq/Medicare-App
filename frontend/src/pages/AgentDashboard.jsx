@@ -5,8 +5,9 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, ArrowUpRight, Filter, ShieldCheck, AlertCircle, FileSignature } from "lucide-react";
+import { Search, ArrowUpRight, Filter, ShieldCheck, AlertCircle, FileSignature, UserCheck, UserX, UserPlus } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { toast } from "sonner";
 import { api, auth } from "@/lib/api";
 import { AppHeader, Footer } from "@/components/Layout";
 
@@ -30,16 +31,39 @@ export default function AgentDashboard() {
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [pending, setPending] = useState([]);
+  const [pendingBusy, setPendingBusy] = useState(null);
   const user = auth.getUser();
+  const isAdmin = user?.role === "admin";
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [status]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (isAdmin) loadPending(); }, [isAdmin]);
   const load = async () => {
     setLoading(true);
     try {
       const res = await api.get("/leads", { params: { status: status === "all" ? undefined : status, q: q || undefined } });
       setLeads(res.data);
     } finally { setLoading(false); }
+  };
+  const loadPending = async () => {
+    try {
+      const res = await api.get("/auth/pending");
+      setPending(res.data);
+    } catch (e) { /* non-fatal */ }
+  };
+  const decide = async (userId, action) => {
+    setPendingBusy(userId);
+    try {
+      await api.post(`/auth/users/${userId}/${action}`);
+      toast.success(action === "approve" ? "Agent approved" : "Request rejected");
+      setPending((cur) => cur.filter((p) => p.id !== userId));
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || `${action} failed`);
+    } finally {
+      setPendingBusy(null);
+    }
   };
 
   const counts = {
@@ -76,6 +100,53 @@ export default function AgentDashboard() {
           <StatCard label="Synced to GHL" value={counts.synced} icon={ShieldCheck} />
           <StatCard label="Sync errors" value={counts.errors} danger icon={AlertCircle} />
         </div>
+
+        {isAdmin && pending.length > 0 && (
+          <Card className="border-border bg-surface mb-5" data-testid="pending-agents-card">
+            <CardContent className="p-5">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <UserPlus className="w-4 h-4 text-primary" />
+                  <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">Pending agents ({pending.length})</h3>
+                </div>
+                <Button variant="ghost" size="sm" onClick={loadPending} data-testid="pending-refresh">Refresh</Button>
+              </div>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Email</TableHead>
+                      <TableHead>Agency</TableHead>
+                      <TableHead>Requested</TableHead>
+                      <TableHead className="text-right">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pending.map((p) => (
+                      <TableRow key={p.id} data-testid={`pending-row-${p.id}`}>
+                        <TableCell className="font-medium">{p.full_name || "—"}</TableCell>
+                        <TableCell className="text-sm">{p.email}</TableCell>
+                        <TableCell className="text-sm">{p.agency_name || "—"}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{new Date(p.created_at).toLocaleString()}</TableCell>
+                        <TableCell className="text-right">
+                          <div className="inline-flex gap-2">
+                            <Button size="sm" disabled={pendingBusy === p.id} onClick={() => decide(p.id, "approve")} data-testid={`pending-approve-${p.id}`}>
+                              <UserCheck className="w-3.5 h-3.5 mr-1.5" /> Approve
+                            </Button>
+                            <Button size="sm" variant="outline" disabled={pendingBusy === p.id} onClick={() => decide(p.id, "reject")} data-testid={`pending-reject-${p.id}`}>
+                              <UserX className="w-3.5 h-3.5 mr-1.5" /> Reject
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         <Card className="border-border bg-surface">
           <CardContent className="p-5">

@@ -5,6 +5,7 @@ import "@/App.css";
 import Landing from "@/pages/Landing";
 import IntakeWizard from "@/pages/IntakeWizard";
 import Login from "@/pages/Login";
+import Register from "@/pages/Register";
 import MfaSetup from "@/pages/MfaSetup";
 import AgentDashboard from "@/pages/AgentDashboard";
 import LeadDetail from "@/pages/LeadDetail";
@@ -27,6 +28,7 @@ export default function App() {
         <Route path="/" element={<Landing />} />
         <Route path="/intake" element={<IntakeWizard />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
         <Route path="/mfa-setup" element={<Protected><MfaSetup /></Protected>} />
         <Route path="/dashboard" element={<Protected><AgentDashboard /></Protected>} />
         <Route path="/leads/:id" element={<Protected><LeadDetail /></Protected>} />

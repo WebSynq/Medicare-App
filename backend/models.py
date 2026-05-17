@@ -10,11 +10,16 @@ def utcnow_iso() -> str:
 
 
 # ----- Users -----
+UserStatus = Literal["pending", "active", "rejected"]
+
+
 class UserBase(BaseModel):
     email: EmailStr
     full_name: Optional[str] = None
     role: Literal["admin", "agent", "compliance"] = "agent"
     is_active: bool = True
+    status: UserStatus = "active"
+    agency_name: Optional[str] = None
 
 
 class UserCreate(UserBase):
@@ -33,6 +38,14 @@ class UserInDB(UserBase):
     mfa_secret: Optional[str] = None
     mfa_enabled: bool = False
     created_at: str = Field(default_factory=utcnow_iso)
+
+
+class AgentRegistrationRequest(BaseModel):
+    """Public self-service registration. Always creates a pending agent."""
+    full_name: str
+    email: EmailStr
+    password: str
+    agency_name: str
 
 
 # ----- Auth -----

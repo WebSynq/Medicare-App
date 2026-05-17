@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/leads", tags=["leads"])
 
 
+def _agent_filter(current_user: dict) -> dict:
+    """Mongo filter restricting agents to their own assigned leads.
+    Admin and compliance roles see everything (empty filter)."""
+    if current_user.get("role") == "agent":
+        return {"agent_assigned_id": current_user["id"]}
+    return {}
+
+
 async def _sync_lead_to_ghl(
     db: AsyncIOMotorDatabase,
     lead_id: str,
@@ -123,7 +131,7 @@ async def list_leads(
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    query: dict = {}
+    query: dict = {**_agent_filter(current_user)}
     if status:
         query["status"] = status
     if q:
@@ -143,7 +151,8 @@ async def get_lead(
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    doc = await db.leads.find_one({"id": lead_id, **_agent_filter(current_user)},
+                                  {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Lead not found")
     return Lead(**doc)
@@ -160,8 +169,14 @@ async def update_lead(
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
+    # Agents cannot reassign leads — only admins/compliance.
+    if current_user.get("role") == "agent" and "agent_assigned_id" in updates:
+        raise HTTPException(status_code=403, detail="Agents cannot reassign leads")
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-    result = await db.leads.update_one({"id": lead_id}, {"$set": updates})
+    result = await db.leads.update_one(
+        {"id": lead_id, **_agent_filter(current_user)},
+        {"$set": updates},
+    )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Lead not found")
     await write_audit(db, "lead_updated", actor_email=current_user["email"],
@@ -179,7 +194,8 @@ async def export_lead_pdf(
     current_user=Depends(get_current_user),
 ):
     """Render the lead's intake record as a downloadable PDF."""
-    lead_doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    lead_doc = await db.leads.find_one({"id": lead_id, **_agent_filter(current_user)},
+                                       {"_id": 0})
     if not lead_doc:
         raise HTTPException(status_code=404, detail="Lead not found")
     soa_doc = await db.soa_records.find_one({"lead_id": lead_id}, {"_id": 0})
@@ -208,6 +224,13 @@ async def sync_to_ghl(
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
+    # Gate access — agents may only sync their own leads.
+    owned = await db.leads.find_one(
+        {"id": lead_id, **_agent_filter(current_user)}, {"_id": 0, "id": 1},
+    )
+    if not owned:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
     try:
         await _sync_lead_to_ghl(db, lead_id, request,
                                 actor_email=current_user["email"],

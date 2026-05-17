@@ -96,6 +96,9 @@ export default function Login() {
                 <span className="flex items-center gap-1.5"><Lock className="w-3 h-3" /> Secured with TOTP MFA</span>
                 <Link to="/" className="hover:text-primary">Back to site</Link>
               </div>
+              <div className="text-xs text-muted-foreground text-center pt-1">
+                New agent? <Link to="/register" className="text-primary hover:underline" data-testid="login-to-register">Request access</Link>
+              </div>
             </form>
           </CardContent>
         </Card>
