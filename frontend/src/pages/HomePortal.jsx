@@ -101,6 +101,17 @@ export default function HomePortal() {
           <Badge icon={GraduationCap} label="Education Focused" />
           <Badge icon={Heart} label="Treat You Like Family" />
         </div>
+
+        {/* Public footer links */}
+        <div className="mt-6 flex items-center gap-1">
+          <Link to="/privacy" className="text-xs hover:underline" style={{ color: "rgba(255,255,255,0.4)" }}>
+            Privacy Policy
+          </Link>
+          <span className="text-xs" style={{ color: "rgba(255,255,255,0.2)" }}> · </span>
+          <Link to="/security" className="text-xs hover:underline" style={{ color: "rgba(255,255,255,0.4)" }}>
+            Security
+          </Link>
+        </div>
       </aside>
 
       {/* ---------- Right: login form ---------- */}

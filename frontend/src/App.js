@@ -13,6 +13,8 @@ import AuditLog from "@/pages/AuditLog";
 import CompliancePanel from "@/pages/CompliancePanel";
 import CommissionsDashboard from "@/pages/CommissionsDashboard";
 import AdminCommissions from "@/pages/AdminCommissions";
+import PrivacyPolicy from "@/pages/PrivacyPolicy";
+import SecurityPage from "@/pages/SecurityPage";
 import { auth } from "@/lib/api";
 
 function Protected({ children, roles }) {
@@ -31,6 +33,8 @@ export default function App() {
         <Route path="/intake" element={<Protected><IntakeWizard /></Protected>} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        <Route path="/privacy" element={<PrivacyPolicy />} />
+        <Route path="/security" element={<SecurityPage />} />
         <Route path="/mfa-setup" element={<Protected><MfaSetup /></Protected>} />
         <Route path="/dashboard" element={<Protected><AgentDashboard /></Protected>} />
         <Route
