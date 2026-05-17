@@ -259,7 +259,7 @@ export default function AdminCommissions() {
                 No agents match your filter.
               </p>
             ) : (
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto w-full -mx-4 px-4">
                 <Table>
                   <TableHeader>
                     <TableRow>

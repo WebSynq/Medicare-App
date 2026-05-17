@@ -104,7 +104,7 @@ export default function AgentDashboard() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-7">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 w-full overflow-hidden mb-7">
           <StatCard label="Total leads" value={counts.total} />
           <StatCard label="New" value={counts.new} accent />
           <StatCard label="SOA signed" value={counts.soa} icon={FileSignature} />
@@ -122,7 +122,7 @@ export default function AgentDashboard() {
                 </div>
                 <Button variant="ghost" size="sm" onClick={loadPending} data-testid="pending-refresh">Refresh</Button>
               </div>
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto w-full">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -186,7 +186,7 @@ export default function AgentDashboard() {
               <Button variant="outline" onClick={load} data-testid="reload-leads">Refresh</Button>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto w-full">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -249,7 +249,7 @@ export default function AgentDashboard() {
 
 function StatCard({ label, value, accent, danger, icon: Icon }) {
   return (
-    <Card className={`border-border ${accent ? "bg-primary text-primary-foreground" : danger ? "bg-destructive/10" : "bg-surface"}`}>
+    <Card className={`border-border min-w-0 overflow-hidden ${accent ? "bg-primary text-primary-foreground" : danger ? "bg-destructive/10" : "bg-surface"}`}>
       <CardContent className="p-4">
         <div className="flex items-center justify-between">
           <div className="text-xs uppercase tracking-widest opacity-80">{label}</div>

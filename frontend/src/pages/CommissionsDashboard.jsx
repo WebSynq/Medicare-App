@@ -233,9 +233,9 @@ export default function CommissionsDashboard() {
         </div>
 
         {/* ── Stat cards ── */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 w-full overflow-hidden">
           {statCards.map((c) => (
-            <Card key={c.label}>
+            <Card key={c.label} className="min-w-0 overflow-hidden">
               <CardHeader className="pb-1">
                 <CardTitle className="text-sm font-medium text-muted-foreground">
                   {c.label}
@@ -333,41 +333,43 @@ export default function CommissionsDashboard() {
                 No statements uploaded yet. Upload your first one above.
               </p>
             ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>File</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Uploaded</TableHead>
-                    <TableHead>Comtrack ID</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {history.map((row) => (
-                    <TableRow key={row.id}>
-                      <TableCell className="font-medium max-w-[220px] truncate">
-                        {row.filename}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={statusVariant(row.status)}>
-                          {statusLabel(row.status)}
-                        </Badge>
-                        {row.mock && (
-                          <span className="ml-2 text-xs text-muted-foreground">
-                            mock
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground text-sm">
-                        {fmtDate(row.uploaded_at)}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground font-mono truncate max-w-[160px]">
-                        {row.comtrack_file_id || "—"}
-                      </TableCell>
+              <div className="overflow-x-auto w-full">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>File</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Uploaded</TableHead>
+                      <TableHead>Comtrack ID</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {history.map((row) => (
+                      <TableRow key={row.id}>
+                        <TableCell className="font-medium max-w-[220px] truncate">
+                          {row.filename}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={statusVariant(row.status)}>
+                            {statusLabel(row.status)}
+                          </Badge>
+                          {row.mock && (
+                            <span className="ml-2 text-xs text-muted-foreground">
+                              mock
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-sm">
+                          {fmtDate(row.uploaded_at)}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground font-mono truncate max-w-[160px]">
+                          {row.comtrack_file_id || "—"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             )}
           </CardContent>
         </Card>

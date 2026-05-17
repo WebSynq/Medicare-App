@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Lock, ShieldCheck } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { auth } from "@/lib/api";
@@ -32,7 +33,10 @@ export function PublicHeader() {
 
 export function AppHeader() {
   const user = auth.getUser();
-  const nav = useNavigate();
+  const navigate = useNavigate();
+  const role = user?.role;
+  const [menuOpen, setMenuOpen] = useState(false);
+
   return (
     <header className="border-b border-border bg-surface/80 backdrop-blur-md sticky top-0 z-40">
       <div className="max-w-[1400px] mx-auto px-6 h-14 flex items-center justify-between">
@@ -41,7 +45,7 @@ export function AppHeader() {
             <div className="w-7 h-7 rounded-md bg-primary text-primary-foreground grid place-items-center text-sm font-bold" style={{fontFamily:'Outfit'}}>G</div>
             <span className="font-semibold tracking-tight text-sm" style={{fontFamily:'Outfit'}}>Gruening · Console</span>
           </Link>
-          <nav className="flex items-center gap-1 text-sm">
+          <nav className="hidden md:flex items-center gap-1 text-sm">
             <Link to="/dashboard" className="px-3 py-1.5 rounded-md hover:bg-secondary" data-testid="nav-dashboard">Leads</Link>
             <Link
               to="/commissions"
@@ -49,7 +53,7 @@ export function AppHeader() {
             >
               Commissions
             </Link>
-            {(user?.role === "admin" || user?.role === "compliance") && (
+            {(role === "admin" || role === "compliance") && (
               <>
                 <Link to="/audit" className="px-3 py-1.5 rounded-md hover:bg-secondary" data-testid="nav-audit">Audit Log</Link>
                 <Link to="/admin/compliance" className="px-3 py-1.5 rounded-md hover:bg-secondary" data-testid="nav-compliance">Compliance</Link>
@@ -63,15 +67,47 @@ export function AppHeader() {
             )}
           </nav>
         </div>
-        <div className="flex items-center gap-3 text-sm">
+        <div className="hidden md:flex items-center gap-3 text-sm">
           <ShieldCheck className="w-4 h-4 text-primary" />
           <span className="text-muted-foreground hidden md:inline">{user?.email}</span>
-          <span className="text-[11px] px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground capitalize">{user?.role}</span>
-          <Button variant="outline" size="sm" onClick={() => { auth.logout(); nav("/login"); }} data-testid="logout-btn">
+          <span className="text-[11px] px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground capitalize">{role}</span>
+          <Button variant="outline" size="sm" onClick={() => { auth.logout(); navigate("/login"); }} data-testid="logout-btn">
             <Lock className="w-3.5 h-3.5 mr-1.5" /> Sign out
           </Button>
         </div>
+        <button
+          type="button"
+          onClick={() => setMenuOpen((v) => !v)}
+          className="md:hidden p-2 -mr-2 text-foreground text-2xl leading-none"
+          aria-label={menuOpen ? "Close menu" : "Open menu"}
+          aria-expanded={menuOpen}
+          data-testid="mobile-menu-toggle"
+        >
+          {menuOpen ? "✕" : "☰"}
+        </button>
       </div>
+
+      {menuOpen && (
+        <div className="md:hidden bg-[#1e2d3d] border-t border-white/10 px-4 py-3 flex flex-col gap-4" data-testid="mobile-menu">
+          <Link to="/dashboard" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Leads</Link>
+          <Link to="/commissions" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Commissions</Link>
+          {(role === "admin" || role === "compliance") && (
+            <>
+              <Link to="/audit" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Audit Log</Link>
+              <Link to="/admin/compliance" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Compliance</Link>
+              <Link to="/admin/commissions" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Agent Commissions</Link>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => { auth.logout(); navigate("/login"); setMenuOpen(false); }}
+            className="text-sm text-red-400 hover:text-red-300 py-2 text-left"
+            data-testid="mobile-logout-btn"
+          >
+            Sign out
+          </button>
+        </div>
+      )}
     </header>
   );
 }
