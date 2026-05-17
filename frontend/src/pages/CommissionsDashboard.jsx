@@ -57,7 +57,16 @@ function statusLabel(status) {
 function fmtDate(isoOrSlash) {
   if (!isoOrSlash) return "—";
   try {
-    const d = new Date(isoOrSlash.includes("T") ? isoOrSlash : isoOrSlash + "T00:00:00Z");
+    let d;
+    if (isoOrSlash.includes("T")) {
+      d = new Date(isoOrSlash);
+    } else if (isoOrSlash.includes("/")) {
+      const [mm, dd, yyyy] = isoOrSlash.split("/");
+      d = new Date(`${yyyy}-${mm}-${dd}T00:00:00Z`);
+    } else {
+      d = new Date(isoOrSlash + "T00:00:00Z");
+    }
+    if (isNaN(d.getTime())) return isoOrSlash;
     return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
   } catch {
     return isoOrSlash;
