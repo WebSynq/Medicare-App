@@ -53,6 +53,12 @@ export function AppHeader() {
               <>
                 <Link to="/audit" className="px-3 py-1.5 rounded-md hover:bg-secondary" data-testid="nav-audit">Audit Log</Link>
                 <Link to="/admin/compliance" className="px-3 py-1.5 rounded-md hover:bg-secondary" data-testid="nav-compliance">Compliance</Link>
+                <Link
+                  to="/admin/commissions"
+                  className="text-sm font-medium hover:text-[#e85d2f] transition-colors"
+                >
+                  Agent Commissions
+                </Link>
               </>
             )}
           </nav>

@@ -12,6 +12,7 @@ import LeadDetail from "@/pages/LeadDetail";
 import AuditLog from "@/pages/AuditLog";
 import CompliancePanel from "@/pages/CompliancePanel";
 import CommissionsDashboard from "@/pages/CommissionsDashboard";
+import AdminCommissions from "@/pages/AdminCommissions";
 import { auth } from "@/lib/api";
 
 function Protected({ children, roles }) {
@@ -43,6 +44,14 @@ export default function App() {
         <Route path="/leads/:id" element={<Protected><LeadDetail /></Protected>} />
         <Route path="/audit" element={<Protected roles={["admin","compliance"]}><AuditLog /></Protected>} />
         <Route path="/admin/compliance" element={<Protected roles={["admin","compliance"]}><CompliancePanel /></Protected>} />
+        <Route
+          path="/admin/commissions"
+          element={
+            <Protected roles={["admin", "compliance"]}>
+              <AdminCommissions />
+            </Protected>
+          }
+        />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

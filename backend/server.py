@@ -15,6 +15,7 @@ from auth_router import router as auth_router  # noqa: E402
 from leads_router import router as leads_router  # noqa: E402
 from documents_router import router as documents_router  # noqa: E402
 from commissions_router import router as commissions_router  # noqa: E402
+from admin_commissions_router import router as admin_commissions_router  # noqa: E402
 from soa_router import router as soa_router  # noqa: E402
 from audit_router import router as audit_router  # noqa: E402
 from seed import seed_admin  # noqa: E402
@@ -50,6 +51,7 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(leads_router, prefix="/api")
 app.include_router(documents_router, prefix="/api")
 app.include_router(commissions_router, prefix="/api")
+app.include_router(admin_commissions_router, prefix="/api")
 app.include_router(soa_router, prefix="/api")
 app.include_router(audit_router, prefix="/api")
 
