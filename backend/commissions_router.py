@@ -6,19 +6,25 @@ COMTRACK_API_KEY is never exposed to the browser.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from comtrack_client import ComtrackClient
-from deps import get_current_user, get_db, write_audit
+from deps import get_client_ip, get_current_user, get_db, write_audit
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/commissions", tags=["commissions"])
+
+# Live-endpoint cache + rate-limit configuration
+_LIVE_CACHE_TTL = timedelta(hours=1)
+_LIVE_RATE_LIMIT = 20            # requests per window per user
+_LIVE_RATE_WINDOW = timedelta(hours=1)
 
 # Accepted MIME types + extensions for carrier statements
 _ALLOWED_MIME = {
@@ -197,3 +203,181 @@ async def get_upload_history(
     records = await cursor.to_list(length=100)
 
     return {"uploads": records, "total": len(records)}
+
+
+# ── GET /api/commissions/live ────────────────────────────────────────────────
+# Live ComTrack pull, cached, rate-limited, audited.
+#
+# Hard rules baked in (do not relax):
+# - agent_name is read from the authenticated user's DB row only.
+#   Request body, query, headers, and JWT claims are all rejected as sources.
+#   This prevents IDOR via tampered tokens or query params.
+# - COMTRACK_API_KEY is read by ComtrackClient from os.environ only.
+# - Upstream errors are logged server-side and replaced with a 503 + generic
+#   message to the client (no leaked upstream response bodies).
+# - Every access (cache hit or upstream call) writes an audit log entry.
+
+def _matches_filters(row: dict, carrier: Optional[str], date: Optional[str]) -> bool:
+    if carrier:
+        if (row.get("carrier") or "").strip().lower() != carrier.strip().lower():
+            return False
+    if date:
+        if (row.get("statement_date") or "").strip() != date.strip():
+            return False
+    return True
+
+
+async def _check_user_rate_limit(db: AsyncIOMotorDatabase, user_id: str) -> None:
+    """Reject if user has hit the per-user-per-hour budget.
+
+    Stored in commission_rate_limits with a TTL index that auto-expires
+    entries after the window. Each call is one document; counts are derived
+    by counting documents in the window.
+    """
+    now = datetime.now(timezone.utc)
+    window_start = now - _LIVE_RATE_WINDOW
+    count = await db.commission_rate_limits.count_documents({
+        "user_id": user_id,
+        "called_at": {"$gte": window_start},
+    })
+    if count >= _LIVE_RATE_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded ({_LIVE_RATE_LIMIT}/hour). "
+                   "Please wait before retrying.",
+        )
+    await db.commission_rate_limits.insert_one({
+        "user_id": user_id,
+        "called_at": now,
+        # expires_at drives the TTL index — see startup index creation in server.py
+        "expires_at": now + _LIVE_RATE_WINDOW,
+    })
+
+
+async def _get_cached(db: AsyncIOMotorDatabase, user_id: str) -> Optional[dict]:
+    """Return cached commission payload for this user if still fresh."""
+    now = datetime.now(timezone.utc)
+    doc = await db.commission_cache.find_one(
+        {"user_id": user_id, "expires_at": {"$gt": now}},
+        {"_id": 0},
+    )
+    return doc
+
+
+async def _set_cached(db: AsyncIOMotorDatabase, user_id: str, agent_name: str,
+                       rows: list[dict]) -> None:
+    now = datetime.now(timezone.utc)
+    await db.commission_cache.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "user_id": user_id,
+            "agent_name": agent_name,
+            "rows": rows,
+            "cached_at": now,
+            "expires_at": now + _LIVE_CACHE_TTL,
+        }},
+        upsert=True,
+    )
+
+
+@router.get("/live")
+async def get_live_commissions(
+    request: Request,
+    carrier: Optional[str] = Query(None, max_length=64,
+                                    description="Optional carrier filter"),
+    date: Optional[str] = Query(None, max_length=16,
+                                 description="Optional statement_date filter (MM/DD/YYYY)"),
+    refresh: bool = Query(False, description="Bypass the 1h cache"),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Live ComTrack commission rows for the authenticated agent.
+
+    agent_name is sourced from the user's DB row only. Optional carrier/date
+    narrow the result set for that agent — they cannot widen access to
+    another agent's data.
+    """
+    # 1. Resolve agent identity from the DB (re-fetch, don't trust JWT claims).
+    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    if not fresh:
+        # Token references a user that no longer exists.
+        raise HTTPException(status_code=401, detail="User not found")
+    agent_name = (fresh.get("agent_name") or "").strip()
+    if not agent_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Agent name not configured. Contact your administrator.",
+        )
+
+    user_id = fresh["id"]
+    ip = get_client_ip(request)
+
+    # 2. Per-user rate limit (refresh requests count too).
+    await _check_user_rate_limit(db, user_id)
+
+    # 3. Cache lookup unless explicitly bypassed.
+    cache_hit = False
+    if not refresh:
+        cached = await _get_cached(db, user_id)
+        if cached:
+            cache_hit = True
+            rows = cached.get("rows", [])
+        else:
+            rows = None
+    else:
+        rows = None
+
+    # 4. Live pull on miss / refresh.
+    if rows is None:
+        client = ComtrackClient()
+        try:
+            rows = await client.get_rows(agent_name)
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            # Log full upstream detail; never expose it to the client.
+            logger.error("ComTrack live pull failed for user %s: %s", user_id, exc)
+            await write_audit(
+                db=db, event_type="commission_data_access",
+                actor_email=fresh.get("email"), actor_id=user_id,
+                target_type="commission_data", target_id=agent_name,
+                request=request,
+                metadata={
+                    "agent_name": agent_name,
+                    "carrier_filter": carrier,
+                    "date_filter": date,
+                    "cache_hit": False,
+                    "status": "error",
+                },
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Commission data temporarily unavailable",
+            )
+        await _set_cached(db, user_id, agent_name, rows)
+
+    # 5. Apply post-query filters (carrier, date) for the authenticated agent.
+    if carrier or date:
+        rows = [r for r in rows if _matches_filters(r, carrier, date)]
+
+    # 6. Audit log every access (cache hit included).
+    await write_audit(
+        db=db, event_type="commission_data_access",
+        actor_email=fresh.get("email"), actor_id=user_id,
+        target_type="commission_data", target_id=agent_name,
+        request=request,
+        metadata={
+            "agent_name": agent_name,
+            "ip_address": ip,
+            "carrier_filter": carrier,
+            "date_filter": date,
+            "cache_hit": cache_hit,
+            "status": "success",
+            "row_count": len(rows),
+        },
+    )
+
+    return {
+        "rows": rows,
+        "total": len(rows),
+        "cache_hit": cache_hit,
+        "agent_name": agent_name,
+    }

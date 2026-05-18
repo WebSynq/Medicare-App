@@ -212,5 +212,18 @@ async def on_startup():
         expireAfterSeconds=0,  # TTL: MongoDB auto-deletes expired tokens
     )
 
+    # ComTrack live endpoint — per-user cache + rate-limit counters
+    await db.commission_cache.create_index("user_id", unique=True)
+    await db.commission_cache.create_index(
+        "expires_at",
+        expireAfterSeconds=0,  # auto-evict stale cache entries
+    )
+    await db.commission_rate_limits.create_index("user_id")
+    await db.commission_rate_limits.create_index("called_at")
+    await db.commission_rate_limits.create_index(
+        "expires_at",
+        expireAfterSeconds=0,  # auto-evict counters once the window closes
+    )
+
     await seed_admin(db)
     logger.info("Startup complete. Admin seeded if missing.")
