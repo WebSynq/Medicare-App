@@ -19,13 +19,15 @@ CSRF_HEADER = "X-CSRF-Token"
 
 
 def _extract_token(request: Request, header_token: Optional[str]) -> Optional[str]:
-    """Pull the JWT from the httpOnly cookie first, then the Authorization
-    header. We do not honour query-string tokens to prevent leakage via
-    referer / server logs / browser history."""
-    cookie_token = request.cookies.get(ACCESS_TOKEN_COOKIE)
-    if cookie_token:
-        return cookie_token
-    return header_token
+    """Pull the JWT from the Authorization header first, then the httpOnly
+    cookie. The header is an explicit, intentional credential; the cookie
+    is sent automatically by the browser. When both are present we honour
+    the explicit one — this also lets tests pass admin tokens via header
+    without being shadowed by a stale browser cookie from an earlier user.
+    Query-string tokens are never honoured (referer / log leakage risk)."""
+    if header_token:
+        return header_token
+    return request.cookies.get(ACCESS_TOKEN_COOKIE)
 
 
 _mongo_client: Optional[AsyncIOMotorClient] = None

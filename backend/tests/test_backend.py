@@ -350,3 +350,166 @@ def test_admin_can_patch_agent_profile(client, db, admin_headers):
     body = patch.json()
     assert body["agent_name"] == "Patched Name"  # whitespace trimmed
     assert body["agent_npn"] == "987654"
+
+
+# ── Commission audit endpoints ──────────────────────────────────────────────
+async def _seed_production_rows(db, rows):
+    """Helper: seed production_records with a list of partial dicts."""
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc).isoformat()
+    for i, r in enumerate(rows):
+        doc = {
+            "natural_key": r.get("natural_key", f"nk-{i}"),
+            "agent_email": r.get("agent_email"),
+            "agent_name": r.get("agent_name"),
+            "policy_number": r.get("policy_number", f"POL-{i}"),
+            "carrier": r.get("carrier", "Aetna"),
+            "product": r.get("product", "Cancer/H&S"),
+            "state": r.get("state", "IL"),
+            "effective_date": r.get("effective_date",
+                                     _dt.now(_tz.utc).date().isoformat()),
+            "premium_monthly": r.get("premium_monthly", 100.0),
+            "premium_annual": r.get("premium_annual", 1200.0),
+            "revenue_expected": r.get("revenue_expected"),
+            "revenue_received": r.get("revenue_received"),
+            "audit_status": r.get("audit_status", "pending"),
+            "audit_notes": None,
+            "ab_synced": r.get("ab_synced", False),
+            "imported_at": now,
+            "updated_at": now,
+        }
+        await db.production_records.insert_one(doc)
+
+
+async def test_commission_audit_list_admin_sees_all(client, db, admin_headers):
+    await _seed_production_rows(db, [
+        {"agent_name": "Alice", "revenue_expected": 500, "revenue_received": 400},
+        {"agent_name": "Bob",   "revenue_expected": 300, "revenue_received": 300},
+    ])
+    r = client.get("/api/commission/audit?period=all", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 2
+    # Underpaid (Alice) sorts above matched (Bob) by absolute gap.
+    assert body["records"][0]["agent_name"] == "Alice"
+    assert body["records"][0]["status"] == "underpaid"
+    assert body["records"][0]["gap"] == -100
+    assert body["records"][1]["status"] == "matched"
+
+
+async def test_commission_audit_idor_agent_scoped(client, db, admin_headers):
+    """An agent must never see another agent's records, even by guessing an
+    agent_id. We invite + register an agent, give them an agent_name,
+    seed a row owned by Alice, and confirm the agent sees zero records.
+    """
+    inv = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": "agent.bob@example.com", "full_name": "Bob",
+        "agency_name": "B", "agent_name": "Bob",
+    }).json()
+    reg = client.post("/api/auth/register", json={
+        "email": "agent.bob@example.com", "password": "BobPass!2026",
+        "full_name": "Bob", "agency_name": "B",
+        "invite_token": inv["token"],
+    })
+    # Admin approves so login works.
+    client.post(f"/api/auth/users/{reg.json()['id']}/approve",
+                headers=admin_headers)
+    login = client.post("/api/auth/login", json={
+        "email": "agent.bob@example.com", "password": "BobPass!2026",
+    })
+    bob_token = login.json()["access_token"]
+    bob_headers = {"Authorization": f"Bearer {bob_token}"}
+
+    await _seed_production_rows(db, [
+        {"agent_name": "Alice", "revenue_expected": 500,
+         "revenue_received": 400},
+        {"agent_name": "Bob",   "revenue_expected": 200,
+         "revenue_received": 200},
+    ])
+
+    # Bob's own view — only his record
+    own = client.get("/api/commission/audit?period=all", headers=bob_headers)
+    assert own.status_code == 200
+    assert own.json()["total"] == 1
+    assert own.json()["records"][0]["agent_name"] == "Bob"
+
+    # Even if Bob tries agent_id=admin (admin-only param), the agent_id
+    # filter is ignored for non-admin and the scope filter still applies.
+    admin_id = (await db.users.find_one(
+        {"role": "admin"}, {"_id": 0, "id": 1}
+    ))["id"]
+    sneaky = client.get(
+        f"/api/commission/audit?period=all&agent_id={admin_id}",
+        headers=bob_headers,
+    )
+    assert sneaky.status_code == 200
+    # Result is still Bob's own record, not Alice's or admin's.
+    for row in sneaky.json()["records"]:
+        assert row["agent_name"] == "Bob"
+
+
+async def test_commission_audit_summary(client, db, admin_headers):
+    await _seed_production_rows(db, [
+        {"revenue_expected": 500, "revenue_received": 400},   # underpaid -100
+        {"revenue_expected": 300, "revenue_received": 350},   # overpaid  +50
+        {"revenue_expected": 200, "revenue_received": 200},   # matched     0
+        {"revenue_expected": 100, "revenue_received": None},  # missing  -100
+    ])
+    r = client.get("/api/commission/audit/summary?period=all",
+                    headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["policies"] == 4
+    assert body["total_expected"] == 1100
+    assert body["total_received"] == 950
+    assert body["total_gap"] == -150
+    assert body["count_by_status"]["underpaid"] == 1
+    assert body["count_by_status"]["overpaid"] == 1
+    assert body["count_by_status"]["matched"] == 1
+    assert body["count_by_status"]["missing"] == 1
+
+
+async def test_commission_audit_mark_resolved_admin_only(client, db, admin_headers):
+    await _seed_production_rows(db, [
+        {"natural_key": "to-resolve", "revenue_expected": 500,
+         "revenue_received": 400, "agent_name": "Alice"},
+    ])
+
+    # Non-admin agent gets 403 (require_roles admin)
+    inv = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": "agent.sam@example.com", "full_name": "Sam",
+        "agency_name": "S", "agent_name": "Sam",
+    }).json()
+    reg = client.post("/api/auth/register", json={
+        "email": "agent.sam@example.com", "password": "SamPass!2026",
+        "full_name": "Sam", "agency_name": "S",
+        "invite_token": inv["token"],
+    })
+    client.post(f"/api/auth/users/{reg.json()['id']}/approve",
+                headers=admin_headers)
+    sam_login = client.post("/api/auth/login", json={
+        "email": "agent.sam@example.com", "password": "SamPass!2026",
+    })
+    sam_headers = {"Authorization": f"Bearer {sam_login.json()['access_token']}"}
+
+    nope = client.post(
+        "/api/commission/audit/mark-resolved/to-resolve",
+        headers=sam_headers,
+        json={"notes": "tried"},
+    )
+    assert nope.status_code == 403
+
+    # Admin can mark it
+    ok = client.post(
+        "/api/commission/audit/mark-resolved/to-resolve",
+        headers=admin_headers,
+        json={"notes": "Carrier paid the gap manually on 2026-05-15."},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["status"] == "resolved"
+    assert ok.json()["audit_notes"].startswith("Carrier paid")
+
+    # And the audit log captured it
+    entry = await db.audit_logs.find_one({"event_type": "commission_audit_resolved"})
+    assert entry is not None
+    assert entry["metadata"]["policy_number"]

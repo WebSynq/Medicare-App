@@ -27,6 +27,7 @@ from leads_router import router as leads_router  # noqa: E402
 from documents_router import router as documents_router  # noqa: E402
 from commissions_router import router as commissions_router  # noqa: E402
 from admin_commissions_router import router as admin_commissions_router  # noqa: E402
+from commission_audit_router import router as commission_audit_router  # noqa: E402
 from soa_router import router as soa_router  # noqa: E402
 from audit_router import router as audit_router  # noqa: E402
 from seed import seed_admin  # noqa: E402
@@ -121,6 +122,7 @@ app.include_router(leads_router, prefix="/api")
 app.include_router(documents_router, prefix="/api")
 app.include_router(commissions_router, prefix="/api")
 app.include_router(admin_commissions_router, prefix="/api")
+app.include_router(commission_audit_router, prefix="/api")
 app.include_router(soa_router, prefix="/api")
 app.include_router(audit_router, prefix="/api")
 
@@ -266,6 +268,20 @@ async def on_startup():
         "expires_at",
         expireAfterSeconds=0,  # TTL: MongoDB auto-deletes expired tokens
     )
+
+    # Production records (Plecto) — Phase 2 commission intelligence indexes.
+    # Indexes also created by scripts/import_production.py on first run, but
+    # we ensure them here so the audit router has fast queries from cold start.
+    await db.production_records.create_index("natural_key", unique=True)
+    await db.production_records.create_index("agent_email")
+    await db.production_records.create_index("agent_name")
+    await db.production_records.create_index("effective_date")
+    await db.production_records.create_index("audit_status")
+
+    # Carrier rate schedule (Phase 2)
+    await db.carrier_rates.create_index("natural_key", unique=True)
+    await db.carrier_rates.create_index("carrier")
+    await db.carrier_rates.create_index("effective_year")
 
     # ComTrack live endpoint — per-user cache + rate-limit counters
     await db.commission_cache.create_index("user_id", unique=True)
