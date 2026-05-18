@@ -95,6 +95,34 @@ class GHLClient:
             return resp.json()
 
 
+    async def update_contact(self, contact_id: str, custom_fields) -> dict:
+        if self.mock_mode:
+            return {"mock": True, "updated": True, "contact_id": contact_id}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.patch(
+                f"{self.base_url}/contacts/{contact_id}",
+                headers=self._headers(),
+                json={"customFields": custom_fields},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def search_contacts(self, query: str, limit: int = 10) -> list:
+        if self.mock_mode:
+            return [
+                {"id": "mock_contact_1", "firstName": "John", "lastName": "Smith", "email": "john.smith@example.com"},
+                {"id": "mock_contact_2", "firstName": "Jane", "lastName": "Doe", "email": "jane.doe@example.com"},
+            ]
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{self.base_url}/contacts/search",
+                headers=self._headers(),
+                params={"locationId": self.location_id, "query": query, "limit": limit},
+            )
+            resp.raise_for_status()
+            return resp.json().get("contacts", [])
+
+
 def _build_custom_fields(lead: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Build GHL custom field array. Keys assume custom fields exist in the GHL location.
     Replace with actual custom field IDs from the location."""

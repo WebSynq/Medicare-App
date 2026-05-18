@@ -45,6 +45,7 @@ export function AppHeader() {
           </Link>
           <nav className="hidden md:flex items-center gap-1 text-sm">
             <Link to="/dashboard" className="px-3 py-1.5 rounded-md hover:bg-secondary" data-testid="nav-dashboard">Leads</Link>
+            <Link to="/applications" className="px-3 py-1.5 rounded-md hover:bg-secondary" data-testid="nav-applications">Applications</Link>
             <Link
               to="/commissions"
               className="text-sm font-medium hover:text-[#e85d2f] transition-colors"
@@ -96,6 +97,7 @@ export function AppHeader() {
       {menuOpen && (
         <div className="md:hidden bg-[#1e2d3d] border-t border-white/10 px-4 py-3 flex flex-col gap-4" data-testid="mobile-menu">
           <Link to="/dashboard" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Leads</Link>
+          <Link to="/applications" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Applications</Link>
           <Link to="/commissions" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Commissions</Link>
           {(role === "admin" || role === "compliance") && (
             <>

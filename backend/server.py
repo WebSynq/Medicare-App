@@ -31,6 +31,7 @@ from commission_audit_router import router as commission_audit_router, chat_rout
 from leaderboard_router import router as leaderboard_router  # noqa: E402
 from soa_router import router as soa_router  # noqa: E402
 from audit_router import router as audit_router  # noqa: E402
+from application_router import router as application_router  # noqa: E402
 from seed import seed_admin  # noqa: E402
 
 
@@ -128,6 +129,7 @@ app.include_router(commission_chat_router, prefix="/api")
 app.include_router(leaderboard_router, prefix="/api")
 app.include_router(soa_router, prefix="/api")
 app.include_router(audit_router, prefix="/api")
+app.include_router(application_router)
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
