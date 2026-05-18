@@ -120,8 +120,8 @@ def _scope_filter(current_user: dict) -> dict:
 
 
 # ── GET /commission/audit ──────────────────────────────────────────────────
+# No rate limit: read-only, no upstream cost. Auth + RBAC still apply.
 @router.get("")
-@limiter.limit("30/hour")
 async def list_audit_records(
     request: Request,
     period: str = Query("month", pattern="^(week|month|all)$"),
@@ -202,8 +202,8 @@ async def list_audit_records(
 
 
 # ── GET /commission/audit/summary ──────────────────────────────────────────
+# No rate limit: read-only, no upstream cost. Auth + RBAC still apply.
 @router.get("/summary")
-@limiter.limit("30/hour")
 async def audit_summary(
     request: Request,
     period: str = Query("month", pattern="^(week|month|all)$"),
