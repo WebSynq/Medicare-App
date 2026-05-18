@@ -102,21 +102,36 @@ async def create_lead(
     payload: LeadCreate,
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
-    """Public intake endpoint — beneficiaries can submit without auth."""
-    lead = Lead(**payload.model_dump())
+    """Create a lead from the (authenticated) intake wizard.
+
+    The wizard route is gated behind <Protected> on the client, but historically
+    this endpoint was anonymous — so anyone could POST arbitrary Medicare PHI
+    (MBI, DOB, prescriptions) into the database. Now requires a valid JWT.
+
+    For agent role users we auto-assign the lead to them. Admin/compliance can
+    create leads without forcing an assignment.
+    """
+    lead_data = payload.model_dump()
+    if current_user.get("role") == "agent":
+        lead_data["agent_assigned_id"] = current_user["id"]
+    lead = Lead(**lead_data)
     doc = lead.model_dump()
     await db.leads.insert_one(doc.copy())
-    await write_audit(db, "lead_created", actor_email=lead.email,
+    await write_audit(db, "lead_created", actor_email=current_user.get("email"),
+                      actor_id=current_user.get("id"),
                       target_type="lead", target_id=lead.id, request=request,
-                      metadata={"source": "public_intake"})
+                      metadata={"source": "authenticated_intake",
+                                "actor_role": current_user.get("role")})
 
     # Auto-sync to GHL. Failures must not block the intake response — the helper
     # has already persisted ghl_sync_status="error" + the audit event by the time
     # we get here.
     try:
         await _sync_lead_to_ghl(db, lead.id, request,
-                                actor_email=lead.email, actor_id=None)
+                                actor_email=current_user.get("email"),
+                                actor_id=current_user.get("id"))
     except Exception as e:
         logger.warning("Auto GHL sync failed for lead %s: %s", lead.id, e)
 

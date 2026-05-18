@@ -1,13 +1,12 @@
 """Scope of Appointment (SOA) e-signature capture."""
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from models import SOASignRequest, SOARecord
-from deps import get_db, get_current_user, get_optional_user, write_audit, get_client_ip
+from deps import get_db, get_current_user, write_audit, get_client_ip
 
 
 router = APIRouter(prefix="/soa", tags=["soa"])
@@ -18,23 +17,33 @@ async def sign_soa(
     payload: SOASignRequest,
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: Optional[dict] = Depends(get_optional_user),
+    current_user: dict = Depends(get_current_user),
 ):
+    """Record a Scope of Appointment signature.
+
+    Auth required: an unauthenticated caller could otherwise mint forged
+    "SOA signed" records against any known lead_id, defeating CMS consent
+    requirements and creating fraudulent compliance evidence.
+    """
     if not payload.consent_acknowledged:
         raise HTTPException(status_code=400, detail="Consent must be acknowledged")
 
-    lead = await db.leads.find_one({"id": payload.lead_id}, {"_id": 0, "id": 1})
+    # Agents may only sign SOAs for leads assigned to them.
+    lead_filter: dict = {"id": payload.lead_id}
+    if current_user.get("role") == "agent":
+        lead_filter["agent_assigned_id"] = current_user["id"]
+
+    lead = await db.leads.find_one(lead_filter, {"_id": 0, "id": 1})
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
 
     if not payload.signature_data_url.startswith("data:image/"):
         raise HTTPException(status_code=400, detail="Invalid signature format")
 
-    # If an agent is signed in, prefer the agent's stored name over whatever
-    # the form sent for agent_name (the client form often leaves it null).
-    agent_name = payload.agent_name
-    if current_user and not agent_name:
-        agent_name = current_user.get("full_name") or current_user.get("email")
+    # Prefer the authenticated agent's stored identity over any client-supplied
+    # agent_name field — the form often leaves it null and we never want the
+    # client to assert who signed.
+    agent_name = current_user.get("full_name") or current_user.get("email") or payload.agent_name
 
     now = datetime.now(timezone.utc).isoformat()
     record = {
@@ -55,8 +64,8 @@ async def sign_soa(
     )
     await write_audit(
         db, "soa_signed",
-        actor_email=current_user.get("email") if current_user else "anonymous (intake)",
-        actor_id=current_user.get("id") if current_user else None,
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
         target_type="lead", target_id=payload.lead_id,
         request=request,
         metadata={"beneficiary": payload.beneficiary_name,

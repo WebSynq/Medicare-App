@@ -3,7 +3,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -11,7 +11,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from models import DocumentMeta
 from security import encrypt_bytes, decrypt_bytes
-from deps import get_db, get_current_user, get_optional_user, write_audit
+from deps import get_db, get_current_user, write_audit
 
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -33,12 +33,19 @@ async def upload_document(
     file: UploadFile = File(...),
     doc_type: str = Form("other"),
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: Optional[dict] = Depends(get_optional_user),
+    current_user: dict = Depends(get_current_user),
 ):
-    """Optional auth — if an agent is logged in, capture their identity on the
-    upload + audit record. Anonymous beneficiary uploads during public intake
-    are still accepted."""
-    lead = await db.leads.find_one({"id": lead_id}, {"_id": 0, "id": 1})
+    """Encrypt and persist a document attached to a lead.
+
+    Auth required. Agents may only upload to leads assigned to them; admin and
+    compliance roles may upload to any lead. Anonymous uploads were previously
+    accepted, which let any caller stash arbitrary content (potentially malicious
+    or PHI-laden) against a known lead_id.
+    """
+    lead_filter: dict = {"id": lead_id}
+    if current_user.get("role") == "agent":
+        lead_filter["agent_assigned_id"] = current_user["id"]
+    lead = await db.leads.find_one(lead_filter, {"_id": 0, "id": 1})
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
 
@@ -65,7 +72,7 @@ async def upload_document(
         "size_bytes": len(contents),
         "doc_type": doc_type,
         "encrypted": True,
-        "uploaded_by": current_user.get("id") if current_user else None,
+        "uploaded_by": current_user.get("id"),
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.documents.insert_one(meta.copy())
@@ -73,8 +80,8 @@ async def upload_document(
                                                   "$set": {"updated_at": meta["uploaded_at"]}})
     await write_audit(
         db, "doc_uploaded",
-        actor_email=current_user.get("email") if current_user else "anonymous (intake)",
-        actor_id=current_user.get("id") if current_user else None,
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
         target_type="document", target_id=doc_id,
         request=request,
         metadata={"lead_id": lead_id, "doc_type": doc_type, "size": len(contents)},
