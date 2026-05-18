@@ -13,3 +13,4 @@ qrcode[pil]==8.2
 httpx==0.28.1
 reportlab>=4.0.0,<5
 sentry-sdk[fastapi]==2.19.2
+slowapi==0.1.9

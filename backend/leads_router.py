@@ -8,6 +8,8 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from models import Lead, LeadCreate, LeadUpdate
 from deps import get_db, get_current_user, write_audit
@@ -18,6 +20,7 @@ from pdf_export import generate_lead_pdf
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/leads", tags=["leads"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 def _agent_filter(current_user: dict) -> dict:
@@ -86,18 +89,25 @@ async def _sync_lead_to_ghl(
                           actor_id=actor_id, target_type="lead", target_id=lead_id,
                           request=request, metadata={"status": sync_status, "contact_id": contact_id})
     except Exception as e:
+        # Don't persist raw upstream error text — it can leak GHL response
+        # bodies, auth headers, or PHI we just sent. Log the full error
+        # server-side, but write only a categorical label to the DB + audit.
+        logger.warning("GHL sync failed for lead %s: %s", lead_id, e, exc_info=False)
+        error_category = type(e).__name__
         await db.leads.update_one(
             {"id": lead_id},
-            {"$set": {"ghl_sync_status": "error", "ghl_sync_error": str(e)[:500],
+            {"$set": {"ghl_sync_status": "error",
+                      "ghl_sync_error": f"upstream_{error_category}",
                       "updated_at": datetime.now(timezone.utc).isoformat()}},
         )
         await write_audit(db, "ghl_sync_failed", actor_email=actor_email,
                           actor_id=actor_id, target_type="lead", target_id=lead_id,
-                          request=request, metadata={"error": str(e)[:200]})
+                          request=request, metadata={"error_category": error_category})
         raise
 
 
 @router.post("", response_model=Lead, status_code=201)
+@limiter.limit("30/hour")
 async def create_lead(
     payload: LeadCreate,
     request: Request,

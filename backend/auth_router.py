@@ -12,6 +12,12 @@ import pyotp
 import qrcode
 from fastapi import APIRouter, Depends, HTTPException, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+# Dummy bcrypt hash used to keep response time constant when the email doesn't
+# exist. Computed once at import; the plaintext is never used.
+_DUMMY_BCRYPT_HASH = "$2b$12$CwTycUXWue0Thq9StjUM0uJ8zJZ6yfsT9MrbXk7eDjmnQDQt2WJYS"
 
 from models import (
     UserPublic, LoginRequest, LoginResponse,
@@ -32,6 +38,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+# Per-router limiter — uses the same key_func as the app-level one. Endpoints
+# below decorate themselves with @limiter.limit(...) to apply IP-based ceilings.
+limiter = Limiter(key_func=get_remote_address)
+
 
 def _user_public(user: dict) -> UserPublic:
     return UserPublic(
@@ -48,6 +58,7 @@ def _user_public(user: dict) -> UserPublic:
 
 
 @router.post("/register", response_model=UserPublic, status_code=201)
+@limiter.limit("5/hour")
 async def register(
     body: AgentRegistrationRequest,
     request: Request,
@@ -151,6 +162,7 @@ def _format_unlock_message(unlock_at: datetime) -> str:
 
 
 @router.post("/login", response_model=LoginResponse)
+@limiter.limit("10/minute")
 async def login(payload: LoginRequest, request: Request, db: AsyncIOMotorDatabase = Depends(get_db)):
     email = payload.email.lower().strip()
 
@@ -166,7 +178,16 @@ async def login(payload: LoginRequest, request: Request, db: AsyncIOMotorDatabas
         )
 
     user = await db.users.find_one({"email": email}, {"_id": 0})
-    if not user or not verify_password(payload.password, user["hashed_password"]):
+    # Constant-time check: always invoke bcrypt verify so a missing user takes
+    # the same wall-clock time as an existing user with a wrong password. Prior
+    # behaviour short-circuited on `not user`, leaking user existence via
+    # response timing.
+    if not user:
+        verify_password(payload.password, _DUMMY_BCRYPT_HASH)
+        password_ok = False
+    else:
+        password_ok = verify_password(payload.password, user["hashed_password"])
+    if not user or not password_ok:
         # 2. Record the failed attempt — may trigger a lockout
         attempt_result = await check_and_record_login_attempt(db, email, success=False)
         if attempt_result["locked"]:
@@ -427,7 +448,9 @@ async def create_invite(
 
 
 @router.get("/invite/validate")
+@limiter.limit("20/hour")
 async def validate_invite(
+    request: Request,
     token: str,
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):

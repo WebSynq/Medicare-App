@@ -6,6 +6,10 @@ from pathlib import Path
 from fastapi import FastAPI, APIRouter, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 from dotenv import load_dotenv
 
 import sentry_sdk
@@ -71,6 +75,18 @@ app = FastAPI(
     redoc_url="/redoc" if IS_DEV else None,
     openapi_url="/openapi.json" if IS_DEV else None,
 )
+
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+# IP-based limits on sensitive endpoints (auth, intake) using slowapi. Layered
+# on top of the existing per-email brute-force tracker so an attacker cannot
+# iterate emails to evade the per-email lockout. `get_remote_address` reads
+# request.client.host; behind Render's proxy the X-Forwarded-For header is
+# already terminated to a single value, so this resolves to the real client IP.
+limiter = Limiter(key_func=get_remote_address, default_limits=[])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 api_router = APIRouter(prefix="/api")
 
