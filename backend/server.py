@@ -3,8 +3,9 @@ import os
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
 
 import sentry_sdk
@@ -136,6 +137,35 @@ app.add_middleware(
                    "X-Requested-With"],
     max_age=600,
 )
+
+
+# ── Security headers ──────────────────────────────────────────────────────────
+# Applied to every response, including CORS preflights and error responses.
+# This is a JSON API so we don't ship a script-loading CSP — instead we lock
+# down framing, MIME sniffing, referrers, cross-origin window opens, and TLS.
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        h = response.headers
+        h.setdefault("X-Content-Type-Options", "nosniff")
+        h.setdefault("X-Frame-Options", "DENY")
+        h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        h.setdefault("Permissions-Policy",
+                     "accelerometer=(), camera=(), geolocation=(), gyroscope=(), "
+                     "magnetometer=(), microphone=(), payment=(), usb=()")
+        h.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+        h.setdefault("Cross-Origin-Resource-Policy", "same-site")
+        # CSP for a JSON API: deny everything by default — there is no HTML to render.
+        h.setdefault("Content-Security-Policy",
+                     "default-src 'none'; frame-ancestors 'none'")
+        if not IS_DEV:
+            h.setdefault("Strict-Transport-Security",
+                         "max-age=63072000; includeSubDomains; preload")
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 @app.on_event("startup")
