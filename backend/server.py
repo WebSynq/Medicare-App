@@ -59,7 +59,17 @@ if _sentry_dsn:
         before_send=_sentry_before_send,
     )
 
-app = FastAPI(title="Gruening Health & Wealth — Medicare Intake API")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "production").lower()
+IS_DEV = ENVIRONMENT in ("development", "dev", "local")
+
+# Hide OpenAPI schema and interactive docs outside dev. Exposing /openapi.json
+# in production reveals every route + every PHI field name to unauthenticated callers.
+app = FastAPI(
+    title="Gruening Health & Wealth — Medicare Intake API",
+    docs_url="/docs" if IS_DEV else None,
+    redoc_url="/redoc" if IS_DEV else None,
+    openapi_url="/openapi.json" if IS_DEV else None,
+)
 
 api_router = APIRouter(prefix="/api")
 
@@ -73,11 +83,17 @@ async def root():
 
 @api_router.get("/health")
 async def health(db=__import__("fastapi").Depends(get_db)):
+    """Liveness + dependency probe.
+
+    Returns only a coarse status. Driver/DB error details are logged server-side
+    so external probes (and attackers) can't fingerprint the backing store.
+    """
     try:
         await db.command("ping")
-        return {"status": "ok", "mongo": "ok"}
+        return {"status": "ok"}
     except Exception as e:
-        return {"status": "degraded", "mongo": str(e)}
+        logger.exception("Health check failed: %s", e)
+        return {"status": "degraded"}
 
 
 app.include_router(api_router)
@@ -90,12 +106,35 @@ app.include_router(soa_router, prefix="/api")
 app.include_router(audit_router, prefix="/api")
 
 
+# ── CORS ──────────────────────────────────────────────────────────────────────
+# Strict allowlist. A wildcard origin combined with allow_credentials=True is a
+# critical misconfiguration: Starlette will echo any Origin back, which lets any
+# site read authenticated responses. We require CORS_ORIGINS to be set
+# explicitly to a comma-separated list of fully-qualified origins.
+_raw_origins = os.environ.get("CORS_ORIGINS", "").strip()
+_cors_origins = [o.strip() for o in _raw_origins.split(",") if o.strip() and o.strip() != "*"]
+
+if not _cors_origins:
+    if IS_DEV:
+        # Localhost defaults for dev only
+        _cors_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+        logger.warning("CORS_ORIGINS not set; defaulting to localhost (dev mode).")
+    else:
+        # Fail closed: in production with no allowlist, reject all cross-origin.
+        logger.error(
+            "CORS_ORIGINS is not configured. Cross-origin browser requests will be "
+            "denied. Set CORS_ORIGINS to a comma-separated list of trusted origins."
+        )
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_origin_regex=None,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin",
+                   "X-Requested-With"],
+    max_age=600,
 )
 
 
