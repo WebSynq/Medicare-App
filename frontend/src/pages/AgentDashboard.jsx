@@ -329,7 +329,7 @@ function fmtUSD(val) {
 
 function LeaderboardCard() {
   const [rows, setRows] = useState([]);
-  const [period, setPeriod] = useState("month");
+  const [period, setPeriod] = useState("all");
   const [loading, setLoading] = useState(true);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps

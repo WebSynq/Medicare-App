@@ -445,7 +445,7 @@ function fmtGap(gap) {
 function AuditPanel() {
   const [summary, setSummary] = useState(null);
   const [rows, setRows] = useState([]);
-  const [period, setPeriod] = useState("month");
+  const [period, setPeriod] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [loadingSummary, setLoadingSummary] = useState(true);
   const [loadingRows, setLoadingRows] = useState(true);
