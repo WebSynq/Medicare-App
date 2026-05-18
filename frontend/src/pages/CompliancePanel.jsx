@@ -1,13 +1,10 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CheckCircle2, ShieldCheck, FileWarning, Network, Server, Lock, FileSignature, Cloud } from "lucide-react";
-import { AppHeader, Footer } from "@/components/Layout";
-
 export default function CompliancePanel() {
   return (
-    <div className="min-h-screen flex flex-col">
-      <AppHeader />
-      <main className="flex-1 max-w-6xl mx-auto w-full px-6 py-10">
+    <div className="p-6 md:p-8">
+      <main className="max-w-6xl mx-auto w-full">
         <div className="mb-8">
           <div className="text-xs uppercase tracking-widest text-primary mb-2">Internal · Compliance &amp; Build Plan</div>
           <h1 className="text-3xl font-bold tracking-tight" style={{fontFamily:'Outfit'}}>Project blueprint &amp; cost analysis</h1>
@@ -155,7 +152,6 @@ export default function CompliancePanel() {
           </CardContent></Card>
         </div>
       </main>
-      <Footer />
     </div>
   );
 }

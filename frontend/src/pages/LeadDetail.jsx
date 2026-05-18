@@ -7,7 +7,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Cable, Download, FileSignature, ShieldCheck, ArrowLeft, RefreshCw, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import { AppHeader, Footer } from "@/components/Layout";
 
 export default function LeadDetail() {
   const { id } = useParams();
@@ -68,12 +67,11 @@ export default function LeadDetail() {
     } catch (e) { toast.error("PDF export failed"); }
   };
 
-  if (!lead) return <div className="min-h-screen"><AppHeader /><div className="max-w-5xl mx-auto px-6 py-12 text-muted-foreground">Loading...</div></div>;
+  if (!lead) return <div className="p-6 md:p-8"><div className="max-w-5xl mx-auto text-muted-foreground">Loading...</div></div>;
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <AppHeader />
-      <main className="flex-1 max-w-5xl mx-auto w-full px-6 py-8">
+    <div className="p-6 md:p-8">
+      <main className="max-w-5xl mx-auto w-full">
         <Link to="/dashboard" className="text-sm text-muted-foreground inline-flex items-center hover:text-primary mb-4" data-testid="back-to-dashboard"><ArrowLeft className="w-4 h-4 mr-1" />Back to leads</Link>
 
         <div className="flex flex-wrap items-end justify-between gap-4 mb-7">
@@ -191,7 +189,6 @@ export default function LeadDetail() {
           </div>
         </div>
       </main>
-      <Footer />
     </div>
   );
 }

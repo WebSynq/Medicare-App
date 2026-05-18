@@ -1,5 +1,4 @@
 import { useState, useEffect, useMemo } from "react";
-import { AppHeader, Footer } from "@/components/Layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -144,9 +143,8 @@ export default function ApplicationSubmission() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <AppHeader />
-      <main className="flex-1 max-w-[1100px] w-full mx-auto px-6 py-8">
+    <div className="p-6 md:p-8">
+      <main className="max-w-[1100px] w-full mx-auto">
         <div className="mb-6">
           <h1
             className="text-2xl font-semibold tracking-tight"
@@ -353,7 +351,6 @@ export default function ApplicationSubmission() {
           </Card>
         </div>
       </main>
-      <Footer />
     </div>
   );
 }

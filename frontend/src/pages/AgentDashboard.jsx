@@ -9,7 +9,6 @@ import { Search, ArrowUpRight, Filter, ShieldCheck, AlertCircle, FileSignature, 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
 import { api, auth } from "@/lib/api";
-import { AppHeader, Footer } from "@/components/Layout";
 import InviteAgentModal from "@/components/InviteAgentModal";
 
 const STATUS_COLORS = {
@@ -78,9 +77,8 @@ export default function AgentDashboard() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <AppHeader />
-      <main className="flex-1 max-w-[1400px] mx-auto w-full px-6 py-8">
+    <div className="p-6 md:p-8">
+      <main className="max-w-[1400px] mx-auto w-full">
         {/* Welcome row */}
         <div className="mb-6 flex items-start justify-between gap-4">
           <div className="min-w-0">
@@ -290,8 +288,6 @@ export default function AgentDashboard() {
           <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
         </svg>
       </Link>
-
-      <Footer />
 
       {showInvite && <InviteAgentModal onClose={() => setShowInvite(false)} />}
     </div>

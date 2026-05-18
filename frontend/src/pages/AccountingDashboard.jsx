@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AppHeader, Footer } from "@/components/Layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -226,9 +225,8 @@ export default function AccountingDashboard() {
 
   // ── render ───────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen flex flex-col">
-      <AppHeader />
-      <main className="flex-1 max-w-[1400px] mx-auto w-full px-4 py-8 space-y-6">
+    <div className="p-6 md:p-8">
+      <main className="max-w-[1400px] mx-auto w-full space-y-6">
 
         {/* Header */}
         <div className="flex items-center justify-between flex-wrap gap-3">
@@ -506,8 +504,6 @@ export default function AccountingDashboard() {
           </div>
         </div>
       )}
-
-      <Footer />
     </div>
   );
 }

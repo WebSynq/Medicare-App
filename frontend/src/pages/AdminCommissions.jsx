@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from "react";
-import { AppHeader, Footer } from "@/components/Layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -13,7 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
-import { api, auth } from "@/lib/api";
+import { api } from "@/lib/api";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -91,8 +90,6 @@ function exportCSV(agents) {
 // ── component ─────────────────────────────────────────────────────────────────
 
 export default function AdminCommissions() {
-  const user = auth.getUser();
-
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -184,10 +181,8 @@ export default function AdminCommissions() {
   ];
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <AppHeader user={user} />
-
-      <main className="flex-1 max-w-7xl mx-auto w-full px-4 py-8 space-y-8">
+    <div className="p-6 md:p-8">
+      <main className="max-w-7xl mx-auto w-full space-y-8">
 
         <div className="flex items-center justify-between">
           <div>
@@ -330,8 +325,6 @@ export default function AdminCommissions() {
         </Card>
 
       </main>
-
-      <Footer />
     </div>
   );
 }

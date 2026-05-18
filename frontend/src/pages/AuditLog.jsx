@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Search, ShieldCheck } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
-import { AppHeader, Footer } from "@/components/Layout";
 
 const TYPE_STYLE = (t) => {
   if (t.includes("failed") || t.includes("error")) return "bg-destructive/10 text-destructive";
@@ -37,9 +36,8 @@ export default function AuditLog() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <AppHeader />
-      <main className="flex-1 max-w-[1400px] mx-auto w-full px-6 py-8">
+    <div className="p-6 md:p-8">
+      <main className="max-w-[1400px] mx-auto w-full">
         <div className="mb-6">
           <div className="text-xs uppercase tracking-widest text-primary mb-2">Compliance · Audit log</div>
           <h1 className="text-3xl font-bold tracking-tight" style={{fontFamily:'Outfit'}}>Audit Trail</h1>
@@ -100,7 +98,6 @@ export default function AuditLog() {
           </CardContent>
         </Card>
       </main>
-      <Footer />
     </div>
   );
 }

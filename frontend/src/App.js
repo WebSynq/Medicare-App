@@ -18,12 +18,14 @@ import ApplicationSubmission from "@/pages/ApplicationSubmission";
 import PrivacyPolicy from "@/pages/PrivacyPolicy";
 import SecurityPage from "@/pages/SecurityPage";
 import { auth } from "@/lib/api";
+import { AppLayout } from "@/components/Layout";
 
-function Protected({ children, roles }) {
+function Protected({ children, roles, noLayout }) {
   const user = auth.getUser();
   if (!user) return <Navigate to="/login" replace />;
   if (roles && !roles.includes(user.role)) return <Navigate to="/dashboard" replace />;
-  return children;
+  if (noLayout) return children;
+  return <AppLayout>{children}</AppLayout>;
 }
 
 export default function App() {
@@ -32,12 +34,12 @@ export default function App() {
       <Toaster richColors position="top-right" />
       <Routes>
         <Route path="/" element={<HomePortal />} />
-        <Route path="/intake" element={<Protected><IntakeWizard /></Protected>} />
+        <Route path="/intake" element={<Protected noLayout><IntakeWizard /></Protected>} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/privacy" element={<PrivacyPolicy />} />
         <Route path="/security" element={<SecurityPage />} />
-        <Route path="/mfa-setup" element={<Protected><MfaSetup /></Protected>} />
+        <Route path="/mfa-setup" element={<Protected noLayout><MfaSetup /></Protected>} />
         <Route path="/dashboard" element={<Protected><AgentDashboard /></Protected>} />
         <Route
           path="/commissions"

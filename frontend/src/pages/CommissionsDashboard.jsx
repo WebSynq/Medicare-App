@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { AppHeader, Footer } from "@/components/Layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -222,9 +221,8 @@ export default function CommissionsDashboard() {
   ];
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <AppHeader />
-      <main className="flex-1 max-w-6xl mx-auto w-full px-4 py-8 space-y-6">
+    <div className="p-6 md:p-8">
+      <main className="max-w-6xl mx-auto w-full space-y-6">
 
         {/* ── Header ── */}
         <div className="flex items-center justify-between">
@@ -402,7 +400,6 @@ export default function CommissionsDashboard() {
         </Tabs>
 
       </main>
-      <Footer />
     </div>
   );
 }

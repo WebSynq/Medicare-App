@@ -1,17 +1,34 @@
-import { useState } from "react";
-import { Lock, ShieldCheck } from "lucide-react";
-import { Link, useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import {
+  Lock,
+  ShieldCheck,
+  Users,
+  FileText,
+  DollarSign,
+  ClipboardList,
+  Shield,
+  UserCheck,
+  Calculator,
+  LogOut,
+  Menu,
+  X,
+} from "lucide-react";
+import { Link, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { auth } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 
+const SIDEBAR_BG = "#0d1b2a";
+const ACCENT = "#e85d2f";
+
+// ── Public landing/login chrome (unchanged) ────────────────────────────────
 export function PublicHeader() {
   return (
     <header className="crystal-nav sticky top-0 z-40 border-b border-border/60">
       <div className="max-w-7xl mx-auto px-6 lg:px-10 h-16 flex items-center justify-between">
         <Link to="/" className="flex items-center gap-2.5" data-testid="brand-link">
-          <div className="w-9 h-9 rounded-lg bg-primary text-primary-foreground grid place-items-center font-bold tracking-tight" style={{fontFamily:'Outfit'}}>G</div>
+          <div className="w-9 h-9 rounded-lg bg-primary text-primary-foreground grid place-items-center font-bold tracking-tight" style={{ fontFamily: "Outfit" }}>G</div>
           <div className="leading-tight">
-            <div className="text-sm font-semibold tracking-tight" style={{fontFamily:'Outfit'}}>Gruening Health &amp; Wealth</div>
+            <div className="text-sm font-semibold tracking-tight" style={{ fontFamily: "Outfit" }}>Gruening Health &amp; Wealth</div>
             <div className="text-[11px] text-muted-foreground -mt-0.5">Secure Medicare Intake Portal</div>
           </div>
         </Link>
@@ -29,108 +46,15 @@ export function PublicHeader() {
   );
 }
 
-export function AppHeader() {
-  const user = auth.getUser();
-  const navigate = useNavigate();
-  const role = user?.role;
-  const [menuOpen, setMenuOpen] = useState(false);
-
-  return (
-    <header className="border-b border-border bg-surface/80 backdrop-blur-md sticky top-0 z-40">
-      <div className="max-w-[1400px] mx-auto px-6 h-14 flex items-center justify-between">
-        <div className="flex items-center gap-6">
-          <Link to="/dashboard" className="flex items-center gap-2" data-testid="app-brand">
-            <div className="w-7 h-7 rounded-md bg-primary text-primary-foreground grid place-items-center text-sm font-bold" style={{fontFamily:'Outfit'}}>G</div>
-            <span className="font-semibold tracking-tight text-sm" style={{fontFamily:'Outfit'}}>Gruening · Console</span>
-          </Link>
-          <nav className="hidden md:flex items-center gap-1 text-sm">
-            <Link to="/dashboard" className="px-3 py-1.5 rounded-md hover:bg-secondary" data-testid="nav-dashboard">Leads</Link>
-            <Link to="/applications" className="px-3 py-1.5 rounded-md hover:bg-secondary" data-testid="nav-applications">Applications</Link>
-            <Link
-              to="/commissions"
-              className="text-sm font-medium hover:text-[#e85d2f] transition-colors"
-            >
-              Commissions
-            </Link>
-            {(role === "admin" || role === "compliance") && (
-              <>
-                <Link to="/audit" className="px-3 py-1.5 rounded-md hover:bg-secondary" data-testid="nav-audit">Audit Log</Link>
-                <Link to="/admin/compliance" className="px-3 py-1.5 rounded-md hover:bg-secondary" data-testid="nav-compliance">Compliance</Link>
-                <Link
-                  to="/admin/commissions"
-                  className="text-sm font-medium hover:text-[#e85d2f] transition-colors"
-                >
-                  Agent Commissions
-                </Link>
-              </>
-            )}
-            {role === "admin" && (
-              <Link
-                to="/admin/accounting"
-                className="text-sm font-medium hover:text-[#e85d2f] transition-colors"
-              >
-                Accounting
-              </Link>
-            )}
-          </nav>
-        </div>
-        <div className="hidden md:flex items-center gap-3 text-sm">
-          <ShieldCheck className="w-4 h-4 text-primary" />
-          <span className="text-muted-foreground hidden md:inline">{user?.email}</span>
-          <span className="text-[11px] px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground capitalize">{role}</span>
-          <Button variant="outline" size="sm" onClick={() => { auth.logout(); navigate("/login"); }} data-testid="logout-btn">
-            <Lock className="w-3.5 h-3.5 mr-1.5" /> Sign out
-          </Button>
-        </div>
-        <button
-          type="button"
-          onClick={() => setMenuOpen((v) => !v)}
-          className="md:hidden p-2 -mr-2 text-foreground text-2xl leading-none"
-          aria-label={menuOpen ? "Close menu" : "Open menu"}
-          aria-expanded={menuOpen}
-          data-testid="mobile-menu-toggle"
-        >
-          {menuOpen ? "✕" : "☰"}
-        </button>
-      </div>
-
-      {menuOpen && (
-        <div className="md:hidden bg-[#1e2d3d] border-t border-white/10 px-4 py-3 flex flex-col gap-4" data-testid="mobile-menu">
-          <Link to="/dashboard" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Leads</Link>
-          <Link to="/applications" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Applications</Link>
-          <Link to="/commissions" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Commissions</Link>
-          {(role === "admin" || role === "compliance") && (
-            <>
-              <Link to="/audit" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Audit Log</Link>
-              <Link to="/admin/compliance" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Compliance</Link>
-              <Link to="/admin/commissions" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Agent Commissions</Link>
-            </>
-          )}
-          {role === "admin" && (
-            <Link to="/admin/accounting" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Accounting</Link>
-          )}
-          <button
-            type="button"
-            onClick={() => { auth.logout(); navigate("/login"); setMenuOpen(false); }}
-            className="text-sm text-red-400 hover:text-red-300 py-2 text-left"
-            data-testid="mobile-logout-btn"
-          >
-            Sign out
-          </button>
-        </div>
-      )}
-    </header>
-  );
-}
-
+// ── Public footer (unchanged) ──────────────────────────────────────────────
 export function Footer() {
   return (
     <footer className="border-t border-border mt-20 bg-secondary/40">
       <div className="max-w-7xl mx-auto px-6 lg:px-10 py-10 grid md:grid-cols-3 gap-8 text-sm">
         <div>
           <div className="flex items-center gap-2 mb-3">
-            <div className="w-7 h-7 rounded-md bg-primary text-primary-foreground grid place-items-center font-bold" style={{fontFamily:'Outfit'}}>G</div>
-            <span className="font-semibold" style={{fontFamily:'Outfit'}}>Gruening Health &amp; Wealth</span>
+            <div className="w-7 h-7 rounded-md bg-primary text-primary-foreground grid place-items-center font-bold" style={{ fontFamily: "Outfit" }}>G</div>
+            <span className="font-semibold" style={{ fontFamily: "Outfit" }}>Gruening Health &amp; Wealth</span>
           </div>
           <p className="text-muted-foreground leading-relaxed">Independent Medicare advisors helping beneficiaries navigate coverage with clarity, confidence, and care.</p>
         </div>
@@ -152,5 +76,246 @@ export function Footer() {
         © {new Date().getFullYear()} Gruening Health &amp; Wealth · All rights reserved
       </div>
     </footer>
+  );
+}
+
+// Backward-compat shim: pages still importing AppHeader render nothing.
+// AppLayout now owns the authenticated chrome.
+export function AppHeader() {
+  return null;
+}
+
+// ── Internal helpers ───────────────────────────────────────────────────────
+function initials(user) {
+  const src = (user?.full_name || user?.email || "?").trim();
+  const parts = src.split(/\s+|@/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return src.slice(0, 2).toUpperCase();
+}
+
+function NavItem({ to, icon: Icon, label, onClick, testId }) {
+  return (
+    <NavLink
+      to={to}
+      end={to === "/dashboard"}
+      onClick={onClick}
+      data-testid={testId}
+      className={({ isActive }) =>
+        [
+          "group flex items-center gap-3 px-3 py-2 text-sm rounded-md border-l-2 transition-colors",
+          isActive
+            ? "border-[#e85d2f] bg-[#e85d2f]/10 text-white"
+            : "border-transparent text-white/55 hover:text-white hover:bg-white/5",
+        ].join(" ")
+      }
+    >
+      <Icon className="w-4 h-4 flex-shrink-0" />
+      <span className="truncate">{label}</span>
+    </NavLink>
+  );
+}
+
+function SectionLabel({ children }) {
+  return (
+    <div className="px-3 mt-5 mb-2 text-[10px] font-semibold tracking-[0.12em] text-white/40 uppercase">
+      {children}
+    </div>
+  );
+}
+
+function SidebarContent({ user, role, onNavigate, onSignOut }) {
+  const isAdmin = role === "admin";
+  const isAdminOrCompliance = role === "admin" || role === "compliance";
+  const displayName = user?.full_name || user?.email || "Agent";
+  return (
+    <div className="flex flex-col h-full text-white" style={{ background: SIDEBAR_BG }}>
+      {/* Logo */}
+      <div className="px-4 pt-5 pb-4 border-b border-white/5">
+        <Link to="/dashboard" onClick={onNavigate} className="flex items-center gap-2.5" data-testid="sidebar-brand">
+          <div
+            className="w-9 h-9 rounded-lg grid place-items-center text-base font-bold text-white"
+            style={{
+              background: `linear-gradient(135deg, ${ACCENT} 0%, #c84416 100%)`,
+              fontFamily: "Outfit",
+            }}
+          >
+            G
+          </div>
+          <div className="leading-tight">
+            <div className="text-sm font-semibold tracking-tight" style={{ fontFamily: "Outfit" }}>
+              Gruening H&amp;W
+            </div>
+            <div className="text-[11px] text-white/45 -mt-0.5">Agent Console</div>
+          </div>
+        </Link>
+      </div>
+
+      {/* Nav */}
+      <nav className="flex-1 overflow-y-auto px-2 py-3">
+        <SectionLabel>Main</SectionLabel>
+        <div className="space-y-0.5">
+          <NavItem to="/dashboard" icon={Users} label="Leads" onClick={onNavigate} testId="nav-dashboard" />
+          <NavItem to="/applications" icon={FileText} label="Applications" onClick={onNavigate} testId="nav-applications" />
+          <NavItem to="/commissions" icon={DollarSign} label="Commissions" onClick={onNavigate} testId="nav-commissions" />
+        </div>
+
+        {isAdminOrCompliance && (
+          <>
+            <SectionLabel>Admin</SectionLabel>
+            <div className="space-y-0.5">
+              <NavItem to="/audit" icon={ClipboardList} label="Audit Log" onClick={onNavigate} testId="nav-audit" />
+              <NavItem to="/admin/compliance" icon={Shield} label="Compliance" onClick={onNavigate} testId="nav-compliance" />
+              <NavItem to="/admin/commissions" icon={UserCheck} label="Agent Commissions" onClick={onNavigate} testId="nav-admin-commissions" />
+              {isAdmin && (
+                <NavItem to="/admin/accounting" icon={Calculator} label="Accounting" onClick={onNavigate} testId="nav-accounting" />
+              )}
+            </div>
+          </>
+        )}
+      </nav>
+
+      {/* HIPAA + user */}
+      <div className="px-3 pb-4">
+        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-300 mb-3">
+          <ShieldCheck className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="truncate">HIPAA-aligned · AWS Bedrock</span>
+        </div>
+
+        <div className="flex items-center gap-2.5 px-2 py-2 rounded-md bg-white/5">
+          <div
+            className="w-8 h-8 rounded-full grid place-items-center text-xs font-bold text-white flex-shrink-0"
+            style={{ background: `linear-gradient(135deg, ${ACCENT} 0%, #c84416 100%)` }}
+            aria-hidden="true"
+          >
+            {initials(user)}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-medium text-white truncate" data-testid="sidebar-user-name">
+              {displayName}
+            </div>
+            <div className="text-[10px] uppercase tracking-wider text-white/45 truncate">
+              {role || "agent"}
+            </div>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={onSignOut}
+          className="mt-2 w-full flex items-center justify-center gap-2 px-3 py-2 text-xs text-white/65 hover:text-white hover:bg-white/5 rounded-md transition-colors"
+          data-testid="logout-btn"
+        >
+          <LogOut className="w-3.5 h-3.5" />
+          Sign out
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── AppLayout ──────────────────────────────────────────────────────────────
+// Fixed 220px sidebar on the left, scrollable main content on the right.
+// On <md screens the sidebar is hidden by default and opens as an overlay.
+export function AppLayout({ children }) {
+  const user = auth.getUser();
+  const role = user?.role;
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Close the mobile drawer whenever the route changes.
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [location.pathname]);
+
+  function handleSignOut() {
+    auth.logout();
+    navigate("/login");
+  }
+
+  return (
+    <div className="min-h-screen bg-background">
+      {/* Desktop sidebar */}
+      <aside
+        className="hidden md:flex fixed inset-y-0 left-0 w-[220px] z-40 border-r border-white/5"
+        data-testid="app-sidebar"
+      >
+        <SidebarContent
+          user={user}
+          role={role}
+          onNavigate={() => {}}
+          onSignOut={handleSignOut}
+        />
+      </aside>
+
+      {/* Mobile top bar */}
+      <header
+        className="md:hidden sticky top-0 z-30 flex items-center justify-between h-12 px-3 border-b border-border bg-surface/90 backdrop-blur-md"
+        data-testid="mobile-topbar"
+      >
+        <button
+          type="button"
+          onClick={() => setMobileOpen(true)}
+          className="p-2 -ml-2 text-foreground"
+          aria-label="Open menu"
+          aria-expanded={mobileOpen}
+          data-testid="mobile-menu-toggle"
+        >
+          <Menu className="w-5 h-5" />
+        </button>
+        <Link to="/dashboard" className="flex items-center gap-2" data-testid="mobile-brand">
+          <div
+            className="w-6 h-6 rounded-md grid place-items-center text-[11px] font-bold text-white"
+            style={{
+              background: `linear-gradient(135deg, ${ACCENT} 0%, #c84416 100%)`,
+              fontFamily: "Outfit",
+            }}
+          >
+            G
+          </div>
+          <span className="text-sm font-semibold tracking-tight" style={{ fontFamily: "Outfit" }}>
+            Gruening H&amp;W
+          </span>
+        </Link>
+        <div className="w-9" aria-hidden="true" />
+      </header>
+
+      {/* Mobile drawer + backdrop */}
+      {mobileOpen && (
+        <div className="md:hidden fixed inset-0 z-50" data-testid="mobile-menu">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/50"
+            aria-label="Close menu"
+            onClick={() => setMobileOpen(false)}
+          />
+          <aside className="absolute inset-y-0 left-0 w-[260px] max-w-[80vw] shadow-xl">
+            <div className="flex justify-end absolute top-2 right-2 z-10">
+              <button
+                type="button"
+                onClick={() => setMobileOpen(false)}
+                className="p-2 text-white/70 hover:text-white"
+                aria-label="Close menu"
+                data-testid="mobile-menu-close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <SidebarContent
+              user={user}
+              role={role}
+              onNavigate={() => setMobileOpen(false)}
+              onSignOut={() => {
+                setMobileOpen(false);
+                handleSignOut();
+              }}
+            />
+          </aside>
+        </div>
+      )}
+
+      {/* Main content */}
+      <main className="md:pl-[220px] min-h-screen">{children}</main>
+    </div>
   );
 }
