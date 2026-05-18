@@ -213,14 +213,30 @@ _CSRF_EXEMPT_PATHS = {
     "/api/auth/register",
     "/api/auth/logout",
     "/api/auth/mfa/verify",  # called immediately after login pre-auth token issued
+    # Commission AI chat — Anthropic-backed POST. Auth is enforced by
+    # get_current_user (JWT, cookie OR header); CSRF exempt by product
+    # decision so the panel can post without echoing the csrf cookie.
+    "/api/commission/chat",
 }
+
+# Path prefixes for parameterised routes. CSRF-exempt when request.url.path
+# starts with any of these. Use sparingly — broader than exact match.
+_CSRF_EXEMPT_PREFIXES = (
+    # /api/commission/audit/mark-resolved/{record_id}
+    # Admin-only write, JWT-authenticated; record_id varies per call so we
+    # can't list every path literally.
+    "/api/commission/audit/mark-resolved/",
+)
 
 
 class CSRFMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.method not in _CSRF_METHODS:
             return await call_next(request)
-        if request.url.path in _CSRF_EXEMPT_PATHS:
+        path = request.url.path
+        if path in _CSRF_EXEMPT_PATHS:
+            return await call_next(request)
+        if any(path.startswith(p) for p in _CSRF_EXEMPT_PREFIXES):
             return await call_next(request)
         # Header-based auth (Authorization: Bearer …) is not vulnerable to CSRF
         # because browsers never auto-send custom Authorization headers from

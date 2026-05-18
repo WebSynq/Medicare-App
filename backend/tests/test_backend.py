@@ -306,6 +306,58 @@ def test_csrf_exempt_for_authorization_bearer(client, db, admin_token):
     assert r.status_code == 201
 
 
+def test_csrf_exempt_commission_chat(client, db, monkeypatch):
+    """POST /api/commission/chat is on the CSRF exempt list. A cookie-authed
+    call without X-CSRF-Token must not 403 — it should make it through to
+    the auth + endpoint logic."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    captured = {}
+    fake = _make_fake_anthropic_client(captured, {
+        "reply": "csrf-exempt path", "suggested_actions": [],
+    })
+    import anthropic
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", fake)
+
+    # Plant the cookie via login (no auth header used for the chat call).
+    login = client.post("/api/auth/login", json={
+        "email": os.environ["SEED_ADMIN_EMAIL"],
+        "password": os.environ["SEED_ADMIN_PASSWORD"],
+    })
+    assert login.status_code == 200
+
+    # POST without X-CSRF-Token. Pre-exemption this was 403; post-exemption
+    # the request reaches the endpoint and returns 200.
+    r = client.post("/api/commission/chat", json={"message": "ping"})
+    assert r.status_code == 200, r.text
+    assert r.json()["reply"] == "csrf-exempt path"
+
+
+async def test_csrf_exempt_commission_audit_mark_resolved(client, db, admin_headers):
+    """POST /api/commission/audit/mark-resolved/{record_id} is exempt via
+    prefix match. We log in as admin to get the cookie, then call the
+    endpoint via cookie auth without X-CSRF-Token — should reach the
+    endpoint (200) instead of being stopped at CSRF (403)."""
+    await _seed_production_rows(db, [{
+        "natural_key": "csrf-exempt-key", "agent_name": "Alice",
+        "revenue_expected": 500, "revenue_received": 400,
+    }])
+
+    # Plant cookies via cookie-authed login.
+    login = client.post("/api/auth/login", json={
+        "email": os.environ["SEED_ADMIN_EMAIL"],
+        "password": os.environ["SEED_ADMIN_PASSWORD"],
+    })
+    assert login.status_code == 200
+    # Strip the Authorization header path — TestClient never adds one;
+    # the only credential travelling is the cookie. No X-CSRF-Token header.
+    r = client.post(
+        "/api/commission/audit/mark-resolved/csrf-exempt-key",
+        json={"notes": "csrf-exempt prefix path"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "resolved"
+
+
 # ── Logout clears cookies ───────────────────────────────────────────────────
 def test_logout_clears_cookies(client, db):
     login = client.post("/api/auth/login", json={
