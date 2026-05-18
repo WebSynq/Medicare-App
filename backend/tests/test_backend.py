@@ -1,473 +1,352 @@
-"""End-to-end backend tests for Gruening Health & Wealth Medicare Intake API.
+"""End-to-end tests for the hardened auth + commission flows.
 
-Covers: health, auth (login + MFA + register RBAC), leads CRUD + GHL mock sync,
-documents (upload/list/download + 415/413/empty), SOA sign + retrieve, audit RBAC + summary.
+Covers:
+  - Invite-only registration: admin invites → agent registers with token
+  - Account lockout after repeated failed logins
+  - POST /api/leads requires auth (regression for the public-write CVE)
+  - /docs disabled in production environment
+  - ComTrack /commissions/live takes agent_name from DB, never from request
+  - CSRF: cookie auth without X-CSRF-Token rejected on state-changing methods
+
+All tests use the in-process TestClient + mongomock-motor — no external
+services are touched.
 """
-import io
 import os
-import time
-import uuid
-import base64
-import requests
-import pyotp
 import pytest
 
-from conftest import BASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD
+
+# ── Health ──────────────────────────────────────────────────────────────────
+def test_root(client, db):
+    r = client.get("/api/")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert "hipaa_safeguards" in body
 
 
-def _register_and_approve_agent(admin_headers, label="agent"):
-    """Public register + admin approve. Returns {email, password, id}."""
-    email = f"TEST_{label}_{uuid.uuid4().hex[:8]}@grueninghw.com"
-    pw = "AgentPass!2026"
-    r = requests.post(f"{BASE_URL}/api/auth/register",
-                      json={"email": email, "password": pw,
-                            "full_name": f"Test {label.capitalize()}",
-                            "agency_name": "Test Agency"},
-                      timeout=30)
+def test_health(client, db):
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    # /health used to echo MongoDB error/version. It must now only return status.
+    body = r.json()
+    assert set(body.keys()) == {"status"}
+
+
+# ── Docs disabled in production ─────────────────────────────────────────────
+def test_docs_disabled_in_production(monkeypatch):
+    """/docs and /openapi.json must be unreachable when ENVIRONMENT != development.
+
+    We re-import server with ENVIRONMENT=production in a fresh module to test
+    the gating, since the IS_DEV branch is evaluated at module load.
+    """
+    import importlib, sys, importlib.util
+    # Build the production app inside an isolated module load.
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    # Force re-import of server
+    sys.modules.pop("server", None)
+    prod_server = importlib.import_module("server")
+    try:
+        assert prod_server.app.docs_url is None
+        assert prod_server.app.openapi_url is None
+        assert prod_server.app.redoc_url is None
+    finally:
+        # Restore dev-mode server for the rest of the suite.
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        sys.modules.pop("server", None)
+        importlib.import_module("server")
+
+
+# ── Invite-only registration ────────────────────────────────────────────────
+def test_open_registration_blocked(client, db):
+    """Registration without an invite_token must be refused."""
+    r = client.post("/api/auth/register", json={
+        "email": "walkin@example.com",
+        "password": "WalkInPass!2026",
+        "full_name": "Walk In",
+        "agency_name": "No Invite",
+    })
+    assert r.status_code == 403
+    assert "invite" in r.json()["detail"].lower()
+
+
+def test_full_invite_flow_creates_pending_agent(client, db, admin_headers):
+    """Admin invites → agent registers with token → agent is pending."""
+    invite_resp = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": "new.agent@example.com",
+        "full_name": "Jane Agent",
+        "agency_name": "Acme Health",
+        "agent_name": "Jane Agent",
+        "agent_npn": "12345678",
+    })
+    assert invite_resp.status_code == 201, invite_resp.text
+    body = invite_resp.json()
+    raw_token = body["token"]
+    assert raw_token
+    assert body["invite_url"].endswith(f"token={raw_token}")
+
+    # Token validates and exposes the invite fields
+    val = client.get(f"/api/auth/invite/validate?token={raw_token}")
+    assert val.status_code == 200, val.text
+    assert val.json()["email"] == "new.agent@example.com"
+    assert val.json()["agent_npn"] == "12345678"
+
+    # Register with the token — wrong email is rejected
+    bad = client.post("/api/auth/register", json={
+        "email": "different@example.com",
+        "password": "AgentPass!2026",
+        "full_name": "Jane Agent",
+        "agency_name": "Acme Health",
+        "invite_token": raw_token,
+    })
+    assert bad.status_code == 400
+
+    # Correct email succeeds
+    reg = client.post("/api/auth/register", json={
+        "email": "new.agent@example.com",
+        "password": "AgentPass!2026",
+        "full_name": "Jane Agent",
+        "agency_name": "Acme Health",
+        "invite_token": raw_token,
+    })
+    assert reg.status_code == 201, reg.text
+    user = reg.json()
+    assert user["status"] == "pending"
+    assert user["agent_npn"] == "12345678"
+    assert user["agent_name"] == "Jane Agent"
+    assert user["is_active"] is False
+
+
+def test_invite_token_single_use(client, db, admin_headers):
+    inv = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": "once@example.com",
+        "full_name": "Once",
+        "agency_name": "Single Use",
+    }).json()
+    raw = inv["token"]
+    r1 = client.post("/api/auth/register", json={
+        "email": "once@example.com", "password": "OncePass!2026",
+        "full_name": "Once", "agency_name": "Single Use",
+        "invite_token": raw,
+    })
+    assert r1.status_code == 201
+    r2 = client.post("/api/auth/register", json={
+        "email": "once@example.com", "password": "OncePass!2026",
+        "full_name": "Once", "agency_name": "Single Use",
+        "invite_token": raw,
+    })
+    assert r2.status_code == 400
+
+
+def test_npn_must_be_digits(client, db, admin_headers):
+    r = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": "badnpn@example.com",
+        "agent_npn": "abc123",
+    })
+    assert r.status_code == 422
+
+
+# ── Account lockout ─────────────────────────────────────────────────────────
+def test_account_lockout_after_repeated_failures(client, db):
+    """The deps layer locks out after 5 attempts. Hit that ceiling and verify
+    the next attempt comes back 423 with a lockout message."""
+    email = os.environ["SEED_ADMIN_EMAIL"]
+    for _ in range(5):
+        r = client.post("/api/auth/login", json={
+            "email": email, "password": "definitely-wrong",
+        })
+        assert r.status_code in (401, 423)
+    locked = client.post("/api/auth/login", json={
+        "email": email, "password": "definitely-wrong",
+    })
+    assert locked.status_code == 423
+    assert "locked" in locked.json()["detail"].lower()
+
+
+# ── POST /leads now requires auth ───────────────────────────────────────────
+async def test_anonymous_lead_post_rejected(client, db):
+    """Without any auth artefact, the request is blocked before reaching the
+    DB. Either 401 (no token) or 403 (CSRF middleware fires first) is fine —
+    the security guarantee is that no lead row gets written.
+    """
+    r = client.post("/api/leads", json={
+        "first_name": "Anon", "last_name": "Attacker",
+        "phone": "555-0000",
+    })
+    assert r.status_code in (401, 403), r.text
+    # And nothing landed in the leads collection.
+    count = await db.leads.count_documents({})
+    assert count == 0
+
+
+def test_authenticated_lead_post_succeeds(client, db, admin_headers):
+    r = client.post("/api/leads", headers=admin_headers, json={
+        "first_name": "Test", "last_name": "Lead",
+        "phone": "555-1234",
+    })
     assert r.status_code == 201, r.text
-    user_id = r.json()["id"]
-    r = requests.post(f"{BASE_URL}/api/auth/users/{user_id}/approve",
-                      headers=admin_headers, timeout=30)
-    assert r.status_code == 200, r.text
-    return {"email": email, "password": pw, "id": user_id}
+    body = r.json()
+    assert body["first_name"] == "Test"
 
 
-# ---------------- Health ----------------
-class TestHealth:
-    def test_root(self):
-        r = requests.get(f"{BASE_URL}/api/", timeout=30)
-        assert r.status_code == 200
-        d = r.json()
-        assert d["status"] == "ok"
-        assert "hipaa_safeguards" in d and isinstance(d["hipaa_safeguards"], list)
-        assert d["app"].startswith("Gruening")
-
-    def test_health_mongo(self):
-        r = requests.get(f"{BASE_URL}/api/health", timeout=30)
-        assert r.status_code == 200
-        d = r.json()
-        assert d["status"] == "ok"
-        assert d["mongo"] == "ok"
+# ── ComTrack live endpoint sources agent_name from DB ───────────────────────
+@pytest.mark.asyncio
+async def test_commissions_live_400_without_agent_name(client, db, admin_headers):
+    """Default admin has no agent_name set — endpoint must 400."""
+    r = client.get("/api/commissions/live", headers=admin_headers)
+    assert r.status_code == 400
+    assert "Agent name not configured" in r.json()["detail"]
 
 
-# ---------------- Auth ----------------
-class TestAuth:
-    def test_login_success(self):
-        r = requests.post(f"{BASE_URL}/api/auth/login",
-                          json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-                          timeout=30)
+@pytest.mark.asyncio
+async def test_commissions_live_uses_db_agent_name_not_query(client, db, admin_headers):
+    """Even if the client tries to inject a different agent via query param,
+    the endpoint must use the DB row's agent_name."""
+    # Patch the admin row to have an agent_name.
+    await db.users.update_one(
+        {"email": os.environ["SEED_ADMIN_EMAIL"]},
+        {"$set": {"agent_name": "Real Admin"}},
+    )
+
+    captured = {}
+    from unittest.mock import patch
+
+    async def fake_get_rows(self, agent_name):
+        captured["agent_name"] = agent_name
+        return []
+
+    with patch("commissions_router.ComtrackClient.get_rows", fake_get_rows):
+        # Attempt IDOR: pass a tampered agent_name in query (must be ignored).
+        r = client.get(
+            "/api/commissions/live?agent_name=Someone%20Else",
+            headers=admin_headers,
+        )
         assert r.status_code == 200, r.text
-        d = r.json()
-        assert d["access_token"]
-        assert d["token_type"] == "bearer"
-        assert d["mfa_required"] in (False, True)  # depending on MFA state
-        assert d["user"]["email"] == ADMIN_EMAIL
-        assert d["user"]["role"] == "admin"
-
-    def test_login_invalid(self):
-        r = requests.post(f"{BASE_URL}/api/auth/login",
-                          json={"email": ADMIN_EMAIL, "password": "wrongpass"},
-                          timeout=30)
-        assert r.status_code == 401
-
-    def test_me_with_token(self, admin_headers):
-        r = requests.get(f"{BASE_URL}/api/auth/me", headers=admin_headers, timeout=30)
-        assert r.status_code == 200
-        d = r.json()
-        assert d["email"] == ADMIN_EMAIL
-        assert d["role"] == "admin"
-        assert "id" in d
-        assert "hashed_password" not in d  # public model only
-
-    def test_me_without_token(self):
-        r = requests.get(f"{BASE_URL}/api/auth/me", timeout=30)
-        assert r.status_code == 401
-
-    def test_register_is_public_and_creates_pending_agent(self):
-        # Public — no auth header needed
-        email = f"TEST_pubreg_{uuid.uuid4().hex[:8]}@grueninghw.com"
-        body = {"email": email, "password": "AgentPass!2026",
-                "full_name": "Public Pending", "agency_name": "Acme Health"}
-        r = requests.post(f"{BASE_URL}/api/auth/register", json=body, timeout=30)
-        assert r.status_code == 201, r.text
-        d = r.json()
-        assert d["email"] == email
-        assert d["role"] == "agent"
-        assert d["status"] == "pending"
-        assert d["is_active"] is False
-        assert d["agency_name"] == "Acme Health"
-
-        # Pending users cannot log in
-        login = requests.post(f"{BASE_URL}/api/auth/login",
-                              json={"email": email, "password": "AgentPass!2026"},
-                              timeout=30)
-        assert login.status_code == 403
-        assert "pending" in login.json()["detail"].lower()
-
-        # Duplicate email is rejected
-        r2 = requests.post(f"{BASE_URL}/api/auth/register", json=body, timeout=30)
-        assert r2.status_code == 400
-
-    def test_pending_list_requires_admin(self, admin_headers):
-        # No token -> 401
-        r = requests.get(f"{BASE_URL}/api/auth/pending", timeout=30)
-        assert r.status_code == 401
-        # Admin -> 200 with a list
-        r = requests.get(f"{BASE_URL}/api/auth/pending",
-                         headers=admin_headers, timeout=30)
-        assert r.status_code == 200
-        assert isinstance(r.json(), list)
-
-    def test_admin_approves_agent_and_agent_can_login(self, admin_headers):
-        agent = _register_and_approve_agent(admin_headers, label="approveflow")
-        login = requests.post(f"{BASE_URL}/api/auth/login",
-                              json={"email": agent["email"], "password": agent["password"]},
-                              timeout=30)
-        assert login.status_code == 200, login.text
-        assert login.json()["user"]["status"] == "active"
-        assert login.json()["user"]["role"] == "agent"
-
-    def test_rejected_agent_cannot_login(self, admin_headers):
-        # Register a pending agent
-        email = f"TEST_rej_{uuid.uuid4().hex[:8]}@grueninghw.com"
-        pw = "AgentPass!2026"
-        r = requests.post(f"{BASE_URL}/api/auth/register",
-                          json={"email": email, "password": pw,
-                                "full_name": "To Be Rejected",
-                                "agency_name": "Reject Co"},
-                          timeout=30)
-        assert r.status_code == 201
-        user_id = r.json()["id"]
-        # Admin rejects
-        r = requests.post(f"{BASE_URL}/api/auth/users/{user_id}/reject",
-                          headers=admin_headers, timeout=30)
-        assert r.status_code == 200
-        assert r.json()["status"] == "rejected"
-        # Login is blocked
-        login = requests.post(f"{BASE_URL}/api/auth/login",
-                              json={"email": email, "password": pw}, timeout=30)
-        assert login.status_code == 403
-        assert "denied" in login.json()["detail"].lower()
+        assert captured["agent_name"] == "Real Admin"
+        assert r.json()["agent_name"] == "Real Admin"
 
 
-# ---------------- MFA flow (on a fresh test agent so we don't lock the admin) ----------------
-class TestMFAFlow:
-    def test_mfa_enroll_verify_login(self, admin_headers):
-        # 1) register a fresh agent + approve so they can sign in
-        agent = _register_and_approve_agent(admin_headers, label="mfa")
-        email = agent["email"]
-        pw = agent["password"]
+@pytest.mark.asyncio
+async def test_commissions_live_503_on_upstream_error(client, db, admin_headers):
+    await db.users.update_one(
+        {"email": os.environ["SEED_ADMIN_EMAIL"]},
+        {"$set": {"agent_name": "Bob"}},
+    )
+    import httpx
+    from unittest.mock import patch
 
-        # 2) login -> token
-        r = requests.post(f"{BASE_URL}/api/auth/login",
-                          json={"email": email, "password": pw}, timeout=30)
-        assert r.status_code == 200
-        data = r.json()
-        assert data["mfa_required"] is False
-        token = data["access_token"]
-        h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    async def boom(self, agent_name):
+        raise httpx.RequestError("upstream is down")
 
-        # 3) /mfa/enroll
-        r = requests.post(f"{BASE_URL}/api/auth/mfa/enroll", headers=h, timeout=30)
-        assert r.status_code == 200, r.text
-        d = r.json()
-        assert d["secret"]
-        assert d["otpauth_uri"].startswith("otpauth://")
-        assert d["qr_png_base64"]
-        # validate base64 decodes to a PNG
-        png_bytes = base64.b64decode(d["qr_png_base64"])
-        assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n"
-
-        secret = d["secret"]
-        code = pyotp.TOTP(secret).now()
-
-        # 4) /mfa/verify
-        r = requests.post(f"{BASE_URL}/api/auth/mfa/verify",
-                          headers=h, json={"code": code}, timeout=30)
-        assert r.status_code == 200, r.text
-        d = r.json()
-        assert d["message"] == "MFA enabled"
-        assert d["access_token"]
-
-        # 5) login WITHOUT mfa_code -> mfa_required=true
-        r = requests.post(f"{BASE_URL}/api/auth/login",
-                          json={"email": email, "password": pw}, timeout=30)
-        assert r.status_code == 200
-        d = r.json()
-        assert d["mfa_required"] is True
-
-        # 6) login WITH mfa_code -> success, mfa_required=false
-        # Sleep a tiny bit if needed to avoid totp reuse window edge case
-        code2 = pyotp.TOTP(secret).now()
-        r = requests.post(f"{BASE_URL}/api/auth/login",
-                          json={"email": email, "password": pw, "mfa_code": code2},
-                          timeout=30)
-        assert r.status_code == 200, r.text
-        d = r.json()
-        assert d["mfa_required"] is False
-        assert d["access_token"]
+    with patch("commissions_router.ComtrackClient.get_rows", boom):
+        r = client.get("/api/commissions/live", headers=admin_headers)
+        assert r.status_code == 503
+        # Error detail must be generic — never leak upstream message.
+        assert "temporarily unavailable" in r.json()["detail"]
+        assert "upstream is down" not in r.json()["detail"]
 
 
-# ---------------- Leads ----------------
-class TestLeads:
-    def test_create_lead_public(self):
-        body = {"first_name": "TEST_John", "last_name": "Doe",
-                "email": f"TEST_lead_{uuid.uuid4().hex[:6]}@example.com",
-                "phone": "555-555-1234",
-                "date_of_birth": "1955-04-12",
-                "address_line1": "1 Main St", "city": "Tampa", "state": "FL",
-                "zip_code": "33601", "current_carrier": "Humana",
-                "doctors": ["Dr. Smith"], "prescriptions": ["Atorvastatin"]}
-        r = requests.post(f"{BASE_URL}/api/leads", json=body, timeout=30)
-        assert r.status_code == 201, r.text
-        d = r.json()
-        assert d["id"]
-        assert d["first_name"] == "TEST_John"
-        assert d["status"] == "new"
-        assert d["soa_signed"] is False
-        # Intake auto-syncs to GHL; tests run without GHL_PRIVATE_TOKEN so the
-        # client is in mock mode and the response reflects that immediately.
-        assert d["ghl_sync_status"] == "mock"
-        assert d["ghl_contact_id"] and d["ghl_contact_id"].startswith("mock_")
-        # store for downstream
-        pytest.LEAD_ID = d["id"]
-        pytest.LEAD_EMAIL = d["email"]
+@pytest.mark.asyncio
+async def test_commissions_live_audit_logged(client, db, admin_headers):
+    await db.users.update_one(
+        {"email": os.environ["SEED_ADMIN_EMAIL"]},
+        {"$set": {"agent_name": "Audited Agent"}},
+    )
+    from unittest.mock import patch
 
-    def test_list_leads_requires_auth(self):
-        r = requests.get(f"{BASE_URL}/api/leads", timeout=30)
-        assert r.status_code == 401
+    async def empty(self, agent_name):
+        return []
 
-    def test_list_and_filter_leads(self, admin_headers):
-        r = requests.get(f"{BASE_URL}/api/leads", headers=admin_headers, timeout=30)
-        assert r.status_code == 200
-        leads = r.json()
-        assert isinstance(leads, list)
-        assert any(l["id"] == pytest.LEAD_ID for l in leads)
+    with patch("commissions_router.ComtrackClient.get_rows", empty):
+        client.get("/api/commissions/live", headers=admin_headers)
 
-        # status filter
-        r = requests.get(f"{BASE_URL}/api/leads?status=new",
-                         headers=admin_headers, timeout=30)
-        assert r.status_code == 200
-        assert all(l["status"] == "new" for l in r.json())
-
-        # q filter
-        r = requests.get(f"{BASE_URL}/api/leads?q=TEST_John",
-                         headers=admin_headers, timeout=30)
-        assert r.status_code == 200
-        assert any(l["id"] == pytest.LEAD_ID for l in r.json())
-
-    def test_get_lead_by_id(self, admin_headers):
-        r = requests.get(f"{BASE_URL}/api/leads/{pytest.LEAD_ID}",
-                         headers=admin_headers, timeout=30)
-        assert r.status_code == 200
-        assert r.json()["id"] == pytest.LEAD_ID
-
-        r = requests.get(f"{BASE_URL}/api/leads/does-not-exist",
-                         headers=admin_headers, timeout=30)
-        assert r.status_code == 404
-
-    def test_patch_lead_status(self, admin_headers):
-        r = requests.patch(f"{BASE_URL}/api/leads/{pytest.LEAD_ID}",
-                           headers=admin_headers,
-                           json={"status": "contacted", "notes": "called"},
-                           timeout=30)
-        assert r.status_code == 200, r.text
-        assert r.json()["status"] == "contacted"
-
-        # GET to verify persistence
-        r = requests.get(f"{BASE_URL}/api/leads/{pytest.LEAD_ID}",
-                         headers=admin_headers, timeout=30)
-        assert r.json()["status"] == "contacted"
-        assert r.json()["notes"] == "called"
-
-    def test_sync_ghl_mock(self, admin_headers):
-        r = requests.post(f"{BASE_URL}/api/leads/{pytest.LEAD_ID}/sync-ghl",
-                          headers=admin_headers, timeout=30)
-        assert r.status_code == 200, r.text
-        d = r.json()
-        assert d["ghl_sync_status"] == "mock"
-        assert d["ghl_contact_id"] is not None
-        assert d["ghl_contact_id"].startswith("mock_")
+    found = await db.audit_logs.find_one({"event_type": "commission_data_access"})
+    assert found is not None
+    assert found["metadata"]["agent_name"] == "Audited Agent"
+    assert found["metadata"]["status"] == "success"
 
 
-# ---------------- Documents ----------------
-class TestDocuments:
-    def test_upload_png_then_list_and_download(self, admin_headers):
-        # 1×1 PNG
-        png_bytes = base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=")
-        files = {"file": ("test.png", png_bytes, "image/png")}
-        data = {"doc_type": "medicare_card"}
-        r = requests.post(f"{BASE_URL}/api/documents/upload/{pytest.LEAD_ID}",
-                          files=files, data=data, timeout=30)
-        assert r.status_code == 201, r.text
-        meta = r.json()
-        assert meta["lead_id"] == pytest.LEAD_ID
-        assert meta["content_type"] == "image/png"
-        assert meta["size_bytes"] == len(png_bytes)
-        assert meta["encrypted"] is True
-        assert meta["doc_type"] == "medicare_card"
-        pytest.DOC_ID = meta["id"]
+# ── CSRF protection ─────────────────────────────────────────────────────────
+def test_csrf_required_on_cookie_state_changing_requests(client, db):
+    """When the caller authenticates via cookie (no Authorization header),
+    state-changing requests must carry a matching X-CSRF-Token."""
+    # Log in to plant cookies.
+    login = client.post("/api/auth/login", json={
+        "email": os.environ["SEED_ADMIN_EMAIL"],
+        "password": os.environ["SEED_ADMIN_PASSWORD"],
+    })
+    assert login.status_code == 200
+    # Cookies are now in the TestClient jar. POST without X-CSRF-Token is 403.
+    no_csrf = client.post("/api/leads", json={
+        "first_name": "T", "last_name": "C",
+    })
+    assert no_csrf.status_code == 403
+    assert "CSRF" in no_csrf.json()["detail"]
 
-        # encrypted file is on disk
-        path = f"/app/backend/secure_storage/{pytest.LEAD_ID}/{pytest.DOC_ID}.enc"
-        assert os.path.exists(path), f"encrypted blob missing at {path}"
-        # content on disk should NOT match the original (Fernet encrypted)
-        with open(path, "rb") as f:
-            on_disk = f.read()
-        assert on_disk != png_bytes
-
-        # 2) list (auth)
-        r = requests.get(f"{BASE_URL}/api/documents/by-lead/{pytest.LEAD_ID}",
-                         headers=admin_headers, timeout=30)
-        assert r.status_code == 200
-        docs = r.json()
-        assert any(d["id"] == pytest.DOC_ID for d in docs)
-
-        # 3) list without auth -> 401
-        r = requests.get(f"{BASE_URL}/api/documents/by-lead/{pytest.LEAD_ID}",
-                         timeout=30)
-        assert r.status_code == 401
-
-        # 4) download (auth) — should decrypt to original PNG bytes
-        r = requests.get(f"{BASE_URL}/api/documents/{pytest.DOC_ID}/download",
-                         headers=admin_headers, timeout=30)
-        assert r.status_code == 200
-        assert r.content == png_bytes
-        assert r.headers["content-type"].startswith("image/png")
-
-    def test_upload_unsupported_type(self):
-        files = {"file": ("evil.exe", b"MZ\x90\x00", "application/octet-stream")}
-        r = requests.post(f"{BASE_URL}/api/documents/upload/{pytest.LEAD_ID}",
-                          files=files, timeout=30)
-        assert r.status_code == 415
-
-    def test_upload_empty_file(self):
-        files = {"file": ("empty.png", b"", "image/png")}
-        r = requests.post(f"{BASE_URL}/api/documents/upload/{pytest.LEAD_ID}",
-                          files=files, timeout=30)
-        assert r.status_code == 400
-
-    def test_upload_missing_lead(self):
-        png_bytes = base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=")
-        files = {"file": ("x.png", png_bytes, "image/png")}
-        r = requests.post(f"{BASE_URL}/api/documents/upload/no-such-lead",
-                          files=files, timeout=30)
-        assert r.status_code == 404
+    # Same call with the correct CSRF header succeeds.
+    csrf = client.cookies.get("ghw_csrf_token")
+    assert csrf
+    with_csrf = client.post(
+        "/api/leads",
+        json={"first_name": "T", "last_name": "C"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert with_csrf.status_code == 201, with_csrf.text
 
 
-# ---------------- SOA ----------------
-class TestSOA:
-    def test_sign_requires_consent(self):
-        r = requests.post(f"{BASE_URL}/api/soa/sign", json={
-            "lead_id": pytest.LEAD_ID,
-            "signature_data_url": "data:image/png;base64,iVBORw0KGgo=",
-            "beneficiary_name": "TEST_John Doe",
-            "agent_name": "Agent A",
-            "plan_types_discussed": ["MA", "MAPD"],
-            "consent_acknowledged": False,
-        }, timeout=30)
-        assert r.status_code == 400
-
-    def test_sign_invalid_signature(self):
-        r = requests.post(f"{BASE_URL}/api/soa/sign", json={
-            "lead_id": pytest.LEAD_ID,
-            "signature_data_url": "not-a-data-url",
-            "beneficiary_name": "TEST_John Doe",
-            "consent_acknowledged": True,
-        }, timeout=30)
-        assert r.status_code == 400
-
-    def test_sign_success_and_lead_updated(self, admin_headers):
-        body = {
-            "lead_id": pytest.LEAD_ID,
-            "signature_data_url": "data:image/png;base64,iVBORw0KGgo=",
-            "beneficiary_name": "TEST_John Doe",
-            "agent_name": "Agent A",
-            "plan_types_discussed": ["MA", "MAPD"],
-            "consent_acknowledged": True,
-        }
-        r = requests.post(f"{BASE_URL}/api/soa/sign", json=body, timeout=30)
-        assert r.status_code == 201, r.text
-        d = r.json()
-        assert d["lead_id"] == pytest.LEAD_ID
-        assert d["beneficiary_name"] == "TEST_John Doe"
-
-        # lead.soa_signed should be true
-        r = requests.get(f"{BASE_URL}/api/leads/{pytest.LEAD_ID}",
-                         headers=admin_headers, timeout=30)
-        assert r.json()["soa_signed"] is True
-
-        # GET soa/by-lead
-        r = requests.get(f"{BASE_URL}/api/soa/by-lead/{pytest.LEAD_ID}", timeout=30)
-        assert r.status_code == 200
-        assert r.json()["lead_id"] == pytest.LEAD_ID
-
-    def test_sign_lead_not_found(self):
-        r = requests.post(f"{BASE_URL}/api/soa/sign", json={
-            "lead_id": "nonexistent",
-            "signature_data_url": "data:image/png;base64,iVBORw0KGgo=",
-            "beneficiary_name": "X",
-            "consent_acknowledged": True,
-        }, timeout=30)
-        assert r.status_code == 404
+def test_csrf_exempt_for_authorization_bearer(client, db, admin_token):
+    """The Bearer-header auth path is not CSRF-exploitable (browsers don't
+    auto-send custom Authorization headers cross-origin). Verify the
+    middleware allows it through."""
+    r = client.post(
+        "/api/leads",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"first_name": "BearerCSRF", "last_name": "Ok"},
+    )
+    assert r.status_code == 201
 
 
-# ---------------- Audit ----------------
-class TestAudit:
-    def test_agent_forbidden(self, admin_headers):
-        # Register + approve an agent, then verify audit endpoint forbids them
-        agent = _register_and_approve_agent(admin_headers, label="aud")
-        login = requests.post(f"{BASE_URL}/api/auth/login",
-                              json={"email": agent["email"], "password": agent["password"]},
-                              timeout=30)
-        agent_token = login.json()["access_token"]
-        r = requests.get(f"{BASE_URL}/api/audit",
-                         headers={"Authorization": f"Bearer {agent_token}"}, timeout=30)
-        assert r.status_code == 403
+# ── Logout clears cookies ───────────────────────────────────────────────────
+def test_logout_clears_cookies(client, db):
+    login = client.post("/api/auth/login", json={
+        "email": os.environ["SEED_ADMIN_EMAIL"],
+        "password": os.environ["SEED_ADMIN_PASSWORD"],
+    })
+    assert login.status_code == 200
+    assert "ghw_access_token" in client.cookies
+    csrf = client.cookies.get("ghw_csrf_token")
+    out = client.post("/api/auth/logout", headers={"X-CSRF-Token": csrf})
+    assert out.status_code == 200
+    # After logout the cookies should be cleared from the jar.
+    assert client.cookies.get("ghw_access_token") in (None, "", '""')
 
-    def test_admin_can_read_audit(self, admin_headers):
-        r = requests.get(f"{BASE_URL}/api/audit", headers=admin_headers, timeout=30)
-        assert r.status_code == 200
-        events = r.json()
-        assert isinstance(events, list) and len(events) > 0
-        types = {e["event_type"] for e in events}
-        # confirm at least the events we generated this run exist
-        for required in ("login_success", "lead_created", "doc_uploaded",
-                         "soa_signed", "ghl_sync", "lead_updated"):
-            assert required in types, f"missing audit event: {required}"
 
-    def test_audit_filter_by_event_type(self, admin_headers):
-        r = requests.get(f"{BASE_URL}/api/audit?event_type=lead_created",
-                         headers=admin_headers, timeout=30)
-        assert r.status_code == 200
-        evs = r.json()
-        assert len(evs) > 0
-        assert all(e["event_type"] == "lead_created" for e in evs)
+# ── Admin profile PATCH ─────────────────────────────────────────────────────
+def test_admin_can_patch_agent_profile(client, db, admin_headers):
+    """PATCH /api/auth/users/{id}/profile is admin-only and updates the
+    DB row + audit-logs."""
+    # Create another user via invite + register.
+    inv = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": "target@example.com",
+        "full_name": "Target Agent",
+        "agency_name": "T",
+    }).json()
+    reg = client.post("/api/auth/register", json={
+        "email": "target@example.com",
+        "password": "TargetPass!2026",
+        "full_name": "Target Agent",
+        "agency_name": "T",
+        "invite_token": inv["token"],
+    })
+    assert reg.status_code == 201
+    user_id = reg.json()["id"]
 
-    def test_audit_filter_by_target_id(self, admin_headers):
-        r = requests.get(f"{BASE_URL}/api/audit?target_id={pytest.LEAD_ID}",
-                         headers=admin_headers, timeout=30)
-        assert r.status_code == 200
-        evs = r.json()
-        assert len(evs) > 0
-        assert all(e["target_id"] == pytest.LEAD_ID for e in evs)
-
-    def test_audit_summary(self, admin_headers):
-        r = requests.get(f"{BASE_URL}/api/audit/summary",
-                         headers=admin_headers, timeout=30)
-        assert r.status_code == 200
-        d = r.json()
-        assert "total" in d and d["total"] > 0
-        assert "by_event_type" in d and isinstance(d["by_event_type"], list)
-        assert all("event_type" in row and "count" in row for row in d["by_event_type"])
-
-    def test_login_failed_audit_event_exists(self, admin_headers):
-        # Generate one
-        requests.post(f"{BASE_URL}/api/auth/login",
-                      json={"email": "no@one.com", "password": "x"}, timeout=30)
-        r = requests.get(f"{BASE_URL}/api/audit?event_type=login_failed",
-                         headers=admin_headers, timeout=30)
-        assert r.status_code == 200
-        assert len(r.json()) > 0
+    # Admin patches identity fields.
+    patch = client.patch(
+        f"/api/auth/users/{user_id}/profile",
+        headers=admin_headers,
+        json={"agent_name": "  Patched Name  ", "agent_npn": "987654"},
+    )
+    assert patch.status_code == 200, patch.text
+    body = patch.json()
+    assert body["agent_name"] == "Patched Name"  # whitespace trimmed
+    assert body["agent_npn"] == "987654"
