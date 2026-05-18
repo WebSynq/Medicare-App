@@ -2,8 +2,11 @@
 """
 import_production.py
 ====================
-Import a Plecto-exported "GHW Production Tracker" CSV into the
-production_records MongoDB collection.
+Import the Plecto "GHW Production Tracker" into the production_records
+MongoDB collection. Accepts either an .xlsx file directly (the native
+Plecto / shared-drive shape — e.g. ROOKIE_SEASON_DOC.xlsx) or a .csv
+export. The file extension determines the reader; the row normalization
+and upsert logic are identical for both.
 
 The script is intentionally permissive about column naming because Plecto
 exports drift over time and we don't want a column rename to silently drop
@@ -11,6 +14,7 @@ rows. Required columns are looked up by a list of candidate names; missing
 required fields skip the row with a logged reason.
 
 Usage:
+    python scripts/import_production.py /path/to/ROOKIE_SEASON_DOC.xlsx
     python scripts/import_production.py /path/to/export.csv
 
 Env vars:
@@ -18,9 +22,14 @@ Env vars:
     DB_NAME    (required) — target database
 
 Behaviour:
+- For .xlsx files: reads the first (active) worksheet, row 1 is the header.
+  Cells already typed by Excel (numbers, dates) are coerced to string before
+  passing through the same normalizers used for CSV — keeps one source of
+  truth for parsing.
 - Premium is normalized: "$1,801.00" / "1801" / "1,801" → 1801.0 float
 - Revenue (commission) is normalized the same way → revenue_expected
-- Dates are parsed permissively (MM/DD/YYYY, YYYY-MM-DD, ISO, etc.)
+- Dates are parsed permissively (MM/DD/YYYY, YYYY-MM-DD, ISO, etc.).
+  Excel-typed datetime cells are converted via .date().isoformat().
 - Agent identity is resolved via the email-prefix map below; rows whose
   email prefix is unknown are imported with agent_name=None and logged.
 - Idempotency: each row's natural key (carrier|policy_number|effective_date|
@@ -41,7 +50,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 # Make backend/ importable so we can reuse the motor client config.
 ROOT = Path(__file__).resolve().parents[1]
@@ -280,8 +289,120 @@ def _row_to_doc(row: dict, cols: dict[str, Optional[str]]) -> Optional[dict]:
     }
 
 
+# ── File readers (CSV / XLSX) ───────────────────────────────────────────────
+def _cell_to_str(value) -> str:
+    """Coerce one openpyxl cell value to the string shape the CSV path produces.
+
+    openpyxl returns native Python types for typed cells (datetime, int, float,
+    bool). Stringifying here means the downstream normalizers (_normalize_money,
+    _parse_date, _normalize_bool_flag) only need to handle one input shape.
+    Empty cells (None) become "" so column resolution still finds the key.
+    """
+    if value is None:
+        return ""
+    # Preserve ISO-date precision instead of going through datetime.__str__,
+    # which prepends 'T00:00:00' for plain dates.
+    from datetime import date, datetime as _dt
+    if isinstance(value, _dt):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, float) and value.is_integer():
+        # "1801.0" → "1801" so the money regex doesn't trip on a trailing zero
+        return str(int(value))
+    return str(value).strip()
+
+
+def _iter_csv(path: Path) -> tuple[list[str], Iterator[dict]]:
+    """Open a CSV and return (header_list, dict-row iterator).
+
+    The caller is responsible for keeping the iterator scoped to a `with`
+    block; we expose the iterator directly so the upsert loop streams the
+    file rather than materializing it.
+    """
+    fh = path.open("r", encoding="utf-8-sig", newline="")
+    reader = csv.DictReader(fh)
+    if not reader.fieldnames:
+        fh.close()
+        raise SystemExit(f"{path}: no header row.")
+    headers = list(reader.fieldnames)
+
+    def _gen():
+        try:
+            for row in reader:
+                yield row
+        finally:
+            fh.close()
+
+    return headers, _gen()
+
+
+def _iter_xlsx(path: Path) -> tuple[list[str], Iterator[dict]]:
+    """Open an XLSX (first sheet) and yield dict rows shaped like csv.DictReader.
+
+    read_only=True streams the workbook (constant memory for large files);
+    data_only=True returns evaluated values for cells that contain formulas
+    so Excel-computed totals come through as numbers, not '=SUM(...)' strings.
+    """
+    try:
+        from openpyxl import load_workbook  # local import — script can still run on a CSV without openpyxl installed
+    except ImportError as e:
+        raise SystemExit(
+            "openpyxl is required to read .xlsx files. "
+            "Install with: pip install openpyxl"
+        ) from e
+
+    wb = load_workbook(filename=str(path), read_only=True, data_only=True)
+    ws = wb.active  # first / active sheet — matches Plecto's single-sheet export
+    rows_iter = ws.iter_rows(values_only=True)
+    try:
+        header_row = next(rows_iter)
+    except StopIteration:
+        wb.close()
+        raise SystemExit(f"{path}: workbook has no rows.")
+
+    # Drop trailing empty header columns (Excel often has phantom None cells
+    # past the last filled column) and coerce headers to plain strings.
+    headers = [_cell_to_str(h) for h in header_row]
+    while headers and headers[-1] == "":
+        headers.pop()
+    if not headers:
+        wb.close()
+        raise SystemExit(f"{path}: first row has no headers.")
+
+    def _gen():
+        try:
+            for row_values in rows_iter:
+                # Skip completely empty rows — Plecto sometimes leaves blank
+                # rows between sections in shared trackers.
+                if not any(v is not None and str(v).strip() != ""
+                            for v in row_values[:len(headers)]):
+                    continue
+                yield {
+                    headers[i]: _cell_to_str(row_values[i])
+                    for i in range(len(headers))
+                    if i < len(row_values)
+                }
+        finally:
+            wb.close()
+
+    return headers, _gen()
+
+
+def _open_rows(path: Path) -> tuple[list[str], Iterator[dict]]:
+    """Dispatch to the right reader based on file extension."""
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        return _iter_csv(path)
+    if suffix in (".xlsx", ".xlsm"):
+        return _iter_xlsx(path)
+    raise SystemExit(
+        f"Unsupported file extension: {suffix!r}. Expected .csv or .xlsx."
+    )
+
+
 # ── Main ────────────────────────────────────────────────────────────────────
-async def _import(csv_path: Path) -> dict:
+async def _import(source_path: Path) -> dict:
     mongo_url = os.environ.get("MONGO_URL")
     db_name = os.environ.get("DB_NAME")
     if not mongo_url or not db_name:
@@ -306,65 +427,62 @@ async def _import(csv_path: Path) -> dict:
     skipped_no_agent = 0
     total = 0
 
-    with csv_path.open("r", encoding="utf-8-sig", newline="") as fh:
-        reader = csv.DictReader(fh)
-        if not reader.fieldnames:
-            raise SystemExit(f"CSV {csv_path} has no header row.")
-        cols = _resolve_columns(list(reader.fieldnames))
-        missing = [k for k in ("agent_email", "carrier", "policy_number", "revenue")
-                   if cols.get(k) is None]
-        if missing:
-            logger.warning(
-                "CSV is missing recommended columns: %s. "
-                "Available headers: %s", missing, reader.fieldnames,
-            )
+    headers, row_iter = _open_rows(source_path)
+    cols = _resolve_columns(headers)
+    missing = [k for k in ("agent_email", "carrier", "policy_number", "revenue")
+               if cols.get(k) is None]
+    if missing:
+        logger.warning(
+            "%s is missing recommended columns: %s. Available headers: %s",
+            source_path.name, missing, headers,
+        )
 
-        for row in reader:
-            total += 1
-            doc = _row_to_doc(row, cols)
-            if doc is None:
-                skipped_no_key += 1
-                continue
-            if doc["agent_name"] is None:
-                skipped_no_agent += 1
-                logger.warning("Row %d: unknown agent email %r — keeping with agent_name=null",
-                                total, doc.get("agent_email"))
+    for row in row_iter:
+        total += 1
+        doc = _row_to_doc(row, cols)
+        if doc is None:
+            skipped_no_key += 1
+            continue
+        if doc["agent_name"] is None:
+            skipped_no_agent += 1
+            logger.warning("Row %d: unknown agent email %r — keeping with agent_name=null",
+                            total, doc.get("agent_email"))
 
-            result = await coll.update_one(
-                {"natural_key": doc["natural_key"]},
-                {
-                    "$set": {
-                        # Refreshable fields — always overwrite from CSV
-                        "agent_email": doc["agent_email"],
-                        "agent_name": doc["agent_name"],
-                        "client_name": doc["client_name"],
-                        "product": doc["product"],
-                        "state": doc["state"],
-                        "submitted_date": doc["submitted_date"],
-                        "premium_monthly": doc["premium_monthly"],
-                        "premium_annual": doc["premium_annual"],
-                        "revenue_expected": doc["revenue_expected"],
-                        "ab_synced": doc["ab_synced"],
-                        "updated_at": doc["updated_at"],
-                    },
-                    # Set-once fields — preserve across re-imports
-                    "$setOnInsert": {
-                        "natural_key": doc["natural_key"],
-                        "policy_number": doc["policy_number"],
-                        "carrier": doc["carrier"],
-                        "effective_date": doc["effective_date"],
-                        "revenue_received": None,
-                        "audit_status": "pending",
-                        "audit_notes": None,
-                        "imported_at": doc["imported_at"],
-                    },
+        result = await coll.update_one(
+            {"natural_key": doc["natural_key"]},
+            {
+                "$set": {
+                    # Refreshable fields — always overwrite from source
+                    "agent_email": doc["agent_email"],
+                    "agent_name": doc["agent_name"],
+                    "client_name": doc["client_name"],
+                    "product": doc["product"],
+                    "state": doc["state"],
+                    "submitted_date": doc["submitted_date"],
+                    "premium_monthly": doc["premium_monthly"],
+                    "premium_annual": doc["premium_annual"],
+                    "revenue_expected": doc["revenue_expected"],
+                    "ab_synced": doc["ab_synced"],
+                    "updated_at": doc["updated_at"],
                 },
-                upsert=True,
-            )
-            if result.upserted_id is not None:
-                inserted += 1
-            elif result.modified_count:
-                updated += 1
+                # Set-once fields — preserve across re-imports
+                "$setOnInsert": {
+                    "natural_key": doc["natural_key"],
+                    "policy_number": doc["policy_number"],
+                    "carrier": doc["carrier"],
+                    "effective_date": doc["effective_date"],
+                    "revenue_received": None,
+                    "audit_status": "pending",
+                    "audit_notes": None,
+                    "imported_at": doc["imported_at"],
+                },
+            },
+            upsert=True,
+        )
+        if result.upserted_id is not None:
+            inserted += 1
+        elif result.modified_count:
+            updated += 1
 
     client.close()
     return {
@@ -378,15 +496,22 @@ async def _import(csv_path: Path) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Import a Plecto production tracker CSV into production_records."
+        description=(
+            "Import the Plecto GHW Production Tracker into production_records. "
+            "Accepts .xlsx (e.g. ROOKIE_SEASON_DOC.xlsx) or .csv. "
+            "Idempotent — safe to re-run."
+        ),
     )
-    parser.add_argument("csv_path", type=Path,
-                        help="Path to the exported CSV file.")
+    parser.add_argument(
+        "source_path",
+        type=Path,
+        help="Path to the Plecto tracker file (.xlsx or .csv).",
+    )
     args = parser.parse_args()
-    if not args.csv_path.exists():
-        raise SystemExit(f"CSV not found: {args.csv_path}")
+    if not args.source_path.exists():
+        raise SystemExit(f"File not found: {args.source_path}")
 
-    stats = asyncio.run(_import(args.csv_path))
+    stats = asyncio.run(_import(args.source_path))
     logger.info(
         "Import done: total=%d inserted=%d updated=%d skipped_no_key=%d skipped_no_agent=%d",
         stats["total_rows"], stats["inserted"], stats["updated"],
