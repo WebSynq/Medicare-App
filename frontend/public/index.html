@@ -111,11 +111,26 @@
                     }),
                     (e.__SV = 1));
             })(document, window.posthog || []);
+            // HIPAA NOTE: this app handles ePHI (MBI numbers, DOB, prescriptions,
+            // signatures). PostHog session replay records DOM events including
+            // form input values by default, which would exfiltrate PHI to a
+            // third party with no BAA. We disable replay entirely and rely on
+            // identified analytics only.
             posthog.init("phc_xAvL2Iq4tFmANRE7kzbKwaSqp1HJjN7x48s3vr0CMjs", {
                 api_host: "https://us.i.posthog.com",
-                person_profiles: "identified_only", // or 'always' to create profiles for anonymous users as well,
+                person_profiles: "identified_only",
+                disable_session_recording: true,
+                autocapture: false,        // do not capture click text / form values
+                capture_pageview: true,
+                capture_pageleave: true,
+                disable_surveys: true,
+                disable_external_dependency_loading: false,
                 session_recording: {
-                    recordCrossOriginIframes: true,
+                    // Defense in depth — if a future config flips replay back on,
+                    // these will still strip PHI from any recordings.
+                    maskAllInputs: true,
+                    maskTextSelector: "*",
+                    recordCrossOriginIframes: false,
                     capturePerformance: false,
                 },
             });
