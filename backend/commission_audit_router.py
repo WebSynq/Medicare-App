@@ -46,10 +46,40 @@ limiter = Limiter(key_func=get_remote_address)
 ALLOWED_STATUSES = {"underpaid", "missing", "overpaid", "matched",
                      "pending", "resolved"}
 
-# Discrepancy threshold: gaps within this absolute dollar amount count as
-# "matched" (rounding, micro-fee diffs). Beyond it, the gap classifies as
-# under/overpaid. Externalised here for one-place tuning.
-MATCH_TOLERANCE_USD = 1.00
+# Discrepancy bands. Anything within ±5% of the expected amount counts as
+# "matched" (rounding, micro-fee diffs, carrier withholdings). Outside the
+# band the gap classifies as under/overpaid. Bands are symmetric and shared
+# with comtrack_sync.py so the daily sync writes the same status the reads
+# would compute.
+MATCH_BAND_LOW = 0.95
+MATCH_BAND_HIGH = 1.05
+
+
+def _classify_from_amounts(expected, received) -> str:
+    """Classify a (expected, received) pair into the audit taxonomy.
+
+    Pure function — no DB, no record dict — so comtrack_sync.py can call it
+    when writing back the daily sync results. Edge cases:
+      - received None  → pending if expected None, else missing
+      - received 0     → matched if expected 0, else missing
+      - expected None  → overpaid if received > 0, else matched
+      - expected 0     → overpaid (we got paid for an untracked policy)
+      - else           → ratio bands (5%/5%)
+    """
+    if received is None:
+        return "pending" if expected is None else "missing"
+    if expected is None:
+        return "overpaid" if received > 0 else "matched"
+    if received == 0:
+        return "matched" if expected == 0 else "missing"
+    if expected == 0:
+        return "overpaid"
+    ratio = received / expected
+    if ratio < MATCH_BAND_LOW:
+        return "underpaid"
+    if ratio > MATCH_BAND_HIGH:
+        return "overpaid"
+    return "matched"
 
 
 def _period_filter(period: str) -> Optional[dict]:
@@ -76,16 +106,8 @@ def _classify(record: dict) -> str:
     """
     if record.get("audit_status") == "resolved":
         return "resolved"
-    expected = record.get("revenue_expected")
-    received = record.get("revenue_received")
-    if received is None:
-        return "pending" if expected is None else "missing"
-    if expected is None:
-        return "overpaid"
-    gap = received - expected
-    if abs(gap) <= MATCH_TOLERANCE_USD:
-        return "matched"
-    return "underpaid" if gap < 0 else "overpaid"
+    return _classify_from_amounts(record.get("revenue_expected"),
+                                   record.get("revenue_received"))
 
 
 def _gap(record: dict) -> float:
@@ -266,6 +288,53 @@ async def audit_summary(
         "policies": policies,
         "period": period,
     }
+
+
+# ── GET /commission/sync/status — admin-only ───────────────────────────────
+# Returns the most recent ComTrack sync run summary. Admin-only because the
+# stats include error categories and per-agent unmatched counts that aren't
+# meant for agent self-serve.
+@chat_router.get("/sync/status")
+async def commission_sync_status(
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    """Latest run of the ComTrack daily sync (admin only)."""
+    latest = await db.commission_sync_runs.find_one(
+        {}, {"_id": 0}, sort=[("completed_at", -1)])
+    if not latest:
+        return {"last_run": None,
+                "mock_mode": not bool(os.environ.get("COMTRACK_API_KEY", "").strip())}
+    return {"last_run": latest,
+            "mock_mode": latest.get("mock_mode", False)}
+
+
+# ── POST /commission/sync/run — admin-only manual trigger ──────────────────
+# On-demand re-sync (without waiting for the 06:00 UTC cron). Useful for
+# admins reconciling fresh statements mid-day. Same code path as the cron
+# job, so behaviour is identical.
+@chat_router.post("/sync/run")
+@limiter.limit("6/hour")
+async def commission_sync_run_now(
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    """Trigger an immediate ComTrack sync (admin only). Audited."""
+    # Lazy import to avoid a circular import (comtrack_sync imports this module).
+    from comtrack_sync import run_sync
+    result = await run_sync(db, triggered_by=f"manual:{current_user.get('email')}")
+    await write_audit(
+        db, "commission_sync_manual_run",
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
+        request=request,
+        metadata={"agents_processed": result.get("agents_processed"),
+                   "records_updated": result.get("records_updated"),
+                   "status": result.get("status")},
+    )
+    return result
 
 
 # ── POST /commission/audit/mark-resolved/{record_id} ───────────────────────

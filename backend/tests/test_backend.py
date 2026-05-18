@@ -830,3 +830,130 @@ async def test_leaderboard_audit_logged(client, db, admin_headers):
     entry = await db.audit_logs.find_one({"event_type": "leaderboard_viewed"})
     assert entry is not None
     assert entry["metadata"]["period"] == "month"
+
+
+# ── ComTrack daily sync ─────────────────────────────────────────────────────
+async def test_comtrack_sync_status_admin_only(client, db, admin_headers):
+    """GET /api/commission/sync/status returns 403 for non-admins."""
+    inv = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": "agent.peep@example.com", "full_name": "Peep",
+        "agency_name": "P", "agent_name": "Peep",
+    }).json()
+    reg = client.post("/api/auth/register", json={
+        "email": "agent.peep@example.com", "password": "PeepPass!2026",
+        "full_name": "Peep", "agency_name": "P",
+        "invite_token": inv["token"],
+    })
+    client.post(f"/api/auth/users/{reg.json()['id']}/approve",
+                headers=admin_headers)
+    peep_login = client.post("/api/auth/login", json={
+        "email": "agent.peep@example.com", "password": "PeepPass!2026",
+    })
+    peep_headers = {"Authorization": f"Bearer {peep_login.json()['access_token']}"}
+
+    nope = client.get("/api/commission/sync/status", headers=peep_headers)
+    assert nope.status_code == 403
+
+    ok = client.get("/api/commission/sync/status", headers=admin_headers)
+    assert ok.status_code == 200
+    assert ok.json()["last_run"] is None  # no runs yet
+    assert ok.json()["mock_mode"] is True
+
+
+async def test_comtrack_sync_runs_and_updates_records(client, db, admin_headers):
+    """End-to-end: seed agent + production record, run sync, observe write-back."""
+    # Seed an agent user with an agent_name matching what we'll put on the
+    # production record below. ComtrackClient.mock returns its mock rows with
+    # the requested agent_name applied to every row.
+    inv = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": "agent.demo@example.com", "full_name": "Demo Agent",
+        "agency_name": "D", "agent_name": "Demo Agent",
+    }).json()
+    reg = client.post("/api/auth/register", json={
+        "email": "agent.demo@example.com", "password": "DemoPass!2026",
+        "full_name": "Demo Agent", "agency_name": "D",
+        "invite_token": inv["token"],
+    })
+    client.post(f"/api/auth/users/{reg.json()['id']}/approve",
+                headers=admin_headers)
+
+    # Production record with revenue_expected near the mock's commission so
+    # the resulting ratio lands in the matched band (mock row commission
+    # for MOCK-001 = 278.69; expected 280 → ratio 0.995 → matched).
+    await _seed_production_rows(db, [
+        {"natural_key": "sync-test-1", "agent_name": "Demo Agent",
+         "carrier": "Aetna", "policy_number": "MOCK-001",
+         "revenue_expected": 280.0, "revenue_received": None},
+    ])
+
+    # Manual trigger (same code path as scheduled job)
+    r = client.post("/api/commission/sync/run", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["agents_processed"] >= 1
+    assert body["records_updated"] >= 1
+    assert body["mock_mode"] is True
+
+    # Record now has revenue_received populated and audit_status flipped.
+    updated = await db.production_records.find_one({"natural_key": "sync-test-1"})
+    assert updated["revenue_received"] == 278.69
+    assert updated["audit_status"] == "matched"
+    assert updated.get("comtrack_synced_at")
+
+    # And /sync/status now returns the last run.
+    status = client.get("/api/commission/sync/status", headers=admin_headers)
+    assert status.status_code == 200
+    assert status.json()["last_run"]["records_updated"] >= 1
+
+
+async def test_comtrack_sync_skips_resolved(client, db, admin_headers):
+    """Sync must never overwrite an admin-resolved row."""
+    inv = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": "agent.resv@example.com", "full_name": "Demo Agent",
+        "agency_name": "R", "agent_name": "Demo Agent",
+    }).json()
+    reg = client.post("/api/auth/register", json={
+        "email": "agent.resv@example.com", "password": "ResvPass!2026",
+        "full_name": "Demo Agent", "agency_name": "R",
+        "invite_token": inv["token"],
+    })
+    client.post(f"/api/auth/users/{reg.json()['id']}/approve",
+                headers=admin_headers)
+
+    await _seed_production_rows(db, [
+        {"natural_key": "resolved-row", "agent_name": "Demo Agent",
+         "carrier": "Aetna", "policy_number": "MOCK-001",
+         "revenue_expected": 1000.0, "revenue_received": 100.0,
+         "audit_status": "resolved"},
+    ])
+
+    r = client.post("/api/commission/sync/run", headers=admin_headers)
+    assert r.status_code == 200
+
+    # Untouched: revenue_received and audit_status stay as seeded.
+    row = await db.production_records.find_one({"natural_key": "resolved-row"})
+    assert row["revenue_received"] == 100.0
+    assert row["audit_status"] == "resolved"
+
+
+def test_classify_from_amounts_bands():
+    """Unit-test the shared classifier covers every edge case."""
+    from commission_audit_router import _classify_from_amounts as c
+    # Null received
+    assert c(None, None) == "pending"
+    assert c(100, None) == "missing"
+    # Zero received
+    assert c(0, 0) == "matched"
+    assert c(100, 0) == "missing"
+    # Null expected
+    assert c(None, 50) == "overpaid"
+    assert c(None, 0) == "matched"
+    # Zero expected with positive received
+    assert c(0, 50) == "overpaid"
+    # Ratio bands
+    assert c(100, 100) == "matched"
+    assert c(100, 95) == "matched"     # exactly 0.95 → matched (not <)
+    assert c(100, 94) == "underpaid"
+    assert c(100, 105) == "matched"    # exactly 1.05 → matched (not >)
+    assert c(100, 106) == "overpaid"

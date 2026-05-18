@@ -226,6 +226,8 @@ _CSRF_EXEMPT_PREFIXES = (
     # Admin-only write, JWT-authenticated; record_id varies per call so we
     # can't list every path literally.
     "/api/commission/audit/mark-resolved/",
+    # /api/commission/sync/run — admin-only manual ComTrack sync.
+    "/api/commission/sync/",
 )
 
 
@@ -323,5 +325,24 @@ async def on_startup():
         expireAfterSeconds=0,
     )
 
+    # Daily ComTrack sync run log
+    await db.commission_sync_runs.create_index("completed_at")
+
     await seed_admin(db)
     logger.info("Startup complete. Admin seeded if missing.")
+
+    # Boot the daily ComTrack reconciliation scheduler. Gated by
+    # DISABLE_SCHEDULER=1 (set in tests/conftest.py) so pytest never starts
+    # a background timer that would leak between tests.
+    from comtrack_sync import start_scheduler
+    app.state.comtrack_scheduler = start_scheduler(get_db)
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    sched = getattr(app.state, "comtrack_scheduler", None)
+    if sched is not None:
+        try:
+            sched.shutdown(wait=False)
+        except Exception as e:
+            logger.warning("Scheduler shutdown error: %s", e)

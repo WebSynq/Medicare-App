@@ -25,6 +25,9 @@ os.environ.setdefault("SEED_ADMIN_EMAIL", "admin@grueninghw.com")
 os.environ.setdefault("SEED_ADMIN_PASSWORD", "TestAdmin!2026Pass")
 # Force ComTrack into mock mode so tests don't hit commissionconnector.com.
 os.environ["COMTRACK_API_KEY"] = ""
+# Disable the daily ComTrack scheduler — pytest must never spin up a
+# background AsyncIOScheduler that would leak between tests.
+os.environ["DISABLE_SCHEDULER"] = "1"
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
