@@ -11,6 +11,7 @@ Covers:
 All tests use the in-process TestClient + mongomock-motor — no external
 services are touched.
 """
+import json
 import os
 import pytest
 
@@ -513,3 +514,182 @@ async def test_commission_audit_mark_resolved_admin_only(client, db, admin_heade
     entry = await db.audit_logs.find_one({"event_type": "commission_audit_resolved"})
     assert entry is not None
     assert entry["metadata"]["policy_number"]
+
+
+# ── Commission AI chat endpoint ─────────────────────────────────────────────
+class _FakeUsage:
+    def __init__(self, input_tokens=100, output_tokens=200,
+                 cache_read_input_tokens=0):
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.cache_read_input_tokens = cache_read_input_tokens
+        self.cache_creation_input_tokens = 0
+
+
+class _FakeBlock:
+    def __init__(self, text):
+        self.type = "text"
+        self.text = text
+
+
+class _FakeAnthropicResponse:
+    def __init__(self, payload):
+        self.content = [_FakeBlock(json.dumps(payload))]
+        self.usage = _FakeUsage()
+        self.stop_reason = "end_turn"
+
+
+def _make_fake_anthropic_client(captured: dict, payload: dict):
+    """Builds a stand-in for anthropic.AsyncAnthropic with a single
+    `messages.create` coroutine that records its kwargs and returns a
+    fixed payload."""
+
+    async def fake_create(**kwargs):
+        captured["kwargs"] = kwargs
+        return _FakeAnthropicResponse(payload)
+
+    class _Messages:
+        create = staticmethod(fake_create)
+
+    class _FakeClient:
+        def __init__(self, api_key=None):
+            captured["api_key_received"] = api_key
+            self.messages = _Messages()
+
+    return _FakeClient
+
+
+async def test_commission_chat_returns_structured_reply(client, db,
+                                                          admin_headers, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    await _seed_production_rows(db, [
+        {"agent_name": "Alice", "revenue_expected": 500, "revenue_received": 400,
+         "carrier": "Aetna", "policy_number": "POL-1"},
+    ])
+
+    captured = {}
+    fake_payload = {
+        "reply": "Aetna underpaid POL-1 by $100.",
+        "suggested_actions": ["Draft dispute letter to Aetna for POL-1"],
+    }
+    fake_cls = _make_fake_anthropic_client(captured, fake_payload)
+    # Patch the lazy import inside commission_audit_router
+    import anthropic
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", fake_cls)
+
+    r = client.post("/api/commission/chat", headers=admin_headers,
+                     json={"message": "Which carrier underpaid me?"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["reply"].startswith("Aetna underpaid")
+    assert body["suggested_actions"] == ["Draft dispute letter to Aetna for POL-1"]
+
+    # API key was read from env, not from request
+    assert captured["api_key_received"] == "test-anthropic-key"
+    # Model + cache_control wired correctly
+    kw = captured["kwargs"]
+    assert kw["model"] == "claude-sonnet-4-6"
+    assert kw["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert kw["thinking"] == {"type": "adaptive"}
+    # Context is injected in the user message
+    user_content = kw["messages"][0]["content"]
+    assert "commission_context" in user_content
+    assert "POL-1" in user_content
+
+
+async def test_commission_chat_503_when_api_key_missing(client, db,
+                                                          admin_headers, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    r = client.post("/api/commission/chat", headers=admin_headers,
+                     json={"message": "Anything?"})
+    assert r.status_code == 503
+    assert "temporarily unavailable" in r.json()["detail"]
+    # And the gap is audit-logged
+    entry = await db.audit_logs.find_one({"event_type": "commission_chat_unavailable"})
+    assert entry is not None
+
+
+async def test_commission_chat_idor_scoped_context(client, db,
+                                                      admin_headers, monkeypatch):
+    """An agent's chat must only inject their own production records as
+    context. Even if another agent's row exists in the DB, it must not
+    appear in the prompt sent to Anthropic."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    # Invite + register + approve Bob
+    inv = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": "agent.idor@example.com", "full_name": "Idor Bob",
+        "agency_name": "B", "agent_name": "Idor Bob",
+    }).json()
+    reg = client.post("/api/auth/register", json={
+        "email": "agent.idor@example.com", "password": "IdorPass!2026",
+        "full_name": "Idor Bob", "agency_name": "B",
+        "invite_token": inv["token"],
+    })
+    client.post(f"/api/auth/users/{reg.json()['id']}/approve",
+                headers=admin_headers)
+    bob_login = client.post("/api/auth/login", json={
+        "email": "agent.idor@example.com", "password": "IdorPass!2026",
+    })
+    bob_headers = {"Authorization": f"Bearer {bob_login.json()['access_token']}"}
+
+    await _seed_production_rows(db, [
+        {"agent_name": "Alice", "policy_number": "ALICE-001",
+         "revenue_expected": 999},
+        {"agent_name": "Idor Bob", "policy_number": "BOB-001",
+         "revenue_expected": 100},
+    ])
+
+    captured = {}
+    fake = _make_fake_anthropic_client(captured, {
+        "reply": "ok", "suggested_actions": [],
+    })
+    import anthropic
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", fake)
+
+    r = client.post("/api/commission/chat", headers=bob_headers,
+                     json={"message": "Show me everything you know."})
+    assert r.status_code == 200, r.text
+    sent = captured["kwargs"]["messages"][0]["content"]
+    assert "BOB-001" in sent
+    # Alice's record must not be in the prompt the model receives
+    assert "ALICE-001" not in sent
+
+
+async def test_commission_chat_rate_limit_per_user(client, db,
+                                                      admin_headers, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    captured = {}
+    fake = _make_fake_anthropic_client(captured, {"reply": "ok",
+                                                    "suggested_actions": []})
+    import anthropic
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", fake)
+
+    # Burn the 20-call budget
+    for _ in range(20):
+        r = client.post("/api/commission/chat", headers=admin_headers,
+                         json={"message": "ping"})
+        assert r.status_code == 200, r.text
+    # 21st call is throttled
+    limited = client.post("/api/commission/chat", headers=admin_headers,
+                            json={"message": "ping"})
+    assert limited.status_code == 429
+    assert "Rate limit" in limited.json()["detail"]
+
+
+async def test_commission_chat_audit_logged(client, db, admin_headers, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    captured = {}
+    fake = _make_fake_anthropic_client(captured, {
+        "reply": "Here are your top gaps.",
+        "suggested_actions": ["Review POL-1", "Mark POL-2 resolved"],
+    })
+    import anthropic
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", fake)
+
+    client.post("/api/commission/chat", headers=admin_headers,
+                 json={"message": "What are my biggest gaps?"})
+    entry = await db.audit_logs.find_one({"event_type": "commission_chat"})
+    assert entry is not None
+    assert entry["metadata"]["actions_count"] == 2
+    assert "biggest gaps" in entry["metadata"]["question_excerpt"]

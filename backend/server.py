@@ -27,7 +27,7 @@ from leads_router import router as leads_router  # noqa: E402
 from documents_router import router as documents_router  # noqa: E402
 from commissions_router import router as commissions_router  # noqa: E402
 from admin_commissions_router import router as admin_commissions_router  # noqa: E402
-from commission_audit_router import router as commission_audit_router  # noqa: E402
+from commission_audit_router import router as commission_audit_router, chat_router as commission_chat_router  # noqa: E402
 from soa_router import router as soa_router  # noqa: E402
 from audit_router import router as audit_router  # noqa: E402
 from seed import seed_admin  # noqa: E402
@@ -123,6 +123,7 @@ app.include_router(documents_router, prefix="/api")
 app.include_router(commissions_router, prefix="/api")
 app.include_router(admin_commissions_router, prefix="/api")
 app.include_router(commission_audit_router, prefix="/api")
+app.include_router(commission_chat_router, prefix="/api")
 app.include_router(soa_router, prefix="/api")
 app.include_router(audit_router, prefix="/api")
 
@@ -294,6 +295,14 @@ async def on_startup():
     await db.commission_rate_limits.create_index(
         "expires_at",
         expireAfterSeconds=0,  # auto-evict counters once the window closes
+    )
+
+    # AI chat — per-user rate-limit counters (separate bucket from /live)
+    await db.commission_chat_rate_limits.create_index("user_id")
+    await db.commission_chat_rate_limits.create_index("called_at")
+    await db.commission_chat_rate_limits.create_index(
+        "expires_at",
+        expireAfterSeconds=0,
     )
 
     await seed_admin(db)
