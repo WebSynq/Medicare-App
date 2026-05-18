@@ -149,9 +149,17 @@ async def get_commission_summary(
 ):
     """
     Return aggregated commission stats for the current agent.
-    Queries Comtrack /api/reference by agent full_name.
+    Queries Comtrack /api/reference by users.agent_name.
+
+    agent_name is the canonical identity source for ComTrack lookups.
+    Falls back to full_name (then email) for legacy users whose row hasn't
+    been backfilled yet — drop this fallback once backfill is complete.
     """
-    agent_name = (current_user.get("full_name") or "").strip() or current_user.get("email", "")
+    agent_name = (
+        (current_user.get("agent_name") or "").strip()
+        or (current_user.get("full_name") or "").strip()
+        or current_user.get("email", "")
+    )
     client = ComtrackClient()
 
     try:
