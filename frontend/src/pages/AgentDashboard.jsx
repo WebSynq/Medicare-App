@@ -125,6 +125,8 @@ export default function AgentDashboard() {
           <StatCard label="Sync errors" value={counts.errors} danger icon={AlertCircle} />
         </div>
 
+        <LeaderboardCard />
+
         {isAdmin && pending.length > 0 && (
           <Card className="border-border bg-surface mb-5" data-testid="pending-agents-card">
             <CardContent className="p-5">
@@ -305,6 +307,129 @@ function StatCard({ label, value, accent, danger, icon: Icon }) {
           {Icon && <Icon className={`w-4 h-4 ${danger ? "text-destructive" : "opacity-70"}`} />}
         </div>
         <div className="text-3xl font-bold mt-2 tabular-nums" style={{fontFamily:'Outfit'}}>{value}</div>
+      </CardContent>
+    </Card>
+  );
+}
+
+
+// ── Leaderboard card ────────────────────────────────────────────────────────
+// Sources GET /api/leaderboard. The backend ranks by revenue_total (desc) and
+// stamps is_self=true on the caller's row when their users.agent_name matches
+// — we just highlight that row visually and render the period selector.
+
+function fmtUSD(val) {
+  if (val == null) return "—";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(val);
+}
+
+function LeaderboardCard() {
+  const [rows, setRows] = useState([]);
+  const [period, setPeriod] = useState("month");
+  const [loading, setLoading] = useState(true);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [period]);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get("/leaderboard", { params: { period, limit: 25 } });
+      setRows(data.rows || []);
+    } catch (e) {
+      // Non-fatal — leaderboard 503s shouldn't break the rest of the dashboard.
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Card className="border-border bg-surface mb-5" data-testid="leaderboard-card">
+      <CardContent className="p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <h3 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">
+            Leaderboard
+          </h3>
+          <Select value={period} onValueChange={setPeriod}>
+            <SelectTrigger className="w-36 h-9" data-testid="leaderboard-period">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="week">Last 7 days</SelectItem>
+              <SelectItem value="month">Last 30 days</SelectItem>
+              <SelectItem value="ytd">Year to date</SelectItem>
+              <SelectItem value="all">All time</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        {loading ? (
+          <p className="text-sm text-muted-foreground py-6 text-center">Loading…</p>
+        ) : rows.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-6 text-center">
+            No production records yet. Import the tracker to populate the board.
+          </p>
+        ) : (
+          <div className="overflow-x-auto w-full">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-12">#</TableHead>
+                  <TableHead>Agent</TableHead>
+                  <TableHead className="text-right">Policies</TableHead>
+                  <TableHead className="text-right">Revenue</TableHead>
+                  <TableHead className="text-right">Gap</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r) => (
+                  <TableRow
+                    key={r.agent_name + r.rank}
+                    className={r.is_self ? "bg-orange-50" : ""}
+                    data-testid={`leaderboard-row-${r.rank}`}
+                  >
+                    <TableCell className="font-mono text-xs text-muted-foreground">
+                      {r.rank}
+                    </TableCell>
+                    <TableCell className="font-medium">
+                      {r.agent_name}
+                      {r.is_self && (
+                        <Badge className="ml-2 rounded-full bg-[#e85d2f]/15 text-[#e85d2f] border-0 text-[10px]">
+                          you
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {r.policies_count}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums font-medium">
+                      {fmtUSD(r.revenue_total)}
+                    </TableCell>
+                    {/* audit_gap is signed: negative = underpaid (owed to agent),
+                        positive = overpaid. We highlight underpaid in red since
+                        that's the actionable state for the agent. */}
+                    <TableCell
+                      className={`text-right tabular-nums ${
+                        r.audit_gap < 0 ? "text-red-600 font-medium" : ""
+                      }`}
+                    >
+                      {r.audit_gap == null
+                        ? "—"
+                        : r.audit_gap === 0
+                          ? "$0.00"
+                          : (r.audit_gap < 0 ? "−" : "+") + fmtUSD(Math.abs(r.audit_gap))}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
