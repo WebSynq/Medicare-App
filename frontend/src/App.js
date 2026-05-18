@@ -13,6 +13,7 @@ import AuditLog from "@/pages/AuditLog";
 import CompliancePanel from "@/pages/CompliancePanel";
 import CommissionsDashboard from "@/pages/CommissionsDashboard";
 import AdminCommissions from "@/pages/AdminCommissions";
+import AccountingDashboard from "@/pages/AccountingDashboard";
 import PrivacyPolicy from "@/pages/PrivacyPolicy";
 import SecurityPage from "@/pages/SecurityPage";
 import { auth } from "@/lib/api";
@@ -53,6 +54,14 @@ export default function App() {
           element={
             <Protected roles={["admin", "compliance"]}>
               <AdminCommissions />
+            </Protected>
+          }
+        />
+        <Route
+          path="/admin/accounting"
+          element={
+            <Protected roles={["admin"]}>
+              <AccountingDashboard />
             </Protected>
           }
         />

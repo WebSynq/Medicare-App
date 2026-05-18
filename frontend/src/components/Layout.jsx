@@ -63,6 +63,14 @@ export function AppHeader() {
                 </Link>
               </>
             )}
+            {role === "admin" && (
+              <Link
+                to="/admin/accounting"
+                className="text-sm font-medium hover:text-[#e85d2f] transition-colors"
+              >
+                Accounting
+              </Link>
+            )}
           </nav>
         </div>
         <div className="hidden md:flex items-center gap-3 text-sm">
@@ -95,6 +103,9 @@ export function AppHeader() {
               <Link to="/admin/compliance" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Compliance</Link>
               <Link to="/admin/commissions" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Agent Commissions</Link>
             </>
+          )}
+          {role === "admin" && (
+            <Link to="/admin/accounting" onClick={() => setMenuOpen(false)} className="text-sm text-white/80 hover:text-white py-2">Accounting</Link>
           )}
           <button
             type="button"
