@@ -693,3 +693,88 @@ async def test_commission_chat_audit_logged(client, db, admin_headers, monkeypat
     assert entry is not None
     assert entry["metadata"]["actions_count"] == 2
     assert "biggest gaps" in entry["metadata"]["question_excerpt"]
+
+
+# ── /leaderboard endpoint ────────────────────────────────────────────────────
+def test_leaderboard_requires_auth(client, db):
+    r = client.get("/api/leaderboard")
+    assert r.status_code == 401
+
+
+async def test_leaderboard_aggregates_from_production_records(client, db,
+                                                                admin_headers):
+    await _seed_production_rows(db, [
+        # Alice: 2 policies, $1000 expected, $200 short
+        {"agent_name": "Alice", "policy_number": "A-1",
+         "revenue_expected": 500, "revenue_received": 400},  # gap -100
+        {"agent_name": "Alice", "policy_number": "A-2",
+         "revenue_expected": 500, "revenue_received": 400},  # gap -100
+        # Bob: 1 policy, $300 expected, matched
+        {"agent_name": "Bob", "policy_number": "B-1",
+         "revenue_expected": 300, "revenue_received": 300},
+        # Carol: 1 policy, $200 expected, resolved (should NOT count toward gap)
+        {"agent_name": "Carol", "policy_number": "C-1",
+         "revenue_expected": 200, "revenue_received": 100,
+         "audit_status": "resolved"},
+    ])
+    r = client.get("/api/leaderboard?period=all", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    by_name = {row["agent_name"]: row for row in body["rows"]}
+    # Alice
+    assert by_name["Alice"]["revenue_total"] == 1000
+    assert by_name["Alice"]["audit_gap"] == -200
+    assert by_name["Alice"]["policies_count"] == 2
+    # Bob (matched)
+    assert by_name["Bob"]["revenue_total"] == 300
+    assert by_name["Bob"]["audit_gap"] == 0
+    assert by_name["Bob"]["policies_count"] == 1
+    # Carol — resolved gap excluded
+    assert by_name["Carol"]["revenue_total"] == 200
+    assert by_name["Carol"]["audit_gap"] == 0
+    assert by_name["Carol"]["policies_count"] == 1
+
+    # Ranking: Alice ($1000) > Bob ($300) > Carol ($200)
+    assert [row["agent_name"] for row in body["rows"]] == ["Alice", "Bob", "Carol"]
+    assert body["rows"][0]["rank"] == 1
+    assert body["rows"][1]["rank"] == 2
+    assert body["rows"][2]["rank"] == 3
+
+
+async def test_leaderboard_marks_is_self(client, db, admin_headers):
+    """An agent's own row is flagged via is_self for UI highlighting."""
+    # Invite + register Bob with agent_name="Bob"
+    inv = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": "lb.bob@example.com", "full_name": "LB Bob",
+        "agency_name": "B", "agent_name": "Bob",
+    }).json()
+    reg = client.post("/api/auth/register", json={
+        "email": "lb.bob@example.com", "password": "LbBobPass!2026",
+        "full_name": "LB Bob", "agency_name": "B",
+        "invite_token": inv["token"],
+    })
+    client.post(f"/api/auth/users/{reg.json()['id']}/approve",
+                headers=admin_headers)
+    bob_login = client.post("/api/auth/login", json={
+        "email": "lb.bob@example.com", "password": "LbBobPass!2026",
+    })
+    bob_headers = {"Authorization": f"Bearer {bob_login.json()['access_token']}"}
+
+    await _seed_production_rows(db, [
+        {"agent_name": "Alice", "revenue_expected": 500},
+        {"agent_name": "Bob", "revenue_expected": 300},
+    ])
+
+    r = client.get("/api/leaderboard?period=all", headers=bob_headers)
+    assert r.status_code == 200
+    by_name = {row["agent_name"]: row for row in r.json()["rows"]}
+    assert by_name["Bob"]["is_self"] is True
+    assert by_name["Alice"]["is_self"] is False
+
+
+async def test_leaderboard_audit_logged(client, db, admin_headers):
+    client.get("/api/leaderboard?period=month", headers=admin_headers)
+    entry = await db.audit_logs.find_one({"event_type": "leaderboard_viewed"})
+    assert entry is not None
+    assert entry["metadata"]["period"] == "month"

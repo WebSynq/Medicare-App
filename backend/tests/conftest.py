@@ -65,7 +65,7 @@ server.app.dependency_overrides[deps.get_db] = _fake_get_db
 # slowapi: disable per-IP rate limits across all routers so the suite can hit
 # /auth/login dozens of times without tripping the 10/min ceiling.
 for module_name in ("server", "auth_router", "leads_router",
-                     "commission_audit_router"):
+                     "commission_audit_router", "leaderboard_router"):
     try:
         mod = sys.modules.get(module_name) or __import__(module_name)
         if hasattr(mod, "limiter"):
