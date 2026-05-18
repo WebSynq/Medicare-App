@@ -396,6 +396,7 @@ export default function CommissionsDashboard() {
           {/* ── Audit tab ── */}
           <TabsContent value="audit" className="space-y-6 mt-0">
             <AuditPanel />
+            <ChatPanel />
           </TabsContent>
 
         </Tabs>
@@ -642,5 +643,177 @@ function AuditPanel() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+
+// ── AI chat panel ──────────────────────────────────────────────────────────
+// Calls POST /api/commission/chat. The backend injects the agent's own
+// production_records as context (RBAC-scoped — never another agent's), then
+// returns { reply, suggested_actions } via the structured-output schema.
+
+const STARTER_PROMPTS = [
+  "What's my biggest gap?",
+  "Which carrier owes me the most?",
+  "Draft a dispute letter for my largest discrepancy",
+  "Summarize my commissions this month",
+];
+
+function ChatPanel() {
+  // messages: { role: 'user' | 'assistant', text: string, actions?: string[] }
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const scrollRef = useRef(null);
+
+  // Auto-scroll the transcript when a new message lands. Using a small
+  // timeout because the DOM update from setMessages lands in the next tick.
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages, sending]);
+
+  const sendMessage = useCallback(async (text) => {
+    const trimmed = (text ?? "").trim();
+    if (!trimmed || sending) return;
+    setMessages((prev) => [...prev, { role: "user", text: trimmed }]);
+    setInput("");
+    setSending(true);
+    try {
+      const { data } = await api.post("/commission/chat", { message: trimmed });
+      setMessages((prev) => [...prev, {
+        role: "assistant",
+        text: data.reply || "(no reply)",
+        actions: Array.isArray(data.suggested_actions) ? data.suggested_actions : [],
+      }]);
+    } catch (err) {
+      const detail = err?.response?.data?.detail || "Could not reach the assistant.";
+      setMessages((prev) => [...prev, {
+        role: "assistant",
+        text: detail,
+        actions: [],
+        error: true,
+      }]);
+    } finally {
+      setSending(false);
+    }
+  }, [sending]);
+
+  const onSubmit = (e) => {
+    e.preventDefault();
+    sendMessage(input);
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base text-[#1e2d3d]">
+          Commission Assistant
+        </CardTitle>
+        <p className="text-xs text-muted-foreground">
+          Ask about your gaps, draft dispute letters, or summarise your book.
+          Responses are scoped to your own records.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {/* Transcript */}
+        <div
+          ref={scrollRef}
+          className="border border-border rounded-lg p-3 bg-muted/30 h-72 overflow-y-auto space-y-3"
+          data-testid="chat-transcript"
+        >
+          {messages.length === 0 && (
+            <div className="text-center text-xs text-muted-foreground py-6">
+              No messages yet. Ask a question or pick a starter below.
+            </div>
+          )}
+          {messages.map((m, i) => (
+            <div
+              key={i}
+              className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
+            >
+              <div
+                className={`max-w-[85%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words ${
+                  m.role === "user"
+                    ? "bg-[#1e2d3d] text-white"
+                    : m.error
+                      ? "bg-red-50 text-red-900 border border-red-200"
+                      : "bg-white border border-border text-[#1e2d3d]"
+                }`}
+              >
+                {m.text}
+                {m.role === "assistant" && m.actions && m.actions.length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-border/60 space-y-1">
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      Suggested actions
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {m.actions.map((a, j) => (
+                        <button
+                          key={j}
+                          type="button"
+                          onClick={() => sendMessage(a)}
+                          className="text-xs px-2 py-1 rounded-md bg-[#e85d2f]/10 text-[#e85d2f] hover:bg-[#e85d2f]/20 transition-colors"
+                          data-testid={`chat-action-${j}`}
+                        >
+                          {a}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+          {sending && (
+            <div className="flex justify-start">
+              <div className="bg-white border border-border rounded-lg px-3 py-2 text-sm text-muted-foreground inline-flex items-center gap-2">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#e85d2f] animate-pulse" />
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#e85d2f] animate-pulse [animation-delay:0.15s]" />
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#e85d2f] animate-pulse [animation-delay:0.3s]" />
+                <span>Thinking…</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Starter prompt chips */}
+        <div className="flex flex-wrap gap-1.5">
+          {STARTER_PROMPTS.map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => setInput(p)}
+              disabled={sending}
+              className="text-xs px-2.5 py-1 rounded-full border border-border bg-background hover:bg-muted transition-colors disabled:opacity-50"
+              data-testid="chat-starter"
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+
+        {/* Input */}
+        <form onSubmit={onSubmit} className="flex items-center gap-2">
+          <Input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Ask about your commissions…"
+            disabled={sending}
+            className="flex-1 h-10"
+            data-testid="chat-input"
+          />
+          <Button
+            type="submit"
+            disabled={sending || !input.trim()}
+            className="h-10 px-4 bg-[#e85d2f] hover:bg-[#d04d22] text-white"
+            data-testid="chat-send"
+          >
+            Send
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
   );
 }
