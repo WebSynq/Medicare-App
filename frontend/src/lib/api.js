@@ -3,7 +3,14 @@ import axios from "axios";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 
-export const api = axios.create({ baseURL: API });
+// withCredentials: include the httpOnly access cookie on every request. Required
+// because the cookie is the auth credential — JWTs are no longer carried in
+// localStorage or Authorization headers from the browser. The backend cookie is
+// SameSite=None;Secure so it travels cross-site (Vercel → Render).
+export const api = axios.create({
+  baseURL: API,
+  withCredentials: true,
+});
 
 // ── Session timeout config ────────────────────────────────────────────────
 const SESSION_TIMEOUT_MS = 30 * 60 * 1000;  // 30 minutes
@@ -29,17 +36,38 @@ function shouldWarnSession() {
   return elapsed > SESSION_WARNING_MS && elapsed <= SESSION_TIMEOUT_MS;
 }
 
+// Read CSRF token from the JS-readable double-submit cookie. Returns null if
+// not set yet (e.g. on the very first /auth/login request).
+function readCsrfCookie() {
+  const match = document.cookie
+    .split("; ")
+    .find((r) => r.startsWith("ghw_csrf_token="));
+  return match ? decodeURIComponent(match.split("=")[1]) : null;
+}
+
+const STATE_CHANGING_METHODS = new Set(["post", "put", "patch", "delete"]);
+
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem("ghw_token");
-    if (token) {
-      // Check if session has expired
+    // Session-expiry guard: if a previous activity timestamp exists and is
+    // beyond the timeout, force logout. We use the user cache as the proxy
+    // for "user is logged in", since the token itself is now in an httpOnly
+    // cookie we cannot inspect from JS.
+    if (localStorage.getItem("ghw_user")) {
       if (isSessionExpired()) {
         auth.logout();
         window.location.href = "/login?reason=session_expired";
         return Promise.reject(new Error("Session expired"));
       }
-      config.headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    // Attach CSRF header for state-changing methods.
+    const method = (config.method || "get").toLowerCase();
+    if (STATE_CHANGING_METHODS.has(method)) {
+      const csrf = readCsrfCookie();
+      if (csrf) {
+        config.headers["X-CSRF-Token"] = csrf;
+      }
     }
     return config;
   },
@@ -48,11 +76,9 @@ api.interceptors.request.use(
 
 api.interceptors.response.use(
   (response) => {
-    // Reset activity timer on every successful API call when authenticated
-    if (localStorage.getItem("ghw_token")) {
+    if (localStorage.getItem("ghw_user")) {
       updateLastActivity();
 
-      // Fire a one-shot warning event when entering the 25–30 min window
       if (shouldWarnSession() && !localStorage.getItem(SESSION_WARNING_KEY)) {
         localStorage.setItem(SESSION_WARNING_KEY, "true");
         window.dispatchEvent(new CustomEvent("ghw:session-warning"));
@@ -62,7 +88,6 @@ api.interceptors.response.use(
   },
   (err) => {
     if (err?.response?.status === 401) {
-      // Clear token on hard 401 in app-shell paths
       const path = window.location.pathname;
       if (
         path.startsWith("/dashboard") ||
@@ -82,8 +107,10 @@ api.interceptors.response.use(
 );
 
 export const auth = {
-  saveSession(token, user) {
-    localStorage.setItem("ghw_token", token);
+  // The login response still includes an access_token in the body for the
+  // rollout-grace period, but we deliberately ignore it — the authoritative
+  // credential is the httpOnly cookie the server planted on this same response.
+  saveSession(_token, user) {
     localStorage.setItem("ghw_user", JSON.stringify(user));
     updateLastActivity();
   },
@@ -91,11 +118,20 @@ export const auth = {
     const raw = localStorage.getItem("ghw_user");
     return raw ? JSON.parse(raw) : null;
   },
-  getToken() { return localStorage.getItem("ghw_token"); },
+  // logout() clears only the client-side profile cache + activity timer. The
+  // httpOnly auth cookie can only be cleared by the server — callers that
+  // need a full logout should also POST /auth/logout.
   logout() {
-    localStorage.removeItem("ghw_token");
     localStorage.removeItem("ghw_user");
     localStorage.removeItem(LAST_ACTIVITY_KEY);
     localStorage.removeItem(SESSION_WARNING_KEY);
+  },
+  async serverLogout() {
+    try {
+      await api.post("/auth/logout");
+    } catch (_e) {
+      // best-effort — cookie will still expire client-side
+    }
+    auth.logout();
   },
 };

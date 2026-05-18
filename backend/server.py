@@ -3,8 +3,10 @@ import os
 import logging
 from pathlib import Path
 
+import secrets
 from fastapi import FastAPI, APIRouter, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -150,7 +152,7 @@ app.add_middleware(
     allow_origin_regex=None,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin",
-                   "X-Requested-With"],
+                   "X-Requested-With", "X-CSRF-Token"],
     max_age=600,
 )
 
@@ -182,6 +184,59 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+
+# ── CSRF (double-submit cookie) ───────────────────────────────────────────────
+# Pattern: a CSRF token is written to a JS-readable cookie on login; the SPA
+# echoes it back as an X-CSRF-Token header on every state-changing request.
+# On the server we compare cookie vs header with constant-time comparison.
+#
+# Why this works: a third-party site cannot read the cookie (same-origin policy
+# restricts cookie reads even with SameSite=None), so it cannot synthesize the
+# matching header — its forged request will fail. Cookie-only flows (a
+# malicious form POST) carry the cookie but not the header.
+#
+# Scope: applied only to state-changing methods. GETs (including session
+# probes like /auth/me) are exempt so the SPA can hydrate without the header.
+
+_CSRF_METHODS = {"POST", "PATCH", "DELETE", "PUT"}
+# Endpoints that legitimately receive POST without an established session
+# (and therefore no CSRF cookie yet) need to be exempt. /auth/login is the
+# primary case — the very response is what plants the CSRF cookie.
+_CSRF_EXEMPT_PATHS = {
+    "/api/auth/login",
+    "/api/auth/register",
+    "/api/auth/logout",
+    "/api/auth/mfa/verify",  # called immediately after login pre-auth token issued
+}
+
+
+class CSRFMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method not in _CSRF_METHODS:
+            return await call_next(request)
+        if request.url.path in _CSRF_EXEMPT_PATHS:
+            return await call_next(request)
+        # Header-based auth (Authorization: Bearer …) is not vulnerable to CSRF
+        # because browsers never auto-send custom Authorization headers from
+        # foreign origins. Skip CSRF when the caller is using the header path
+        # — typically server-to-server or rollout-grace browser sessions.
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            return await call_next(request)
+        cookie_token = request.cookies.get("ghw_csrf_token")
+        header_token = request.headers.get("x-csrf-token")
+        if not cookie_token or not header_token or not secrets.compare_digest(
+            cookie_token, header_token
+        ):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "CSRF token missing or invalid"},
+            )
+        return await call_next(request)
+
+
+app.add_middleware(CSRFMiddleware)
 
 
 @app.on_event("startup")

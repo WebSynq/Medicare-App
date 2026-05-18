@@ -9,6 +9,25 @@ from datetime import datetime, timezone
 from security import decode_token  # noqa: F401 — used by get_current_user + get_optional_user
 
 
+# Cookie name for the httpOnly access token. Reading the cookie before the
+# Authorization header keeps the header path as a graceful-rollout fallback
+# (mobile clients, integration tests, the legacy bundle in flight) but new
+# browser sessions will be cookie-driven.
+ACCESS_TOKEN_COOKIE = "ghw_access_token"
+CSRF_TOKEN_COOKIE = "ghw_csrf_token"
+CSRF_HEADER = "X-CSRF-Token"
+
+
+def _extract_token(request: Request, header_token: Optional[str]) -> Optional[str]:
+    """Pull the JWT from the httpOnly cookie first, then the Authorization
+    header. We do not honour query-string tokens to prevent leakage via
+    referer / server logs / browser history."""
+    cookie_token = request.cookies.get(ACCESS_TOKEN_COOKIE)
+    if cookie_token:
+        return cookie_token
+    return header_token
+
+
 _mongo_client: Optional[AsyncIOMotorClient] = None
 
 
@@ -27,14 +46,15 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=Fals
 
 
 async def get_optional_user(
-    token: Optional[str] = Depends(oauth2_scheme),
+    request: Request,
+    header_token: Optional[str] = Depends(oauth2_scheme),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ) -> Optional[dict]:
     """Returns the current user if authenticated, None if not.
 
-    Used by endpoints that accept both anonymous (public intake) and
-    authenticated (agent-on-behalf-of-client) traffic.
+    Reads token from httpOnly cookie first, then Authorization header.
     """
+    token = _extract_token(request, header_token)
     if not token:
         return None
     try:
@@ -50,9 +70,11 @@ async def get_optional_user(
 
 
 async def get_current_user(
-    token: Optional[str] = Depends(oauth2_scheme),
+    request: Request,
+    header_token: Optional[str] = Depends(oauth2_scheme),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
+    token = _extract_token(request, header_token)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:

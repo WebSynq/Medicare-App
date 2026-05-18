@@ -10,10 +10,52 @@ from datetime import datetime, timezone, timedelta
 
 import pyotp
 import qrcode
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+
+# Cookie / CSRF constants
+_ACCESS_COOKIE = "ghw_access_token"
+_CSRF_COOKIE = "ghw_csrf_token"
+_COOKIE_MAX_AGE = 60 * 60 * 24  # 24h — matches what we ask of the JWT expiry
+_IS_DEV = os.getenv("ENVIRONMENT", "production").lower() in ("development", "dev", "local")
+
+
+def _set_session_cookies(response: Response, jwt_token: str) -> None:
+    """Plant the httpOnly access cookie + JS-readable CSRF cookie.
+
+    SameSite=None;Secure is required because the SPA (Vercel) and API (Render)
+    are on different sites — SameSite=Strict would prevent the browser from
+    sending the cookie cross-site, breaking login on the second request.
+    Secure is mandatory whenever SameSite=None per the spec; in dev mode we
+    relax both so the localhost flow works without HTTPS.
+    """
+    samesite = "lax" if _IS_DEV else "none"
+    secure = not _IS_DEV
+    response.set_cookie(
+        key=_ACCESS_COOKIE,
+        value=jwt_token,
+        httponly=True,
+        secure=secure,
+        samesite=samesite,
+        max_age=_COOKIE_MAX_AGE,
+        path="/",
+    )
+    response.set_cookie(
+        key=_CSRF_COOKIE,
+        value=secrets.token_hex(32),
+        httponly=False,                # JS must read this to echo as header
+        secure=secure,
+        samesite=samesite,
+        max_age=_COOKIE_MAX_AGE,
+        path="/",
+    )
+
+
+def _clear_session_cookies(response: Response) -> None:
+    response.delete_cookie(_ACCESS_COOKIE, path="/")
+    response.delete_cookie(_CSRF_COOKIE, path="/")
 
 # Dummy bcrypt hash used to keep response time constant when the email doesn't
 # exist. Computed once at import; the plaintext is never used.
@@ -192,7 +234,8 @@ def _format_unlock_message(unlock_at: datetime) -> str:
 
 @router.post("/login", response_model=LoginResponse)
 @limiter.limit("10/minute")
-async def login(payload: LoginRequest, request: Request, db: AsyncIOMotorDatabase = Depends(get_db)):
+async def login(payload: LoginRequest, request: Request, response: Response,
+                db: AsyncIOMotorDatabase = Depends(get_db)):
     email = payload.email.lower().strip()
 
     # 1. Check existing lockout BEFORE verifying password
@@ -285,7 +328,25 @@ async def login(payload: LoginRequest, request: Request, db: AsyncIOMotorDatabas
     await check_and_record_login_attempt(db, email, success=True)
     await write_audit(db, "login_success", actor_email=user["email"], actor_id=user["id"],
                       request=request, metadata={"mfa": user.get("mfa_enabled", False)})
+    # Plant cookies for browser sessions; still return access_token in the body
+    # so the existing header-bearer code path keeps working during the rollout.
+    _set_session_cookies(response, token)
     return LoginResponse(access_token=token, mfa_required=False, user=_user_public(user))
+
+
+@router.post("/logout")
+async def logout(request: Request, response: Response,
+                 db: AsyncIOMotorDatabase = Depends(get_db),
+                 current_user=Depends(get_current_user)):
+    """Clear the session cookies. Stateless JWTs cannot be invalidated server
+    side without a revocation list (out of scope here), but clearing the
+    cookies removes the credential from the browser surface, which is the
+    realistic threat model for an SPA on a shared device.
+    """
+    _clear_session_cookies(response)
+    await write_audit(db, "logout", actor_email=current_user.get("email"),
+                      actor_id=current_user.get("id"), request=request)
+    return {"message": "Logged out"}
 
 
 @router.get("/me", response_model=UserPublic)
@@ -325,6 +386,7 @@ async def mfa_enroll(
 async def mfa_verify(
     payload: MfaVerifyRequest,
     request: Request,
+    response: Response,
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -340,6 +402,7 @@ async def mfa_verify(
     # fields populated between enroll and verify also land in the new token.
     refreshed = await db.users.find_one({"id": user["id"]}, {"_id": 0})
     token = create_access_token(_jwt_claims(refreshed or user, mfa_verified=True))
+    _set_session_cookies(response, token)
     return {"message": "MFA enabled", "access_token": token, "token_type": "bearer"}
 
 
