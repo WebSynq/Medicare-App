@@ -957,3 +957,118 @@ def test_classify_from_amounts_bands():
     assert c(100, 94) == "underpaid"
     assert c(100, 105) == "matched"    # exactly 1.05 → matched (not >)
     assert c(100, 106) == "overpaid"
+
+
+# ── Monthly PDF statements ──────────────────────────────────────────────────
+async def test_statement_admin_can_download_for_any_agent(
+        client, db, admin_headers, tmp_path, monkeypatch):
+    """Admin can fetch any agent's monthly statement; on-demand generation
+    works even when the scheduled job hasn't fired yet."""
+    # Redirect statement output into a per-test temp dir so we don't write
+    # to the live secure_storage path.
+    import statement_generator as sg
+    monkeypatch.setattr(sg, "STATEMENTS_DIR", tmp_path)
+
+    await _seed_production_rows(db, [
+        {"agent_name": "Demo Agent", "carrier": "Aetna",
+         "policy_number": "POL-101", "effective_date": "2026-04-10",
+         "revenue_expected": 500.0, "revenue_received": 480.0},
+        {"agent_name": "Demo Agent", "carrier": "Humana",
+         "policy_number": "POL-102", "effective_date": "2026-04-22",
+         "revenue_expected": 300.0, "revenue_received": None},
+        # Outside the target month — must not appear in the statement
+        {"agent_name": "Demo Agent", "carrier": "Aetna",
+         "policy_number": "POL-103", "effective_date": "2026-03-15",
+         "revenue_expected": 999.0, "revenue_received": 999.0},
+    ])
+
+    r = client.get(
+        "/api/commission/statement/2026/4?agent_name=Demo%20Agent",
+        headers=admin_headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("application/pdf")
+    body = r.content
+    assert body.startswith(b"%PDF")
+    # Reasonable lower bound; the document has summary + table + footer
+    assert len(body) > 1500
+
+    # Audit log
+    entry = await db.audit_logs.find_one(
+        {"event_type": "commission_statement_downloaded"})
+    assert entry is not None
+    assert entry["metadata"]["agent_name"] == "Demo Agent"
+    assert entry["metadata"]["year"] == 2026
+    assert entry["metadata"]["month"] == 4
+
+    # statement_generated audit was written when the file was built
+    gen = await db.audit_logs.find_one({"event_type": "statement_generated"})
+    assert gen is not None
+    assert gen["metadata"]["policies"] == 2  # March row was filtered out
+
+
+async def test_statement_admin_requires_agent_name(client, admin_headers,
+                                                     tmp_path, monkeypatch):
+    """Admin call without ?agent_name= must 400 — no all-agents PDF."""
+    import statement_generator as sg
+    monkeypatch.setattr(sg, "STATEMENTS_DIR", tmp_path)
+
+    r = client.get("/api/commission/statement/2026/4", headers=admin_headers)
+    assert r.status_code == 400
+
+
+async def test_statement_agent_sees_own_only(client, db, admin_headers,
+                                               tmp_path, monkeypatch):
+    """Agent gets their own statement automatically and ignores ?agent_name."""
+    import statement_generator as sg
+    monkeypatch.setattr(sg, "STATEMENTS_DIR", tmp_path)
+
+    # Provision an agent
+    inv = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": "agent.alice@example.com", "full_name": "Alice",
+        "agency_name": "A", "agent_name": "Alice",
+    }).json()
+    reg = client.post("/api/auth/register", json={
+        "email": "agent.alice@example.com", "password": "AlicePass!2026",
+        "full_name": "Alice", "agency_name": "A",
+        "invite_token": inv["token"],
+    })
+    client.post(f"/api/auth/users/{reg.json()['id']}/approve",
+                headers=admin_headers)
+    alice_login = client.post("/api/auth/login", json={
+        "email": "agent.alice@example.com", "password": "AlicePass!2026",
+    })
+    alice_headers = {"Authorization":
+                     f"Bearer {alice_login.json()['access_token']}"}
+
+    await _seed_production_rows(db, [
+        {"agent_name": "Alice", "carrier": "Aetna",
+         "policy_number": "A-1", "effective_date": "2026-04-05",
+         "revenue_expected": 200.0, "revenue_received": 200.0},
+        {"agent_name": "Bob", "carrier": "Aetna",
+         "policy_number": "B-1", "effective_date": "2026-04-05",
+         "revenue_expected": 9999.0, "revenue_received": 9999.0},
+    ])
+
+    # Agent passes ?agent_name=Bob in an attempt to fetch Bob's PDF — the
+    # server must ignore the query param for non-admins.
+    r = client.get("/api/commission/statement/2026/4?agent_name=Bob",
+                    headers=alice_headers)
+    assert r.status_code == 200
+    assert r.content.startswith(b"%PDF")
+
+    # Verify the audited row says target_name=Alice, not Bob.
+    entry = await db.audit_logs.find_one(
+        {"event_type": "commission_statement_downloaded",
+         "actor_email": "agent.alice@example.com"})
+    assert entry is not None
+    assert entry["metadata"]["agent_name"] == "Alice"
+
+
+def test_slugify_handles_messy_names():
+    from statement_generator import _slugify
+    assert _slugify("Tim Dazey") == "tim_dazey"
+    assert _slugify("Connor O'Reilly") == "connor_o_reilly"
+    assert _slugify("Leadership (Chase Gruening)") == "leadership_chase_gruening"
+    assert _slugify("") == "agent"
+    assert _slugify("   ") == "agent"

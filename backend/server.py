@@ -331,18 +331,21 @@ async def on_startup():
     await seed_admin(db)
     logger.info("Startup complete. Admin seeded if missing.")
 
-    # Boot the daily ComTrack reconciliation scheduler. Gated by
-    # DISABLE_SCHEDULER=1 (set in tests/conftest.py) so pytest never starts
-    # a background timer that would leak between tests.
-    from comtrack_sync import start_scheduler
-    app.state.comtrack_scheduler = start_scheduler(get_db)
+    # Boot background schedulers. Gated by DISABLE_SCHEDULER=1 (set in
+    # tests/conftest.py) so pytest never starts background timers that
+    # would leak between tests.
+    from comtrack_sync import start_scheduler as start_comtrack_scheduler
+    from statement_generator import start_scheduler as start_statement_scheduler
+    app.state.comtrack_scheduler = start_comtrack_scheduler(get_db)
+    app.state.statement_scheduler = start_statement_scheduler(get_db)
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    sched = getattr(app.state, "comtrack_scheduler", None)
-    if sched is not None:
-        try:
-            sched.shutdown(wait=False)
-        except Exception as e:
-            logger.warning("Scheduler shutdown error: %s", e)
+    for attr in ("comtrack_scheduler", "statement_scheduler"):
+        sched = getattr(app.state, attr, None)
+        if sched is not None:
+            try:
+                sched.shutdown(wait=False)
+            except Exception as e:
+                logger.warning("Scheduler shutdown error (%s): %s", attr, e)
