@@ -152,7 +152,7 @@ async def create_lead(
 @router.get("", response_model=List[Lead])
 async def list_leads(
     status: Optional[str] = None,
-    q: Optional[str] = Query(None, description="Search first/last/email"),
+    q: Optional[str] = Query(None, description="Search first/last/email", max_length=64),
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
@@ -160,11 +160,15 @@ async def list_leads(
     if status:
         query["status"] = status
     if q:
+        # Escape regex metacharacters — prior behaviour passed user input
+        # straight into MongoDB $regex, exposing the API to ReDoS via patterns
+        # like (a+)+$ and to result leakage via PCRE feature abuse.
+        safe = re.escape(q.strip())
         query["$or"] = [
-            {"first_name": {"$regex": q, "$options": "i"}},
-            {"last_name": {"$regex": q, "$options": "i"}},
-            {"email": {"$regex": q, "$options": "i"}},
-            {"phone": {"$regex": q, "$options": "i"}},
+            {"first_name": {"$regex": safe, "$options": "i"}},
+            {"last_name": {"$regex": safe, "$options": "i"}},
+            {"email": {"$regex": safe, "$options": "i"}},
+            {"phone": {"$regex": safe, "$options": "i"}},
         ]
     cursor = db.leads.find(query, {"_id": 0}).sort("created_at", -1).limit(500)
     return [Lead(**doc) async for doc in cursor]
