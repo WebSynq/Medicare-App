@@ -22,7 +22,7 @@ _DUMMY_BCRYPT_HASH = "$2b$12$CwTycUXWue0Thq9StjUM0uJ8zJZ6yfsT9MrbXk7eDjmnQDQt2WJ
 from models import (
     UserPublic, LoginRequest, LoginResponse,
     MfaEnrollResponse, MfaVerifyRequest,
-    AgentRegistrationRequest, InviteRequest,
+    AgentRegistrationRequest, InviteRequest, UserProfileUpdate,
 )
 from security import (
     hash_password, verify_password, create_access_token,
@@ -52,9 +52,30 @@ def _user_public(user: dict) -> UserPublic:
         is_active=user.get("is_active", True),
         status=user.get("status", "active"),
         agency_name=user.get("agency_name"),
+        agent_name=user.get("agent_name"),
+        agent_npn=user.get("agent_npn"),
         mfa_enabled=user.get("mfa_enabled", False),
         created_at=user.get("created_at", datetime.now(timezone.utc).isoformat()),
     )
+
+
+def _jwt_claims(user: dict, mfa_verified: bool, pre_auth: bool = False) -> dict:
+    """Build the JWT payload. Agent identity travels in the token for fast
+    downstream lookups, but server code MUST still resolve it from the DB row
+    before trusting it for any high-impact action."""
+    claims = {
+        "sub": user["id"],
+        "email": user["email"],
+        "role": user["role"],
+        "mfa_verified": mfa_verified,
+    }
+    if user.get("agent_name"):
+        claims["agent_name"] = user["agent_name"]
+    if user.get("agent_npn"):
+        claims["agent_npn"] = user["agent_npn"]
+    if pre_auth:
+        claims["pre_auth"] = True
+    return claims
 
 
 @router.post("/register", response_model=UserPublic, status_code=201)
@@ -123,6 +144,12 @@ async def register(
     existing = await db.users.find_one({"email": email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
+    # Agent identity: prefer values from the invite (admin-controlled) over
+    # whatever the registering user typed, so a registering agent cannot mint
+    # their own NPN. Fall back to registration body only when the invite is
+    # silent on the field.
+    agent_name = invite.get("agent_name") or body.agent_name
+    agent_npn = invite.get("agent_npn") or body.agent_npn
     user_doc = {
         "id": str(uuid.uuid4()),
         "email": email,
@@ -131,6 +158,8 @@ async def register(
         "is_active": False,
         "status": "pending",
         "agency_name": body.agency_name.strip(),
+        "agent_name": agent_name,
+        "agent_npn": agent_npn,
         "hashed_password": hash_password(body.password),
         "mfa_secret": None,
         "mfa_enabled": False,
@@ -235,8 +264,7 @@ async def login(payload: LoginRequest, request: Request, db: AsyncIOMotorDatabas
         if not payload.mfa_code:
             # Issue a short pre-auth token allowing MFA submission
             token = create_access_token(
-                {"sub": user["id"], "email": user["email"], "role": user["role"],
-                 "mfa_verified": False, "pre_auth": True},
+                _jwt_claims(user, mfa_verified=False, pre_auth=True),
                 expires_minutes=5,
             )
             await write_audit(db, "login_mfa_required", actor_email=payload.email,
@@ -251,8 +279,7 @@ async def login(payload: LoginRequest, request: Request, db: AsyncIOMotorDatabas
         mfa_verified = True
 
     token = create_access_token(
-        {"sub": user["id"], "email": user["email"], "role": user["role"],
-         "mfa_verified": mfa_verified or not user.get("mfa_enabled", False)}
+        _jwt_claims(user, mfa_verified=mfa_verified or not user.get("mfa_enabled", False))
     )
     # Successful auth — clear any tracked failed attempts for this email
     await check_and_record_login_attempt(db, email, success=True)
@@ -309,10 +336,10 @@ async def mfa_verify(
     await db.users.update_one({"id": user["id"]}, {"$set": {"mfa_enabled": True}})
     await write_audit(db, "mfa_enabled", actor_email=user["email"], actor_id=user["id"], request=request)
 
-    # Re-issue token with mfa_verified=true
-    token = create_access_token(
-        {"sub": user["id"], "email": user["email"], "role": user["role"], "mfa_verified": True}
-    )
+    # Re-issue token with mfa_verified=true. Re-read user so any agent identity
+    # fields populated between enroll and verify also land in the new token.
+    refreshed = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    token = create_access_token(_jwt_claims(refreshed or user, mfa_verified=True))
     return {"message": "MFA enabled", "access_token": token, "token_type": "bearer"}
 
 
@@ -417,6 +444,8 @@ async def create_invite(
         "email": invite.email,
         "full_name": invite.full_name or "",
         "agency_name": invite.agency_name or "",
+        "agent_name": invite.agent_name,
+        "agent_npn": invite.agent_npn,
         "created_by": current_user["id"],
         "created_at": now.isoformat(),
         "expires_at": expires.isoformat(),
@@ -479,6 +508,8 @@ async def validate_invite(
         "email": invite["email"],
         "full_name": invite.get("full_name", ""),
         "agency_name": invite.get("agency_name", ""),
+        "agent_name": invite.get("agent_name"),
+        "agent_npn": invite.get("agent_npn"),
     }
 
 
@@ -520,3 +551,52 @@ async def unlock_account(
         metadata={"unlocked_email": user["email"]},
     )
     return {"message": f"Account {user['email']} has been unlocked."}
+
+
+@router.patch("/users/{user_id}/profile", response_model=UserPublic)
+async def update_user_profile(
+    user_id: str,
+    payload: UserProfileUpdate,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    """Admin-only: update an agent's identity fields (agent_name, agent_npn).
+
+    These fields drive downstream lookups (e.g. ComTrack agent_name filter).
+    Only admins can write them so an agent cannot mint their own NPN or
+    impersonate another agent for commission queries.
+    """
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    updates = {}
+    # model_dump(exclude_unset=True) lets us distinguish "field not sent" from
+    # "field sent as null". A null value clears the stored field intentionally.
+    sent = payload.model_dump(exclude_unset=True)
+    if "agent_name" in sent:
+        updates["agent_name"] = sent["agent_name"]
+    if "agent_npn" in sent:
+        updates["agent_npn"] = sent["agent_npn"]
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one({"id": user_id}, {"$set": updates})
+
+    await write_audit(
+        db=db,
+        event_type="user_profile_updated",
+        actor_email=current_user.get("email"),
+        actor_id=current_user["id"],
+        target_type="user",
+        target_id=user_id,
+        request=request,
+        metadata={"fields": list(k for k in updates.keys() if k != "updated_at"),
+                  "target_email": user["email"]},
+    )
+
+    fresh = await db.users.find_one({"id": user_id}, {"_id": 0})
+    return _user_public(fresh)

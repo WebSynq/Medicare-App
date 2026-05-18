@@ -1,8 +1,34 @@
 """Pydantic models for Gruening Health & Wealth Medicare Intake."""
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+import re
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 from typing import List, Optional, Literal
 from datetime import datetime, timezone
 import uuid
+
+
+_NPN_RE = re.compile(r"^\d{5,10}$")
+
+
+def _normalize_agent_name(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        return None
+    if len(v) > 100:
+        raise ValueError("agent_name must be 100 characters or fewer")
+    return v
+
+
+def _normalize_agent_npn(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        return None
+    if not _NPN_RE.fullmatch(v):
+        raise ValueError("agent_npn must be 5-10 digits, numbers only")
+    return v
 
 
 def utcnow_iso() -> str:
@@ -20,6 +46,21 @@ class UserBase(BaseModel):
     is_active: bool = True
     status: UserStatus = "active"
     agency_name: Optional[str] = None
+    # Agent identity for downstream lookups (ComTrack, carrier portals, etc.).
+    # We resolve agent identity from these server-side fields only — never from
+    # request body or query params — so a JWT cannot impersonate another agent.
+    agent_name: Optional[str] = None
+    agent_npn: Optional[str] = None
+
+    @field_validator("agent_name")
+    @classmethod
+    def _v_agent_name(cls, v):
+        return _normalize_agent_name(v)
+
+    @field_validator("agent_npn")
+    @classmethod
+    def _v_agent_npn(cls, v):
+        return _normalize_agent_npn(v)
 
 
 class UserCreate(UserBase):
@@ -47,6 +88,34 @@ class AgentRegistrationRequest(BaseModel):
     password: str
     agency_name: str
     invite_token: Optional[str] = None
+    agent_name: Optional[str] = None
+    agent_npn: Optional[str] = None
+
+    @field_validator("agent_name")
+    @classmethod
+    def _v_agent_name(cls, v):
+        return _normalize_agent_name(v)
+
+    @field_validator("agent_npn")
+    @classmethod
+    def _v_agent_npn(cls, v):
+        return _normalize_agent_npn(v)
+
+
+class UserProfileUpdate(BaseModel):
+    """Admin-only patch payload for an agent's identity fields."""
+    agent_name: Optional[str] = None
+    agent_npn: Optional[str] = None
+
+    @field_validator("agent_name")
+    @classmethod
+    def _v_agent_name(cls, v):
+        return _normalize_agent_name(v)
+
+    @field_validator("agent_npn")
+    @classmethod
+    def _v_agent_npn(cls, v):
+        return _normalize_agent_npn(v)
 
 
 class InviteToken(BaseModel):
@@ -64,6 +133,18 @@ class InviteRequest(BaseModel):
     email: EmailStr
     full_name: Optional[str] = None
     agency_name: Optional[str] = None
+    agent_name: Optional[str] = None
+    agent_npn: Optional[str] = None
+
+    @field_validator("agent_name")
+    @classmethod
+    def _v_agent_name(cls, v):
+        return _normalize_agent_name(v)
+
+    @field_validator("agent_npn")
+    @classmethod
+    def _v_agent_npn(cls, v):
+        return _normalize_agent_npn(v)
 
 
 # ----- Auth -----
