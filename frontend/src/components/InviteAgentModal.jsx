@@ -3,15 +3,27 @@ import { api } from "@/lib/api";
 import { toast } from "sonner";
 
 export default function InviteAgentModal({ onClose }) {
-  const [form, setForm] = useState({ email: "", full_name: "", agency_name: "" });
+  const [form, setForm] = useState({
+    email: "",
+    full_name: "",
+    agency_name: "",
+    agent_name: "",
+    agent_npn: "",
+  });
   const [loading, setLoading] = useState(false);
   const [inviteUrl, setInviteUrl] = useState(null);
 
   const handleSubmit = async () => {
     if (!form.email) { toast.error("Email is required"); return; }
+    // Send only fields the user filled in. Backend validators reject empty
+    // strings on agent_npn (must be 5-10 digits) so we drop falsy values
+    // before posting.
+    const payload = Object.fromEntries(
+      Object.entries(form).filter(([_, v]) => v !== "")
+    );
     setLoading(true);
     try {
-      const { data } = await api.post("/auth/invite", form);
+      const { data } = await api.post("/auth/invite", payload);
       setInviteUrl(data.invite_url);
       toast.success("Invite created successfully");
     } catch (err) {
@@ -77,6 +89,38 @@ export default function InviteAgentModal({ onClose }) {
                 placeholder="Smith Insurance Group"
                 value={form.agency_name}
                 onChange={e => setForm(f => ({ ...f, agency_name: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+                style={{ background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", color: "var(--color-text-primary)" }}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1.5 uppercase" style={{ letterSpacing: "0.08em", color: "var(--color-text-secondary)" }}>
+                Agent Name (ComTrack)
+              </label>
+              <input
+                type="text"
+                placeholder="Name as it appears in ComTrack"
+                value={form.agent_name}
+                onChange={e => setForm(f => ({ ...f, agent_name: e.target.value }))}
+                maxLength={100}
+                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+                style={{ background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", color: "var(--color-text-primary)" }}
+              />
+              <p className="text-[11px] mt-1" style={{ color: "var(--color-text-secondary)" }}>
+                Used to look up commissions for this agent. Leave blank if unknown.
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1.5 uppercase" style={{ letterSpacing: "0.08em", color: "var(--color-text-secondary)" }}>
+                NPN
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="\d{5,10}"
+                placeholder="5-10 digit National Producer Number"
+                value={form.agent_npn}
+                onChange={e => setForm(f => ({ ...f, agent_npn: e.target.value.replace(/\D/g, "").slice(0, 10) }))}
                 className="w-full px-3 py-2 rounded-lg text-sm outline-none"
                 style={{ background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", color: "var(--color-text-primary)" }}
               />
