@@ -15,6 +15,9 @@ import CommissionsDashboard from "@/pages/CommissionsDashboard";
 import AdminCommissions from "@/pages/AdminCommissions";
 import AccountingDashboard from "@/pages/AccountingDashboard";
 import ApplicationSubmission from "@/pages/ApplicationSubmission";
+import Leaderboard from "@/pages/Leaderboard";
+import ClientsList from "@/pages/ClientsList";
+import ClientProfile from "@/pages/ClientProfile";
 import PrivacyPolicy from "@/pages/PrivacyPolicy";
 import SecurityPage from "@/pages/SecurityPage";
 import { auth } from "@/lib/api";
@@ -50,6 +53,9 @@ export default function App() {
           }
         />
         <Route path="/leads/:id" element={<Protected><LeadDetail /></Protected>} />
+        <Route path="/clients" element={<Protected><ClientsList /></Protected>} />
+        <Route path="/clients/:leadId" element={<Protected><ClientProfile /></Protected>} />
+        <Route path="/leaderboard" element={<Protected><Leaderboard /></Protected>} />
         <Route path="/applications" element={<Protected><ApplicationSubmission /></Protected>} />
         <Route path="/audit" element={<Protected roles={["admin","compliance"]}><AuditLog /></Protected>} />
         <Route path="/admin/compliance" element={<Protected roles={["admin","compliance"]}><CompliancePanel /></Protected>} />

@@ -2,7 +2,9 @@ import { useState, useEffect } from "react";
 import {
   Lock,
   ShieldCheck,
-  Users,
+  LayoutDashboard,
+  Users2,
+  Trophy,
   FileText,
   DollarSign,
   ClipboardList,
@@ -154,7 +156,9 @@ function SidebarContent({ user, role, onNavigate, onSignOut }) {
       <nav className="flex-1 overflow-y-auto px-2 py-3">
         <SectionLabel>Main</SectionLabel>
         <div className="space-y-0.5">
-          <NavItem to="/dashboard" icon={Users} label="Leads" onClick={onNavigate} testId="nav-dashboard" />
+          <NavItem to="/dashboard" icon={LayoutDashboard} label="Dashboard" onClick={onNavigate} testId="nav-dashboard" />
+          <NavItem to="/clients" icon={Users2} label="Clients" onClick={onNavigate} testId="nav-clients" />
+          <NavItem to="/leaderboard" icon={Trophy} label="Leaderboard" onClick={onNavigate} testId="nav-leaderboard" />
           <NavItem to="/applications" icon={FileText} label="Applications" onClick={onNavigate} testId="nav-applications" />
           <NavItem to="/commissions" icon={DollarSign} label="Commissions" onClick={onNavigate} testId="nav-commissions" />
         </div>
