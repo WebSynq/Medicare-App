@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from deps import get_db
+from deps import get_db, get_effective_agent, agent_filter
 from auth_router import get_current_user
 from ghl_client import GHLClient
 
@@ -97,6 +97,64 @@ async def _upload_pdf_to_s3(
     except Exception as e:
         logger.warning("S3 upload failed (non-fatal): %s", e)
         return ""
+
+
+async def _relocate_pdf_to_agent_scope(
+    src_url: str, agent_id: str, policy_id: str,
+) -> tuple[str, str]:
+    """Best-effort: copy a PDF from its /extract-time URL to the canonical
+    agent-scoped S3 key ``applications/{agent_id}/{YYYY}/{MM}/{policy_id}_{ts}.pdf``.
+
+    Returns ``(new_key, new_url)`` on success, ``("", "")`` if anything
+    fails. The caller logs and proceeds — S3 is never allowed to block a
+    submission.
+
+    Why a server-side copy rather than re-upload from the request: at
+    /submit time the SPA only sends ``pdf_url`` (a JSON payload), not the
+    PDF bytes. Re-uploading would require either a redesigned multipart
+    endpoint or a re-download from S3. Copy is cheaper and stays inside
+    the same bucket.
+    """
+    if not S3_BUCKET or not src_url:
+        return ("", "")
+    # Extract source key from the URL. Expected form:
+    # https://{BUCKET}.s3.{REGION}.amazonaws.com/{KEY}
+    marker = f"{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/"
+    if marker not in src_url:
+        return ("", "")
+    src_key = src_url.split(marker, 1)[1].split("?")[0]
+    if not src_key:
+        return ("", "")
+    now = datetime.now(timezone.utc)
+    new_key = (
+        f"applications/{agent_id}/{now.strftime('%Y')}/{now.strftime('%m')}/"
+        f"{policy_id}_{now.strftime('%Y%m%dT%H%M%S')}.pdf"
+    )
+
+    def _copy():
+        s3 = _get_s3_client()
+        s3.copy_object(
+            Bucket=S3_BUCKET,
+            CopySource={"Bucket": S3_BUCKET, "Key": src_key},
+            Key=new_key,
+            ContentType="application/pdf",
+            ServerSideEncryption="AES256",
+            Metadata={"agent_id": agent_id, "policy_id": policy_id},
+            MetadataDirective="REPLACE",
+        )
+        return f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{new_key}"
+
+    try:
+        loop = asyncio.get_event_loop()
+        new_url = await loop.run_in_executor(None, _copy)
+        return (new_key, new_url)
+    except Exception as e:
+        logger.warning(
+            "S3 relocate failed (non-fatal) for agent=%s policy=%s: %s",
+            agent_id, policy_id, e,
+        )
+        return ("", "")
+
 
 FIELD_MAPS: Dict[str, Dict[str, str]] = {
     "medsupp": {
@@ -379,6 +437,7 @@ async def submit_application(
     payload: SubmitApplicationRequest,
     db=Depends(get_db),
     current_user: dict = Depends(get_current_user),
+    effective: dict = Depends(get_effective_agent),
 ):
     if payload.product_type not in FIELD_MAPS:
         raise HTTPException(status_code=400, detail="Unknown product_type.")
@@ -387,6 +446,15 @@ async def submit_application(
     custom_fields = _fields_to_ghl_array(payload.extracted)
     if not custom_fields:
         raise HTTPException(status_code=400, detail="No non-null fields to submit.")
+
+    # Generate the policy_id up front so the S3 key (which references it)
+    # and the policy doc agree. UUID4 — distinct from the carrier's policy
+    # number which lives inside extracted_fields.
+    policy_id = str(uuid.uuid4())
+    agent_id = effective["id"]
+    agent_email = (effective.get("email") or "").lower().strip() or None
+    agent_name = effective.get("agent_name") or effective.get("full_name") or None
+
     ghl = GHLClient()
     try:
         result = await ghl.update_contact(payload.contact_id, custom_fields)
@@ -394,15 +462,28 @@ async def submit_application(
         logger.error("GHL update failed: %s", e)
         raise HTTPException(status_code=502, detail="GHL sync failed.")
 
+    # S3 PDF storage: relocate the /extract-staged object to the canonical
+    # agent-scoped key. Best-effort — if it fails we fall back to the
+    # original URL so we never block submission on S3.
+    final_s3_key = ""
+    final_s3_url = payload.pdf_url or ""
+    if payload.pdf_url:
+        relocated_key, relocated_url = await _relocate_pdf_to_agent_scope(
+            payload.pdf_url, agent_id, policy_id,
+        )
+        if relocated_url:
+            final_s3_key = relocated_key
+            final_s3_url = relocated_url
+
     # Second GHL update: push the S3 PDF URL into the product-specific file
-    # field. Non-fatal — if GHL rejects the field key, log and continue. The
-    # primary submission already succeeded above.
+    # field. Use the relocated URL so GHL points at the canonical object.
+    # Non-fatal — if GHL rejects the field key, log and continue.
     pdf_field_key = _GHL_PDF_FIELD_KEYS.get(payload.product_type)
-    if payload.pdf_url and pdf_field_key:
+    if final_s3_url and pdf_field_key:
         try:
             await ghl.update_contact(
                 payload.contact_id,
-                [{"key": pdf_field_key, "field_value": payload.pdf_url}],
+                [{"key": pdf_field_key, "field_value": final_s3_url}],
             )
         except Exception as e:
             logger.warning(
@@ -454,6 +535,15 @@ async def submit_application(
     try:
         extracted = payload.extracted or {}
         await db["policies"].insert_one({
+            # Workspace scoping (Phase 2): every policy carries the
+            # agent who created it. agent_id is the scoping key used by
+            # deps.agent_filter; agent_email/agent_name are denormalized
+            # for cheap rollups in /api/agents and the leaderboard.
+            "policy_id": policy_id,
+            "agent_id": agent_id,
+            "agent_email": agent_email,
+            "agent_name": agent_name,
+            "impersonated_by": effective.get("_impersonated_by"),
             "ghl_contact_id": payload.contact_id,
             "contact_name": payload.contact_name or "",
             "product_type": payload.product_type,
@@ -524,7 +614,12 @@ async def submit_application(
                 or extracted.get(f"{payload.product_type}_pay_frequency")
                 or ""
             ),
-            "pdf_url": payload.pdf_url or "",
+            # S3 archival. s3_url is the canonical agent-scoped location;
+            # pdf_url is kept as a legacy alias of the same value so
+            # existing reads don't break.
+            "s3_key": final_s3_key,
+            "s3_url": final_s3_url,
+            "pdf_url": final_s3_url or payload.pdf_url or "",
             "all_fields": extracted,
             "submitted_by": current_user.get("email", ""),
             "submitted_at": now_iso,

@@ -3,7 +3,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -11,7 +11,13 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from models import DocumentMeta
 from security import encrypt_bytes, decrypt_bytes
-from deps import get_db, get_current_user, write_audit
+from deps import (
+    get_db,
+    get_current_user,
+    get_effective_agent,
+    agent_filter,
+    write_audit,
+)
 
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -26,6 +32,19 @@ ALLOWED_TYPES = {
 }
 
 
+def _idor_or_403(doc: Optional[dict], current_user: dict, kind: str) -> dict:
+    """Phase 2 ownership check. 404 if doc doesn't exist, 403 if it exists
+    but the caller isn't admin/compliance and doesn't own it."""
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"{kind} not found")
+    role = current_user.get("role")
+    if role in ("admin", "compliance"):
+        return doc
+    if doc.get("agent_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    return doc
+
+
 @router.post("/upload/{lead_id}", response_model=DocumentMeta, status_code=201)
 async def upload_document(
     lead_id: str,
@@ -34,20 +53,18 @@ async def upload_document(
     doc_type: str = Form("other"),
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user: dict = Depends(get_current_user),
+    effective: dict = Depends(get_effective_agent),
 ):
     """Encrypt and persist a document attached to a lead.
 
-    Auth required. Agents may only upload to leads assigned to them; admin and
-    compliance roles may upload to any lead. Anonymous uploads were previously
-    accepted, which let any caller stash arbitrary content (potentially malicious
-    or PHI-laden) against a known lead_id.
+    Auth required. Agents may only upload to leads they own (verified via
+    the Phase 2 IDOR check on the lead). Admin / compliance may upload to
+    any lead. Anonymous uploads were previously accepted, which let any
+    caller stash arbitrary content (potentially malicious or PHI-laden)
+    against a known lead_id.
     """
-    lead_filter: dict = {"id": lead_id}
-    if current_user.get("role") == "agent":
-        lead_filter["agent_assigned_id"] = current_user["id"]
-    lead = await db.leads.find_one(lead_filter, {"_id": 0, "id": 1})
-    if not lead:
-        raise HTTPException(status_code=404, detail="Lead not found")
+    lead = await db.leads.find_one({"id": lead_id}, {"_id": 0, "id": 1, "agent_id": 1})
+    _idor_or_403(lead, current_user, "Lead")
 
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(status_code=415, detail=f"Unsupported file type: {file.content_type}")
@@ -64,6 +81,11 @@ async def upload_document(
     lead_dir.mkdir(parents=True, exist_ok=True)
     (lead_dir / f"{doc_id}.enc").write_bytes(encrypted)
 
+    # Stamp ownership from the effective agent (respects admin/compliance
+    # impersonation via X-Agent-ID).
+    agent_id = effective["id"]
+    agent_email = (effective.get("email") or "").lower().strip() or None
+
     meta = {
         "id": doc_id,
         "lead_id": lead_id,
@@ -74,6 +96,8 @@ async def upload_document(
         "encrypted": True,
         "uploaded_by": current_user.get("id"),
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "agent_id": agent_id,
+        "agent_email": agent_email,
     }
     await db.documents.insert_one(meta.copy())
     await db.leads.update_one({"id": lead_id}, {"$push": {"document_ids": doc_id},
@@ -84,7 +108,9 @@ async def upload_document(
         actor_id=current_user.get("id"),
         target_type="document", target_id=doc_id,
         request=request,
-        metadata={"lead_id": lead_id, "doc_type": doc_type, "size": len(contents)},
+        metadata={"lead_id": lead_id, "doc_type": doc_type, "size": len(contents),
+                   "agent_id": agent_id,
+                   "impersonated_by": effective.get("_impersonated_by")},
     )
     return DocumentMeta(**meta)
 
@@ -95,7 +121,10 @@ async def list_lead_documents(
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    cursor = db.documents.find({"lead_id": lead_id}, {"_id": 0}).sort("uploaded_at", -1)
+    """List docs for a lead. Phase 2 scoping: agents see only the docs
+    they (or impersonated them) uploaded; admin/compliance see everything."""
+    query = {"lead_id": lead_id, **agent_filter(current_user)}
+    cursor = db.documents.find(query, {"_id": 0}).sort("uploaded_at", -1)
     return [DocumentMeta(**doc) async for doc in cursor]
 
 
@@ -107,8 +136,7 @@ async def download_document(
     current_user=Depends(get_current_user),
 ):
     meta = await db.documents.find_one({"id": doc_id}, {"_id": 0})
-    if not meta:
-        raise HTTPException(status_code=404, detail="Document not found")
+    meta = _idor_or_403(meta, current_user, "Document")
     path = STORAGE / meta["lead_id"] / f"{doc_id}.enc"
     if not path.exists():
         raise HTTPException(status_code=404, detail="File missing on storage")

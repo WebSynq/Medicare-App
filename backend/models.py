@@ -226,6 +226,14 @@ class Lead(LeadBase):
     soa_signed: bool = False
     soa_signed_at: Optional[str] = None
     document_ids: List[str] = []
+    # Workspace-isolation scoping (Phase 2). agent_id is the canonical key
+    # used by deps.agent_filter; agent_email/agent_name are denormalized so
+    # downstream rollups don't have to join on users for every read.
+    agent_id: Optional[str] = None
+    agent_email: Optional[str] = None
+    agent_name: Optional[str] = None
+    # Legacy field — kept while we transition reads off of it. New code
+    # should use agent_id instead.
     agent_assigned_id: Optional[str] = None
     ghl_contact_id: Optional[str] = None
     ghl_sync_status: str = "pending"  # pending, synced, error, mock
@@ -268,6 +276,9 @@ class DocumentMeta(BaseModel):
     encrypted: bool = True
     uploaded_by: Optional[str] = None
     uploaded_at: str
+    # Workspace-isolation scoping (Phase 2).
+    agent_id: Optional[str] = None
+    agent_email: Optional[str] = None
 
 
 # ----- Audit Log -----

@@ -12,7 +12,13 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from models import Lead, LeadCreate, LeadUpdate
-from deps import get_db, get_current_user, write_audit
+from deps import (
+    get_db,
+    get_current_user,
+    get_effective_agent,
+    agent_filter,
+    write_audit,
+)
 from ghl_client import GHLClient
 from pdf_export import generate_lead_pdf
 
@@ -23,12 +29,24 @@ router = APIRouter(prefix="/leads", tags=["leads"])
 limiter = Limiter(key_func=get_remote_address)
 
 
-def _agent_filter(current_user: dict) -> dict:
-    """Mongo filter restricting agents to their own assigned leads.
-    Admin and compliance roles see everything (empty filter)."""
-    if current_user.get("role") == "agent":
-        return {"agent_assigned_id": current_user["id"]}
-    return {}
+def _idor_or_403(doc: Optional[dict], current_user: dict) -> dict:
+    """Phase 2 ownership check. Returns the doc when access is allowed,
+    raises 404 if the doc doesn't exist, and 403 if it exists but the
+    caller doesn't own it (and isn't admin/compliance).
+
+    Using 403 instead of 404-for-not-yours is a deliberate tradeoff: it's
+    more accurate for legitimate callers but does leak that the resource
+    exists. The route-level filter still hides scoped lists, so the only
+    way to surface 403 is to know the id already.
+    """
+    if not doc:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    role = current_user.get("role")
+    if role in ("admin", "compliance"):
+        return doc
+    if doc.get("agent_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    return doc
 
 
 async def _sync_lead_to_ghl(
@@ -113,6 +131,7 @@ async def create_lead(
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user: dict = Depends(get_current_user),
+    effective: dict = Depends(get_effective_agent),
 ):
     """Create a lead from the (authenticated) intake wizard.
 
@@ -120,10 +139,20 @@ async def create_lead(
     this endpoint was anonymous — so anyone could POST arbitrary Medicare PHI
     (MBI, DOB, prescriptions) into the database. Now requires a valid JWT.
 
-    For agent role users we auto-assign the lead to them. Admin/compliance can
-    create leads without forcing an assignment.
+    Ownership stamping (Phase 2):
+      - agent_id / agent_email / agent_name come from get_effective_agent,
+        so admins doing "view as agent" via X-Agent-ID create the lead under
+        the impersonated agent's scope rather than their own.
+      - agent_assigned_id is also stamped for agent callers to preserve the
+        legacy assignment field while we transition reads to agent_id.
     """
     lead_data = payload.model_dump()
+    effective_id = effective["id"]
+    lead_data["agent_id"] = effective_id
+    lead_data["agent_email"] = (effective.get("email") or "").lower().strip() or None
+    lead_data["agent_name"] = (
+        effective.get("agent_name") or effective.get("full_name") or None
+    )
     if current_user.get("role") == "agent":
         lead_data["agent_assigned_id"] = current_user["id"]
     lead = Lead(**lead_data)
@@ -133,7 +162,9 @@ async def create_lead(
                       actor_id=current_user.get("id"),
                       target_type="lead", target_id=lead.id, request=request,
                       metadata={"source": "authenticated_intake",
-                                "actor_role": current_user.get("role")})
+                                "actor_role": current_user.get("role"),
+                                "agent_id": effective_id,
+                                "impersonated_by": effective.get("_impersonated_by")})
 
     # Auto-sync to GHL. Failures must not block the intake response — the helper
     # has already persisted ghl_sync_status="error" + the audit event by the time
@@ -156,7 +187,7 @@ async def list_leads(
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    query: dict = {**_agent_filter(current_user)}
+    query: dict = {**agent_filter(current_user)}
     if status:
         query["status"] = status
     if q:
@@ -180,10 +211,10 @@ async def get_lead(
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    doc = await db.leads.find_one({"id": lead_id, **_agent_filter(current_user)},
-                                  {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Lead not found")
+    # Fetch first, then IDOR-check. Admin/compliance bypass; agents 403 on
+    # another agent's lead, 404 on missing.
+    doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    doc = _idor_or_403(doc, current_user)
     return Lead(**doc)
 
 
@@ -201,13 +232,11 @@ async def update_lead(
     # Agents cannot reassign leads — only admins/compliance.
     if current_user.get("role") == "agent" and "agent_assigned_id" in updates:
         raise HTTPException(status_code=403, detail="Agents cannot reassign leads")
+    # Phase 2 IDOR check: fetch, then verify ownership before mutating.
+    existing = await db.leads.find_one({"id": lead_id}, {"_id": 0, "id": 1, "agent_id": 1})
+    _idor_or_403(existing, current_user)
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-    result = await db.leads.update_one(
-        {"id": lead_id, **_agent_filter(current_user)},
-        {"$set": updates},
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Lead not found")
+    await db.leads.update_one({"id": lead_id}, {"$set": updates})
     await write_audit(db, "lead_updated", actor_email=current_user["email"],
                       actor_id=current_user["id"], target_type="lead", target_id=lead_id,
                       request=request, metadata={"fields": list(updates.keys())})
@@ -223,10 +252,8 @@ async def export_lead_pdf(
     current_user=Depends(get_current_user),
 ):
     """Render the lead's intake record as a downloadable PDF."""
-    lead_doc = await db.leads.find_one({"id": lead_id, **_agent_filter(current_user)},
-                                       {"_id": 0})
-    if not lead_doc:
-        raise HTTPException(status_code=404, detail="Lead not found")
+    lead_doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    lead_doc = _idor_or_403(lead_doc, current_user)
     soa_doc = await db.soa_records.find_one({"lead_id": lead_id}, {"_id": 0})
 
     pdf_bytes = generate_lead_pdf(lead_doc, soa_doc)
@@ -253,12 +280,11 @@ async def sync_to_ghl(
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    # Gate access — agents may only sync their own leads.
+    # Gate access — agents may only sync their own leads. Phase 2 IDOR.
     owned = await db.leads.find_one(
-        {"id": lead_id, **_agent_filter(current_user)}, {"_id": 0, "id": 1},
+        {"id": lead_id}, {"_id": 0, "id": 1, "agent_id": 1},
     )
-    if not owned:
-        raise HTTPException(status_code=404, detail="Lead not found")
+    _idor_or_403(owned, current_user)
 
     try:
         await _sync_lead_to_ghl(db, lead_id, request,

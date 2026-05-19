@@ -17,7 +17,7 @@ import logging
 
 from fastapi import APIRouter, Depends
 
-from deps import get_db, get_current_user
+from deps import get_db, get_current_user, agent_filter
 
 
 logger = logging.getLogger("gruening.clients")
@@ -54,10 +54,17 @@ async def get_client_policies(
     db=Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """All policies on file for a GHL contact, newest first."""
+    """All policies on file for a GHL contact, newest first.
+
+    Phase 2 scoping: agents see only policies they submitted; admin /
+    compliance see everything. The agent_filter helper returns an empty
+    dict for privileged roles so the existing contact-scoped query is
+    unaffected for them.
+    """
+    query = {"ghl_contact_id": contact_id, **agent_filter(current_user)}
     cursor = (
         db["policies"]
-        .find({"ghl_contact_id": contact_id}, {"_id": 0})
+        .find(query, {"_id": 0})
         .sort("submitted_at", -1)
     )
     policies = await cursor.to_list(length=100)
@@ -83,9 +90,10 @@ async def get_client_summary(
     client = await db["clients"].find_one(
         {"ghl_contact_id": contact_id}, {"_id": 0}
     )
+    query = {"ghl_contact_id": contact_id, **agent_filter(current_user)}
     cursor = (
         db["policies"]
-        .find({"ghl_contact_id": contact_id}, {"_id": 0, "all_fields": 0})
+        .find(query, {"_id": 0, "all_fields": 0})
         .sort("submitted_at", -1)
     )
     policies = await cursor.to_list(length=100)

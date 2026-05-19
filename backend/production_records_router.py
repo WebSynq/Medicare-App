@@ -15,7 +15,7 @@ from fastapi import (APIRouter, Depends, File, HTTPException,
                      UploadFile)
 from pydantic import BaseModel
 
-from deps import get_db, write_audit
+from deps import get_db, write_audit, agent_filter
 from auth_router import get_current_user
 
 from import_parser import parse_production_file
@@ -289,10 +289,16 @@ async def import_history(
     current_user: dict = Depends(_require_admin),
     db=Depends(get_db),
 ):
-    """List all past import batches (newest first, capped at 50)."""
+    """List all past import batches (newest first, capped at 50).
+
+    Phase 2: defensive agent_filter. The endpoint is admin-gated above so
+    the filter resolves to {} in practice — kept here so a future relaxation
+    of _require_admin doesn't accidentally leak cross-agent batch metadata.
+    """
+    query = {**agent_filter(current_user)}
     cursor = (
         db["import_batches"]
-        .find({}, {"_id": 0})
+        .find(query, {"_id": 0})
         .sort("imported_at", -1)
         .limit(50)
     )
