@@ -19,7 +19,7 @@ logger = logging.getLogger("gruening.applications")
 limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/api/applications", tags=["applications"])
 
-BEDROCK_MODEL_ID = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+BEDROCK_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 def _get_bedrock_client():
