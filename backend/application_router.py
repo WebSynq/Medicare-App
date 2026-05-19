@@ -172,6 +172,39 @@ If nothing found, return:
 {null_keys}
 }}"""
 
+
+def _build_auto_extract_prompt() -> str:
+    """Single-call classify+extract prompt for the auto-detect flow.
+
+    The model must (1) identify which of the 10 product types the PDF is, then
+    (2) extract only that product type's fields. Response shape is constrained
+    to {"product_type": "<code>", "extracted": {...}} so the existing /extract
+    response contract still holds for the frontend.
+    """
+    lines = [
+        "You are an insurance application data extraction specialist.",
+        "Analyze the attached PDF and do TWO things:",
+        "1. Identify which product type it is. Choose EXACTLY ONE of these codes:",
+    ]
+    for code, label in PRODUCT_LABELS.items():
+        lines.append(f"   - {code}: {label}")
+    lines.append("")
+    lines.append("2. Extract that product type's fields from the PDF.")
+    lines.append("")
+    lines.append("Return ONLY valid JSON in this exact shape (no markdown, no backticks):")
+    lines.append('{"product_type": "<one of the codes above>", "extracted": { ...the fields for that type... }}')
+    lines.append("")
+    lines.append("Use ONLY the field keys for the product type you identified.")
+    lines.append("Use null for missing fields. Dates in YYYY-MM-DD. Monetary values: numbers only.")
+    lines.append("")
+    lines.append("Fields per product type:")
+    for code, field_map in FIELD_MAPS.items():
+        lines.append(f"\n{code} ({PRODUCT_LABELS[code]}):")
+        for fk, fv in field_map.items():
+            lines.append(f'  "{fk}": "{fv}"')
+    return "\n".join(lines)
+
+
 def _parse_bedrock_response(response_body) -> dict:
     result = json.loads(response_body.read())
     raw = result["content"][0]["text"].strip()
@@ -188,10 +221,16 @@ def _fields_to_ghl_array(extracted: dict) -> list:
 @router.post("/extract")
 async def extract_application(
     file: UploadFile = File(...),
-    product_type: str = Form(...),
+    product_type: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user),
 ):
-    if product_type not in FIELD_MAPS:
+    """Extract insurance application fields from a PDF.
+
+    product_type is optional. When omitted, the model both classifies the
+    product type and extracts its fields in one Bedrock call. The response
+    shape is identical either way so the frontend can ignore the distinction.
+    """
+    if product_type is not None and product_type not in FIELD_MAPS:
         raise HTTPException(status_code=400, detail=f"Unknown product_type '{product_type}'.")
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files accepted.")
@@ -199,29 +238,50 @@ async def extract_application(
     if len(contents) > 20 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="PDF exceeds 20MB.")
     pdf_b64 = base64.standard_b64encode(contents).decode("utf-8")
+
+    auto = product_type is None
+    prompt = _build_auto_extract_prompt() if auto else _build_extraction_prompt(product_type)
+    # Auto-detect needs a bigger budget — it returns the wrapper object plus
+    # all extracted fields, and may pick a product type with a wide field map.
+    max_tokens = 3000 if auto else 2000
+
     try:
         bedrock = _get_bedrock_client()
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 2000,
+            "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": [
                 {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_b64}},
-                {"type": "text", "text": _build_extraction_prompt(product_type)},
+                {"type": "text", "text": prompt},
             ]}],
         })
         response = bedrock.invoke_model(modelId=BEDROCK_MODEL_ID, body=body,
                                         contentType="application/json", accept="application/json")
-        extracted = _parse_bedrock_response(response["body"])
+        parsed = _parse_bedrock_response(response["body"])
     except (BotoCoreError, ClientError) as e:
         logger.error("Bedrock error: %s", e)
         raise HTTPException(status_code=502, detail="AI extraction service unavailable.")
     except (json.JSONDecodeError, KeyError, IndexError) as e:
         logger.error("Parse error: %s", e)
         raise HTTPException(status_code=502, detail="Could not parse AI response.")
+
+    if auto:
+        product_type = parsed.get("product_type")
+        if product_type not in FIELD_MAPS:
+            logger.error("Auto-detect returned unknown product_type: %r", product_type)
+            raise HTTPException(status_code=502,
+                                 detail="Could not identify the application's product type.")
+        extracted = parsed.get("extracted") or {}
+        if not isinstance(extracted, dict):
+            raise HTTPException(status_code=502, detail="Malformed AI response shape.")
+    else:
+        extracted = parsed
+
     field_count = sum(1 for v in extracted.values() if v is not None)
     return {"product_type": product_type, "product_label": PRODUCT_LABELS[product_type],
             "extracted": extracted, "field_count": field_count,
-            "fields_available": list(FIELD_MAPS[product_type].keys())}
+            "fields_available": list(FIELD_MAPS[product_type].keys()),
+            "auto_detected": auto}
 
 class SubmitApplicationRequest(BaseModel):
     contact_id: str
