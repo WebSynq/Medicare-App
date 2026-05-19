@@ -24,6 +24,7 @@ import { toast } from "sonner";
 import { api, auth } from "@/lib/api";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import InviteAgentModal from "@/components/InviteAgentModal";
+import QuickAddLeadSheet from "@/components/QuickAddLeadSheet";
 
 const STATUS_COLORS = {
   new: "bg-secondary text-secondary-foreground",
@@ -40,6 +41,7 @@ export default function AgentDashboard() {
   const [pending, setPending] = useState([]);
   const [pendingBusy, setPendingBusy] = useState(null);
   const [showInvite, setShowInvite] = useState(false);
+  const [showNewLead, setShowNewLead] = useState(false);
   const user = auth.getUser();
   const isAdmin = user?.role === "admin";
 
@@ -123,16 +125,30 @@ export default function AgentDashboard() {
               </button>
             )}
           </div>
-          {user?.role === "admin" && (
+          <div className="flex items-center gap-2 flex-shrink-0">
             <button
-              onClick={() => setShowInvite(true)}
-              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium flex-shrink-0"
-              style={{ border: "1px solid #1e2d3d", color: "#1e2d3d" }}
-              data-testid="invite-agent-header"
+              type="button"
+              onClick={() => setShowNewLead(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-white shadow-sm hover:opacity-95 transition-opacity"
+              style={{
+                background:
+                  "linear-gradient(135deg, #e85d2f 0%, #c84416 100%)",
+              }}
+              data-testid="new-lead-header"
             >
-              + Invite Agent
+              + New Lead
             </button>
-          )}
+            {user?.role === "admin" && (
+              <button
+                onClick={() => setShowInvite(true)}
+                className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium"
+                style={{ border: "1px solid #1e2d3d", color: "#1e2d3d" }}
+                data-testid="invite-agent-header"
+              >
+                + Invite Agent
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3 w-full overflow-hidden mb-6">
@@ -337,37 +353,11 @@ export default function AgentDashboard() {
         </Card>
       </main>
 
-      {/* FAB — New Intake — always visible, bottom right */}
-      <Link
-        to="/intake"
-        className="fixed z-50 flex items-center justify-center shadow-lg transition-transform hover:scale-105 active:scale-95 bottom-[4.5rem] md:bottom-6 right-6"
-        style={{
-          width: "56px",
-          height: "56px",
-          borderRadius: "50%",
-          background: "#e85d2f",
-          color: "white",
-          boxShadow: "0 4px 14px rgba(232, 93, 47, 0.4)",
-        }}
-        aria-label="New Intake"
-        title="New Intake"
-        data-testid="new-intake-fab"
-      >
-        <svg
-          width="24"
-          height="24"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2.5}
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M12 4.5v15m7.5-7.5h-15"
-          />
-        </svg>
-      </Link>
+      <QuickAddLeadSheet
+        open={showNewLead}
+        onOpenChange={setShowNewLead}
+        onCreated={() => load()}
+      />
 
       {showInvite && <InviteAgentModal onClose={() => setShowInvite(false)} />}
     </div>
