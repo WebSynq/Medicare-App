@@ -46,6 +46,7 @@ class UserBase(BaseModel):
     is_active: bool = True
     status: UserStatus = "active"
     agency_name: Optional[str] = None
+    phone: Optional[str] = None
     # Agent identity for downstream lookups (ComTrack, carrier portals, etc.).
     # We resolve agent identity from these server-side fields only — never from
     # request body or query params — so a JWT cannot impersonate another agent.

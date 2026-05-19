@@ -12,6 +12,7 @@ import {
   UserCheck,
   Calculator,
   Upload,
+  Settings as SettingsIcon,
   LogOut,
   Menu,
   X,
@@ -180,6 +181,12 @@ function SidebarContent({ user, role, onNavigate, onSignOut }) {
             </div>
           </>
         )}
+
+        {/* Settings — visible to everyone (profile / security / audit log
+            tabs are always present; admin-only tabs are gated client-side). */}
+        <div className="space-y-0.5 mt-5">
+          <NavItem to="/settings" icon={SettingsIcon} label="Settings" onClick={onNavigate} testId="nav-settings" />
+        </div>
       </nav>
 
       {/* HIPAA + user */}

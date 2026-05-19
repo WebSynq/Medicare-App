@@ -34,6 +34,8 @@ from audit_router import router as audit_router  # noqa: E402
 from application_router import router as application_router  # noqa: E402
 from clients_router import router as clients_router  # noqa: E402
 from production_records_router import router as production_records_router  # noqa: E402
+from profile_router import router as profile_router  # noqa: E402
+from integrations_router import router as integrations_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
 
 
@@ -134,6 +136,8 @@ app.include_router(audit_router, prefix="/api")
 app.include_router(application_router)
 app.include_router(clients_router)
 app.include_router(production_records_router)
+app.include_router(profile_router, prefix="/api")
+app.include_router(integrations_router, prefix="/api")
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
@@ -245,6 +249,12 @@ _CSRF_EXEMPT_PREFIXES = (
     # commit, history list, rollback delete). JWT-authenticated via the
     # _require_admin dependency.
     "/api/admin/import/",
+    # /api/profile/* — Settings page state-changing routes (profile patch,
+    # MFA enable/disable, agency settings patch). JWT-authenticated via
+    # get_current_user / require_roles.
+    "/api/profile/",
+    # /api/admin/users/{id}/credentials — admin force-reset endpoint.
+    "/api/admin/users/",
 )
 
 

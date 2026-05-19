@@ -1,0 +1,577 @@
+"""
+profile_router.py — Settings page backend.
+
+Endpoints (all mounted under /api):
+    GET  /profile/me                          — return current user profile
+    PATCH /profile/me                         — update email/full_name/phone/npn/password
+    GET  /profile/sessions                    — last 10 successful logins for caller
+    GET  /profile/audit-log                   — audit history (own for agents, all for admin/compliance)
+    GET  /profile/mfa/setup                   — generate TOTP secret + QR for caller
+    POST /profile/mfa/verify                  — confirm TOTP and turn MFA on
+    DELETE /profile/mfa                       — turn MFA off (requires password)
+    GET  /profile/agency                      — single agency_settings document
+    PATCH /profile/agency                     — update agency_settings (admin only)
+    GET  /profile/team                        — list of active users for the Team tab (admin only)
+    PATCH /admin/users/{user_id}/credentials  — admin force-reset email/password/role/is_active
+
+Notes:
+    - Password values are NEVER logged (audit metadata records the field NAMES that changed,
+      not the values).
+    - All state-changing routes write to the audit log via deps.write_audit.
+"""
+import base64
+import csv
+import hashlib
+import io
+import logging
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+import pyotp
+import qrcode
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
+from motor.motor_asyncio import AsyncIOMotorDatabase
+from pydantic import BaseModel, EmailStr, Field
+
+from deps import get_current_user, get_db, require_roles, write_audit
+from security import (
+    hash_password,
+    verify_password,
+    validate_password_strength,
+)
+
+
+logger = logging.getLogger(__name__)
+
+# No internal prefix — server.py mounts this with prefix="/api", and the
+# admin credential endpoint lives at /api/admin/users/... (not /api/profile/...).
+router = APIRouter(tags=["profile"])
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+def _profile_dict(user: dict) -> dict:
+    """Strip server-only fields. Used by /profile/me + after PATCH."""
+    return {
+        "id": user.get("id"),
+        "email": user.get("email"),
+        "full_name": user.get("full_name"),
+        "agent_name": user.get("agent_name"),
+        "agent_id": user.get("agent_id") or user.get("id"),
+        "agent_npn": user.get("agent_npn"),
+        "phone": user.get("phone"),
+        "role": user.get("role"),
+        "is_active": user.get("is_active", True),
+        "status": user.get("status", "active"),
+        "agency_name": user.get("agency_name"),
+        "mfa_enabled": user.get("mfa_enabled", False),
+        "created_at": user.get("created_at"),
+    }
+
+
+def _audit_action(meta: dict) -> str:
+    """Pull a stable 'action' label from an audit doc. Prefer event_type
+    (the canonical name) and fall back to action (older rows may carry that)."""
+    return meta.get("event_type") or meta.get("action") or "unknown"
+
+
+# ── GET /api/profile/me ────────────────────────────────────────────────────
+@router.get("/profile/me")
+async def get_my_profile(current_user: dict = Depends(get_current_user)):
+    return _profile_dict(current_user)
+
+
+# ── PATCH /api/profile/me ─────────────────────────────────────────────────
+class ProfilePatch(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    email: Optional[EmailStr] = None
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    agent_npn: Optional[str] = None
+    new_password: Optional[str] = None
+
+
+@router.patch("/profile/me")
+async def update_my_profile(
+    payload: ProfilePatch,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    # Always re-verify the password against the freshest DB row — current_user
+    # is the JWT-decoded snapshot, which can lag behind a recent password
+    # change. This also ensures the password verification is happening against
+    # a row that still exists / is active.
+    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    if not fresh:
+        raise HTTPException(404, "User not found")
+
+    if not verify_password(payload.current_password, fresh["hashed_password"]):
+        # Don't reveal which field was wrong — keep it generic so we don't
+        # leak "right password / wrong email" timing signals.
+        raise HTTPException(401, "Current password incorrect")
+
+    updates: dict = {}
+    fields_changed: list = []
+
+    if payload.email and payload.email.lower() != (fresh.get("email") or "").lower():
+        new_email = payload.email.lower().strip()
+        clash = await db.users.find_one(
+            {"email": new_email, "id": {"$ne": fresh["id"]}}, {"_id": 0, "id": 1}
+        )
+        if clash:
+            raise HTTPException(409, "That email is already in use")
+        updates["email"] = new_email
+        fields_changed.append("email")
+
+    if payload.full_name is not None and payload.full_name.strip() != (fresh.get("full_name") or ""):
+        updates["full_name"] = payload.full_name.strip()
+        fields_changed.append("full_name")
+
+    if payload.phone is not None and (payload.phone or None) != fresh.get("phone"):
+        updates["phone"] = payload.phone.strip() or None
+        fields_changed.append("phone")
+
+    if payload.agent_npn is not None and payload.agent_npn != fresh.get("agent_npn"):
+        npn = payload.agent_npn.strip() or None
+        # NPN is 5-10 digits per the model validator — apply here too so we
+        # don't store garbage when patched via this surface.
+        if npn and (not npn.isdigit() or not (5 <= len(npn) <= 10)):
+            raise HTTPException(422, "agent_npn must be 5-10 digits, numbers only")
+        updates["agent_npn"] = npn
+        fields_changed.append("agent_npn")
+
+    if payload.new_password:
+        errors = validate_password_strength(payload.new_password)
+        if errors:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Password does not meet security requirements.",
+                    "requirements": errors,
+                },
+            )
+        updates["hashed_password"] = hash_password(payload.new_password)
+        fields_changed.append("password")
+
+    if not updates:
+        return _profile_dict(fresh)
+
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one({"id": fresh["id"]}, {"$set": updates})
+
+    # Audit only the field NAMES — never the values, especially for password.
+    await write_audit(
+        db, "profile_updated",
+        actor_email=fresh["email"],
+        actor_id=fresh["id"],
+        target_type="user",
+        target_id=fresh["id"],
+        request=request,
+        metadata={"fields_changed": fields_changed},
+    )
+
+    updated = await db.users.find_one({"id": fresh["id"]}, {"_id": 0})
+    return _profile_dict(updated)
+
+
+# ── GET /api/profile/sessions ──────────────────────────────────────────────
+@router.get("/profile/sessions")
+async def my_sessions(
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Last 10 successful login attempts for the caller. login_attempts is
+    keyed by email and only stores the most recent activity (per
+    deps.check_and_record_login_attempt's lockout cleanup), so we don't
+    have rich historical data — this returns what's there plus a count."""
+    email = (current_user.get("email") or "").lower().strip()
+    # Look at login_success entries in the audit log — that's where we record
+    # IP + UA for each successful sign-in.
+    cursor = db.audit_logs.find(
+        {"event_type": "login_success", "actor_email": email},
+        {"_id": 0, "ip_address": 1, "user_agent": 1, "timestamp": 1},
+    ).sort("timestamp", -1).limit(10)
+    rows = await cursor.to_list(length=10)
+    return {"sessions": rows, "count": len(rows)}
+
+
+# ── GET /api/profile/audit-log ────────────────────────────────────────────
+@router.get("/profile/audit-log")
+async def my_audit_log(
+    request: Request,
+    user_id: Optional[str] = Query(None, max_length=64),
+    action: Optional[str] = Query(None, max_length=64),
+    from_: Optional[str] = Query(None, alias="from", max_length=40),
+    to: Optional[str] = Query(None, max_length=40),
+    limit: int = Query(100, ge=1, le=500),
+    export: Optional[str] = Query(None, max_length=10),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    role = current_user.get("role", "agent")
+    is_privileged = role in ("admin", "compliance")
+
+    q: Dict[str, Any] = {}
+
+    if not is_privileged:
+        # Agents see only their own activity — scope is forced server-side.
+        q["actor_email"] = (current_user.get("email") or "").lower().strip()
+    elif user_id:
+        # Admin/compliance can filter to one user. Resolve to email since
+        # actor_email is the canonical key on audit_logs.
+        target = await db.users.find_one(
+            {"id": user_id}, {"_id": 0, "email": 1}
+        )
+        if target:
+            q["actor_email"] = (target["email"] or "").lower().strip()
+        else:
+            # No such user — return empty cleanly rather than confusing 404.
+            q["actor_email"] = "__no_match__"
+
+    if action:
+        q["event_type"] = action
+
+    ts_clause: dict = {}
+    if from_:
+        ts_clause["$gte"] = from_
+    if to:
+        ts_clause["$lte"] = to
+    if ts_clause:
+        q["timestamp"] = ts_clause
+
+    cap = limit if export != "csv" else min(max(limit, 5000), 5000)
+    cursor = db.audit_logs.find(q, {"_id": 0}).sort("timestamp", -1).limit(cap)
+    rows = await cursor.to_list(length=cap)
+
+    # Enrich with target_email when target_type=user (so admins see who was acted on).
+    target_ids = [r.get("target_id") for r in rows
+                  if r.get("target_type") == "user" and r.get("target_id")]
+    target_emails: Dict[str, str] = {}
+    if target_ids:
+        async for u in db.users.find(
+            {"id": {"$in": list(set(target_ids))}},
+            {"_id": 0, "id": 1, "email": 1},
+        ):
+            target_emails[u["id"]] = u.get("email") or ""
+    for r in rows:
+        if r.get("target_type") == "user":
+            r["target_email"] = target_emails.get(r.get("target_id"))
+        else:
+            r["target_email"] = None
+        r["action"] = _audit_action(r)
+
+    if export == "csv":
+        # Build CSV in-memory. Detail blob is JSON-encoded so a spreadsheet
+        # cell holds the full payload without exploding to many columns.
+        import json as _json
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "timestamp", "actor_email", "action", "target_email",
+            "ip_address", "details",
+        ])
+        for r in rows:
+            writer.writerow([
+                r.get("timestamp") or "",
+                r.get("actor_email") or "",
+                r.get("action") or "",
+                r.get("target_email") or "",
+                r.get("ip_address") or "",
+                _json.dumps(r.get("metadata") or {}, default=str),
+            ])
+        await write_audit(
+            db, "audit_log_exported",
+            actor_email=current_user.get("email"),
+            actor_id=current_user.get("id"),
+            request=request,
+            metadata={"row_count": len(rows), "filters": {
+                "user_id": user_id, "action": action,
+                "from": from_, "to": to, "limit": limit,
+            }},
+        )
+        filename = f"ghw-audit-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.csv"
+        return StreamingResponse(
+            iter([buf.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    return {
+        "entries": rows,
+        "count": len(rows),
+        "limit": limit,
+        "scope": "self" if not is_privileged else ("user" if user_id else "agency"),
+    }
+
+
+# ── GET /api/profile/mfa/setup ────────────────────────────────────────────
+@router.get("/profile/mfa/setup")
+async def mfa_setup(
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Returns a fresh TOTP secret + QR code. Persists the secret to the
+    user's row but leaves mfa_enabled=False until /profile/mfa/verify
+    confirms a working token. Safe to call repeatedly — overwrites the
+    pending secret each time."""
+    if current_user.get("mfa_enabled"):
+        raise HTTPException(400, "MFA is already enabled. Disable it first to re-enroll.")
+
+    secret = pyotp.random_base32()
+    qr_uri = pyotp.TOTP(secret).provisioning_uri(
+        name=current_user["email"], issuer_name="Gruening Health & Wealth"
+    )
+    # Render the QR code to PNG → base64 so the SPA can drop it into an <img>.
+    img = qrcode.make(qr_uri)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    qr_png_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {"$set": {"mfa_secret": secret,
+                   "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {
+        "secret": secret,
+        "qr_uri": qr_uri,
+        "qr_png_base64": qr_png_b64,
+    }
+
+
+# ── POST /api/profile/mfa/verify ──────────────────────────────────────────
+class MfaVerifyBody(BaseModel):
+    token: str = Field(..., min_length=4, max_length=12)
+
+
+@router.post("/profile/mfa/verify")
+async def mfa_verify(
+    body: MfaVerifyBody,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    if not user or not user.get("mfa_secret"):
+        raise HTTPException(400, "MFA setup not started. Call /profile/mfa/setup first.")
+    if not pyotp.TOTP(user["mfa_secret"]).verify(body.token, valid_window=1):
+        raise HTTPException(400, "Invalid code")
+
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"mfa_enabled": True,
+                   "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await write_audit(
+        db, "mfa_enabled",
+        actor_email=user["email"], actor_id=user["id"],
+        target_type="user", target_id=user["id"],
+        request=request,
+    )
+    return {"mfa_enabled": True}
+
+
+# ── DELETE /api/profile/mfa ───────────────────────────────────────────────
+class MfaDisableBody(BaseModel):
+    current_password: str = Field(..., min_length=1)
+
+
+@router.delete("/profile/mfa")
+async def mfa_disable(
+    body: MfaDisableBody,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    if not verify_password(body.current_password, user["hashed_password"]):
+        raise HTTPException(401, "Current password incorrect")
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"mfa_enabled": False, "mfa_secret": None,
+                   "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await write_audit(
+        db, "mfa_disabled",
+        actor_email=user["email"], actor_id=user["id"],
+        target_type="user", target_id=user["id"],
+        request=request,
+    )
+    return {"mfa_enabled": False}
+
+
+# ── Agency settings (single-doc collection) ───────────────────────────────
+# agency_settings is a one-row collection keyed by the constant "ghw".
+# Anything we need across the agency lives here.
+_AGENCY_SETTINGS_KEY = "ghw"
+
+
+class AgencySettingsPatch(BaseModel):
+    agency_name: Optional[str] = None
+    business_address: Optional[str] = None
+    phone: Optional[str] = None
+    agency_npn: Optional[str] = None
+    timezone: Optional[str] = None
+    eo_carrier: Optional[str] = None
+    eo_policy_number: Optional[str] = None
+    eo_expires_at: Optional[str] = None
+
+
+def _default_agency() -> dict:
+    return {
+        "_key": _AGENCY_SETTINGS_KEY,
+        "agency_name": "Gruening Health & Wealth",
+        "business_address": "",
+        "phone": "",
+        "agency_npn": "",
+        "timezone": "America/Chicago",
+        "eo_carrier": "",
+        "eo_policy_number": "",
+        "eo_expires_at": "",
+        "updated_at": None,
+    }
+
+
+@router.get("/profile/agency")
+async def get_agency_settings(
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Anyone authenticated can read the agency settings (they're not
+    secret), but only admin can write — see PATCH below."""
+    doc = await db.agency_settings.find_one(
+        {"_key": _AGENCY_SETTINGS_KEY}, {"_id": 0}
+    )
+    return doc or _default_agency()
+
+
+@router.patch("/profile/agency")
+async def update_agency_settings(
+    payload: AgencySettingsPatch,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    sent = payload.model_dump(exclude_unset=True)
+    if not sent:
+        return await db.agency_settings.find_one(
+            {"_key": _AGENCY_SETTINGS_KEY}, {"_id": 0}
+        ) or _default_agency()
+    sent["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.agency_settings.update_one(
+        {"_key": _AGENCY_SETTINGS_KEY},
+        {"$set": sent,
+         "$setOnInsert": {"_key": _AGENCY_SETTINGS_KEY}},
+        upsert=True,
+    )
+    await write_audit(
+        db, "agency_settings_updated",
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
+        request=request,
+        metadata={"fields_changed": list(sent.keys())},
+    )
+    fresh = await db.agency_settings.find_one(
+        {"_key": _AGENCY_SETTINGS_KEY}, {"_id": 0}
+    )
+    return fresh
+
+
+# ── GET /api/profile/team — for Team tab summary table ────────────────────
+@router.get("/profile/team")
+async def list_team(
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    cursor = db.users.find(
+        {},
+        {"_id": 0, "id": 1, "email": 1, "full_name": 1, "role": 1,
+         "is_active": 1, "status": 1, "created_at": 1, "mfa_enabled": 1},
+    ).sort("created_at", -1).limit(200)
+    rows = await cursor.to_list(length=200)
+    return {"members": rows, "count": len(rows)}
+
+
+# ── PATCH /api/admin/users/{user_id}/credentials ───────────────────────────
+class AdminCredentialPatch(BaseModel):
+    email: Optional[EmailStr] = None
+    new_password: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+@router.patch("/admin/users/{user_id}/credentials")
+async def admin_credential_change(
+    user_id: str,
+    payload: AdminCredentialPatch,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    """Admin force-update of another user's credentials. No
+    current_password required because the admin is the policy authority for
+    every account. Logs the field NAMES changed, never values."""
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+
+    updates: dict = {}
+    fields_changed: list = []
+
+    if payload.email and payload.email.lower() != (target.get("email") or "").lower():
+        new_email = payload.email.lower().strip()
+        clash = await db.users.find_one(
+            {"email": new_email, "id": {"$ne": user_id}}, {"_id": 0, "id": 1}
+        )
+        if clash:
+            raise HTTPException(409, "That email is already in use")
+        updates["email"] = new_email
+        fields_changed.append("email")
+
+    if payload.role and payload.role != target.get("role"):
+        if payload.role not in ("admin", "agent", "compliance"):
+            raise HTTPException(422, "role must be admin, agent, or compliance")
+        updates["role"] = payload.role
+        fields_changed.append("role")
+
+    if payload.is_active is not None and payload.is_active != target.get("is_active", True):
+        updates["is_active"] = bool(payload.is_active)
+        fields_changed.append("is_active")
+
+    if payload.new_password:
+        errors = validate_password_strength(payload.new_password)
+        if errors:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Password does not meet security requirements.",
+                    "requirements": errors,
+                },
+            )
+        updates["hashed_password"] = hash_password(payload.new_password)
+        fields_changed.append("password")
+
+    if not updates:
+        return _profile_dict(target)
+
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one({"id": user_id}, {"$set": updates})
+
+    await write_audit(
+        db, "admin_credential_change",
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
+        target_type="user",
+        target_id=user_id,
+        request=request,
+        metadata={
+            "target_email": target.get("email"),
+            "fields_changed": fields_changed,
+        },
+    )
+
+    fresh = await db.users.find_one({"id": user_id}, {"_id": 0})
+    return _profile_dict(fresh)
