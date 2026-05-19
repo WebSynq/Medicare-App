@@ -9,6 +9,7 @@ import {
   Minus,
 } from "lucide-react";
 import { toast } from "sonner";
+import ReactMarkdown from "react-markdown";
 import { API, auth, getImpersonatedAgentId } from "@/lib/api";
 
 const STORAGE_OPEN_KEY = "ghw_chat_open";
@@ -26,6 +27,77 @@ function pageSlug(pathname) {
   if (!pathname) return "unknown";
   const cleaned = pathname.replace(/^\/+|\/+$/g, "");
   return cleaned ? cleaned.split("/")[0] : "home";
+}
+
+// Tight tailwind overrides for the markdown rendered inside the small
+// chat bubble. Default react-markdown maps to bare <p>/<ul>/etc., which
+// inherit zero spacing or styling from Tailwind's preflight reset — so
+// we re-introduce the bare minimum to make headings, lists, dividers,
+// inline/block code, and links readable in a 340-px-wide panel.
+const MARKDOWN_COMPONENTS = {
+  p: ({ node, ...props }) => (
+    <p className="mb-2 last:mb-0 leading-snug" {...props} />
+  ),
+  h1: ({ node, ...props }) => (
+    <h3 className="text-sm font-semibold mt-2 mb-1" {...props} />
+  ),
+  h2: ({ node, ...props }) => (
+    <h3 className="text-sm font-semibold mt-2 mb-1" {...props} />
+  ),
+  h3: ({ node, ...props }) => (
+    <h3 className="text-sm font-semibold mt-2 mb-1" {...props} />
+  ),
+  ul: ({ node, ...props }) => (
+    <ul className="list-disc ml-5 mb-2 last:mb-0 space-y-0.5" {...props} />
+  ),
+  ol: ({ node, ...props }) => (
+    <ol className="list-decimal ml-5 mb-2 last:mb-0 space-y-0.5" {...props} />
+  ),
+  li: ({ node, ...props }) => <li className="leading-snug" {...props} />,
+  strong: ({ node, ...props }) => (
+    <strong className="font-semibold" {...props} />
+  ),
+  em: ({ node, ...props }) => <em className="italic" {...props} />,
+  a: ({ node, ...props }) => (
+    <a
+      className="text-[#e85d2f] underline"
+      target="_blank"
+      rel="noreferrer"
+      {...props}
+    />
+  ),
+  code: ({ inline, className, children, ...props }) =>
+    inline ? (
+      <code
+        className="font-mono bg-secondary px-1 py-0.5 rounded text-[12px]"
+        {...props}
+      >
+        {children}
+      </code>
+    ) : (
+      <pre className="bg-secondary p-2 rounded text-[12px] overflow-x-auto my-2">
+        <code className={className} {...props}>
+          {children}
+        </code>
+      </pre>
+    ),
+  hr: ({ node, ...props }) => (
+    <hr className="my-2 border-t border-border" {...props} />
+  ),
+  blockquote: ({ node, ...props }) => (
+    <blockquote
+      className="border-l-2 border-[#e85d2f]/50 pl-2 italic text-foreground/80 my-2"
+      {...props}
+    />
+  ),
+};
+
+function AssistantMarkdown({ content }) {
+  return (
+    <ReactMarkdown components={MARKDOWN_COMPONENTS}>
+      {content || ""}
+    </ReactMarkdown>
+  );
 }
 
 function TypingDots() {
@@ -290,7 +362,7 @@ export default function ChatWidget() {
               className={
                 m.role === "user"
                   ? "max-w-[80%] rounded-2xl rounded-br-md px-3 py-2 text-sm text-white whitespace-pre-wrap break-words"
-                  : "max-w-[85%] rounded-2xl rounded-bl-md px-3 py-2 text-sm bg-white border border-border whitespace-pre-wrap break-words"
+                  : "max-w-[85%] rounded-2xl rounded-bl-md px-3 py-2 text-sm bg-white border border-border break-words"
               }
               style={
                 m.role === "user"
@@ -299,17 +371,25 @@ export default function ChatWidget() {
               }
               data-testid={`chat-msg-${m.role}`}
             >
-              {m.content}
+              {m.role === "user" ? (
+                m.content
+              ) : (
+                <AssistantMarkdown content={m.content} />
+              )}
             </div>
           </div>
         ))}
         {streaming && (
           <div className="flex justify-start">
             <div
-              className="max-w-[85%] rounded-2xl rounded-bl-md px-3 py-2 text-sm bg-white border border-border whitespace-pre-wrap break-words"
+              className="max-w-[85%] rounded-2xl rounded-bl-md px-3 py-2 text-sm bg-white border border-border break-words"
               data-testid="chat-msg-streaming"
             >
-              {streamingText || <TypingDots />}
+              {streamingText ? (
+                <AssistantMarkdown content={streamingText} />
+              ) : (
+                <TypingDots />
+              )}
             </div>
           </div>
         )}
