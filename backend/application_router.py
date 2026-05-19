@@ -262,13 +262,22 @@ async def submit_application(
             "fields_synced": len(custom_fields), "ghl_mock": result.get("mock", False)}
 
 @router.get("/search-contacts")
-async def search_contacts(query: str, current_user: dict = Depends(get_current_user)):
+async def search_contacts(
+    query: str,
+    current_user: dict = Depends(get_current_user),
+):
     if len(query.strip()) < 2:
-        raise HTTPException(status_code=400, detail="Query must be 2+ characters.")
+        raise HTTPException(status_code=400,
+            detail="Query must be 2+ characters.")
     ghl = GHLClient()
     try:
+        # Primary search
         contacts = await ghl.search_contacts(query.strip())
+        # If empty, try name-based fallback
+        if not contacts:
+            contacts = await ghl.search_contacts_by_name(query.strip())
     except Exception as e:
         logger.error("Contact search failed: %s", e)
-        raise HTTPException(status_code=502, detail="Contact search unavailable.")
+        raise HTTPException(status_code=502,
+            detail=f"Contact search unavailable: {str(e)}")
     return {"contacts": contacts}

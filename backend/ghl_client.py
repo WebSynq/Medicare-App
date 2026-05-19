@@ -107,20 +107,51 @@ class GHLClient:
             resp.raise_for_status()
             return resp.json()
 
-    async def search_contacts(self, query: str, limit: int = 10) -> list:
+    async def search_contacts(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         if self.mock_mode:
             return [
-                {"id": "mock_contact_1", "firstName": "John", "lastName": "Smith", "email": "john.smith@example.com"},
-                {"id": "mock_contact_2", "firstName": "Jane", "lastName": "Doe", "email": "jane.doe@example.com"},
+                {"id": "mock_contact_1", "firstName": "John", "lastName": "Smith",
+                 "email": "john.smith@example.com"},
+                {"id": "mock_contact_2", "firstName": "Jane", "lastName": "Doe",
+                 "email": "jane.doe@example.com"},
             ]
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
-                f"{self.base_url}/contacts/search",
+                f"{self.base_url}/contacts/",
                 headers=self._headers(),
-                params={"locationId": self.location_id, "query": query, "limit": limit},
+                params={
+                    "locationId": self.location_id,
+                    "query": query,
+                    "limit": limit,
+                }
             )
             resp.raise_for_status()
-            return resp.json().get("contacts", [])
+            data = resp.json()
+            # GHL v2 returns contacts under "contacts" key
+            return data.get("contacts", [])
+
+    async def search_contacts_by_name(self, name: str) -> List[Dict[str, Any]]:
+        """Fallback search using name split into first/last."""
+        if self.mock_mode:
+            return []
+        parts = name.strip().split()
+        first = parts[0] if parts else name
+        last = parts[-1] if len(parts) > 1 else ""
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{self.base_url}/contacts/search/duplicate",
+                headers=self._headers(),
+                params={
+                    "locationId": self.location_id,
+                    "firstName": first,
+                    "lastName": last,
+                }
+            )
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                contact = data.get("contact")
+                return [contact] if contact else []
+            return []
 
 
 def _build_custom_fields(lead: Dict[str, Any]) -> List[Dict[str, Any]]:
