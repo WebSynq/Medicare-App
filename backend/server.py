@@ -33,6 +33,7 @@ from soa_router import router as soa_router  # noqa: E402
 from audit_router import router as audit_router  # noqa: E402
 from application_router import router as application_router  # noqa: E402
 from clients_router import router as clients_router  # noqa: E402
+from production_records_router import router as production_records_router  # noqa: E402
 from seed import seed_admin  # noqa: E402
 
 
@@ -132,6 +133,7 @@ app.include_router(soa_router, prefix="/api")
 app.include_router(audit_router, prefix="/api")
 app.include_router(application_router)
 app.include_router(clients_router)
+app.include_router(production_records_router)
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
@@ -159,7 +161,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_origins=_cors_origins,
     allow_origin_regex=None,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin",
                    "X-Requested-With", "X-CSRF-Token"],
     max_age=600,
@@ -239,6 +241,10 @@ _CSRF_EXEMPT_PREFIXES = (
     "/api/commission/audit/mark-resolved/",
     # /api/commission/sync/run — admin-only manual ComTrack sync.
     "/api/commission/sync/",
+    # /api/admin/import/* — admin-only data import (multipart preview,
+    # commit, history list, rollback delete). JWT-authenticated via the
+    # _require_admin dependency.
+    "/api/admin/import/",
 )
 
 
@@ -309,6 +315,13 @@ async def on_startup():
     await db.production_records.create_index("agent_name")
     await db.production_records.create_index("effective_date")
     await db.production_records.create_index("audit_status")
+    # GHW production import (Phase 4) — dedup_key is the new natural identity;
+    # legacy rows from import_production.py don't have it (sparse index).
+    await db.production_records.create_index(
+        "dedup_key", unique=True, sparse=True)
+    await db.production_records.create_index("agent_id")
+    await db.production_records.create_index("import_batch_id")
+    await db.import_batches.create_index("imported_at")
 
     # Carrier rate schedule (Phase 2)
     await db.carrier_rates.create_index("natural_key", unique=True)

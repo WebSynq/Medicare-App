@@ -18,6 +18,7 @@ import ApplicationSubmission from "@/pages/ApplicationSubmission";
 import Leaderboard from "@/pages/Leaderboard";
 import ClientsList from "@/pages/ClientsList";
 import ClientProfile from "@/pages/ClientProfile";
+import DataImport from "@/pages/DataImport";
 import PrivacyPolicy from "@/pages/PrivacyPolicy";
 import SecurityPage from "@/pages/SecurityPage";
 import { auth } from "@/lib/api";
@@ -72,6 +73,14 @@ export default function App() {
           element={
             <Protected roles={["admin"]}>
               <AccountingDashboard />
+            </Protected>
+          }
+        />
+        <Route
+          path="/admin/import"
+          element={
+            <Protected roles={["admin"]}>
+              <DataImport />
             </Protected>
           }
         />

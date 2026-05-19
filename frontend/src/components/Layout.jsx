@@ -11,6 +11,7 @@ import {
   Shield,
   UserCheck,
   Calculator,
+  Upload,
   LogOut,
   Menu,
   X,
@@ -172,6 +173,9 @@ function SidebarContent({ user, role, onNavigate, onSignOut }) {
               <NavItem to="/admin/commissions" icon={UserCheck} label="Agent Commissions" onClick={onNavigate} testId="nav-admin-commissions" />
               {isAdmin && (
                 <NavItem to="/admin/accounting" icon={Calculator} label="Accounting" onClick={onNavigate} testId="nav-accounting" />
+              )}
+              {isAdmin && (
+                <NavItem to="/admin/import" icon={Upload} label="Data Import" onClick={onNavigate} testId="nav-data-import" />
               )}
             </div>
           </>
