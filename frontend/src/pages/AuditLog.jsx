@@ -8,9 +8,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { api } from "@/lib/api";
 
 const TYPE_STYLE = (t) => {
-  if (t.includes("failed") || t.includes("error")) return "bg-destructive/10 text-destructive";
-  if (t.includes("login_success") || t.includes("synced") || t.includes("signed")) return "bg-emerald-100 text-emerald-900";
-  if (t.includes("uploaded") || t.includes("created")) return "bg-secondary text-secondary-foreground";
+  const s = t || "";
+  if (s.includes("failed") || s.includes("error")) return "bg-destructive/10 text-destructive";
+  if (s.includes("login_success") || s.includes("synced") || s.includes("signed")) return "bg-emerald-100 text-emerald-900";
+  if (s.includes("uploaded") || s.includes("created")) return "bg-secondary text-secondary-foreground";
   return "bg-muted text-muted-foreground";
 };
 
@@ -27,7 +28,7 @@ export default function AuditLog() {
     setLoading(true);
     try {
       const res = await api.get("/audit", { params: { event_type: type || undefined, actor_email: email || undefined, limit: 500 } });
-      setEvents(res.data);
+      setEvents(Array.isArray(res.data) ? res.data : []);
     } finally { setLoading(false); }
   };
   const loadSummary = async () => {
@@ -49,9 +50,9 @@ export default function AuditLog() {
             <div className="text-xs uppercase tracking-widest opacity-80">Total events</div>
             <div className="text-3xl font-bold mt-1 tabular-nums" style={{fontFamily:'Outfit'}}>{summary?.total ?? "—"}</div>
           </CardContent></Card>
-          {summary?.by_event_type?.slice(0,3).map((b) => (
+          {(summary?.by_event_type || []).slice(0,3).map((b) => (
             <Card key={b.event_type} className="border-border bg-surface"><CardContent className="p-4">
-              <div className="text-xs uppercase tracking-widest text-muted-foreground">{b.event_type.replace(/_/g," ")}</div>
+              <div className="text-xs uppercase tracking-widest text-muted-foreground">{(b.event_type || "").replace(/_/g," ")}</div>
               <div className="text-3xl font-bold mt-1 tabular-nums" style={{fontFamily:'Outfit'}}>{b.count}</div>
             </CardContent></Card>
           ))}
@@ -81,8 +82,8 @@ export default function AuditLog() {
                 </TableHeader>
                 <TableBody>
                   {loading && <TableRow><TableCell colSpan={5} className="text-center py-10 text-muted-foreground">Loading...</TableCell></TableRow>}
-                  {!loading && events.length === 0 && <TableRow><TableCell colSpan={5} className="text-center py-10 text-muted-foreground">No events match.</TableCell></TableRow>}
-                  {events.map((e) => (
+                  {!loading && (events || []).length === 0 && <TableRow><TableCell colSpan={5} className="text-center py-10 text-muted-foreground">No events match.</TableCell></TableRow>}
+                  {(events || []).map((e) => (
                     <TableRow key={e.id}>
                       <TableCell><Badge className={`rounded-full ${TYPE_STYLE(e.event_type)}`}>{e.event_type}</Badge></TableCell>
                       <TableCell className="text-sm"><div>{e.actor_email || <span className="text-muted-foreground">anonymous</span>}</div>{e.metadata?.reason && <div className="text-xs text-muted-foreground">{e.metadata.reason}</div>}</TableCell>
