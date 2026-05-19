@@ -70,6 +70,11 @@ class UserBase(BaseModel):
     agent_id: Optional[str] = None
     agent_name: Optional[str] = None
     agent_npn: Optional[str] = None
+    # GHL sub-account id this user owns leads inside. Inbound webhooks
+    # carry locationId, and we look the agent up by this field to scope
+    # the new lead correctly. None means "no GHL mapping yet" — webhook
+    # leads fall back to the first admin.
+    ghl_location_id: Optional[str] = None
 
     @field_validator("agent_name")
     @classmethod

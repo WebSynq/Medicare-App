@@ -1205,7 +1205,156 @@ function IntegrationsTab() {
           </Card>
         ))}
       </div>
+
+      <GhlWebhookStatus />
     </div>
+  );
+}
+
+// GoHighLevel inbound webhook status. Lives alongside the integrations
+// grid; loads on mount and on demand via the Test Webhook button which
+// hits GET /api/ghl/webhook/config to re-pull the URL + counters.
+function GhlWebhookStatus() {
+  const [info, setInfo] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [testing, setTesting] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const { data } = await api.get("/ghl/webhook/config");
+      setInfo(data);
+    } catch (err) {
+      // Non-admin or endpoint missing — show a graceful empty state
+      // instead of a destructive toast.
+      setInfo(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function handleTest() {
+    setTesting(true);
+    try {
+      const { data } = await api.get("/ghl/webhook/config");
+      setInfo(data);
+      toast.success(
+        data?.secret_configured
+          ? "Webhook endpoint reachable. Secret is configured."
+          : "Webhook endpoint reachable — but GHL_WEBHOOK_SECRET is NOT set.",
+      );
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.detail ||
+          err?.message ||
+          "Webhook check failed",
+      );
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function copyUrl() {
+    if (!info?.webhook_url) return;
+    try {
+      await navigator.clipboard.writeText(info.webhook_url);
+      toast.success("Webhook URL copied.");
+    } catch {
+      toast.error("Couldn't copy — select the URL manually.");
+    }
+  }
+
+  if (loading) return null;
+  if (!info) return null;
+
+  return (
+    <Card data-testid="ghl-webhook-card">
+      <CardContent className="p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Plug className="w-4 h-4 text-muted-foreground" />
+            <h3 className="text-sm font-semibold">GHL Inbound Webhook</h3>
+          </div>
+          {info.secret_configured ? (
+            <Badge className="rounded-full bg-emerald-100 text-emerald-900 border-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 mr-1.5" />
+              Secret configured
+            </Badge>
+          ) : (
+            <Badge className="rounded-full bg-amber-100 text-amber-900 border-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-600 mr-1.5" />
+              Secret missing
+            </Badge>
+          )}
+        </div>
+
+        <div className="space-y-1">
+          <Label className="text-xs">Webhook URL</Label>
+          <div className="flex items-stretch gap-2">
+            <Input
+              readOnly
+              value={info.webhook_url || ""}
+              onFocus={(e) => e.target.select()}
+              className="font-mono text-xs"
+              data-testid="ghl-webhook-url"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={copyUrl}
+              data-testid="ghl-webhook-copy"
+            >
+              Copy
+            </Button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Paste this URL into your GHL workflow webhook step. Configure
+            it with the same secret as <code>GHL_WEBHOOK_SECRET</code> on
+            the backend.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 text-xs">
+          <div>
+            <div className="text-muted-foreground">Last webhook received</div>
+            <div className="font-mono">
+              {info.last_received_at
+                ? fmtDateTime(info.last_received_at)
+                : "—"}
+            </div>
+          </div>
+          <div>
+            <div className="text-muted-foreground">
+              Leads received via webhook
+            </div>
+            <div className="font-mono">{info.leads_received_total ?? 0}</div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between pt-1">
+          <div className="text-[11px] text-muted-foreground">
+            Location: <code>{info.location_id || "—"}</code> · Supported:{" "}
+            {(info.supported_events || []).join(", ")}
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={handleTest}
+            disabled={testing}
+            data-testid="ghl-webhook-test"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 mr-1.5 ${testing ? "animate-spin" : ""}`}
+            />
+            Test Webhook
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
