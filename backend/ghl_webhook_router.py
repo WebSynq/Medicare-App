@@ -83,6 +83,10 @@ SUPPORTED_EVENTS = [
 
 
 # ── Signature verification ────────────────────────────────────────────────
+def _signature_secret_configured() -> bool:
+    return bool(os.environ.get("GHL_WEBHOOK_SECRET", "").strip())
+
+
 def _verify_signature(raw_body: bytes, provided: Optional[str]) -> bool:
     """HMAC-SHA256(GHL_WEBHOOK_SECRET, raw_body).
 
@@ -93,7 +97,10 @@ def _verify_signature(raw_body: bytes, provided: Optional[str]) -> bool:
       - "t=<ts>,v1=<hex>"  (Stripe-style; GHL has used this shape too)
 
     Comparison is constant-time. Returns False on any mismatch / missing
-    secret. If the secret env var is unset we fail closed.
+    secret. Callers gate this on ``_signature_secret_configured()`` so
+    deployments that haven't set GHL_WEBHOOK_SECRET (e.g. when running
+    against GHL Automation workflows, which don't sign payloads) can
+    skip verification entirely instead of failing closed.
     """
     secret = os.environ.get("GHL_WEBHOOK_SECRET", "").strip()
     if not secret or not provided:
@@ -109,6 +116,122 @@ def _verify_signature(raw_body: bytes, provided: Optional[str]) -> bool:
         if c and hmac.compare_digest(c, digest):
             return True
     return False
+
+
+# ── Payload normalisation ─────────────────────────────────────────────────
+# GHL has two webhook surfaces with two different payload shapes:
+#
+#   1. Native webhooks (the public API)  → nested:
+#        { "type": "ContactCreate", "locationId": "...",
+#          "contact": { "id": "...", "firstName": "...", ... },
+#          "opportunity": { "id": "...", ... } }
+#
+#   2. Automation workflow webhook steps → flat / snake_case:
+#        { "contact_id": "...", "location_id": "...",
+#          "first_name": "...", "last_name": "...",
+#          "opportunity_id": "...", "pipeline_stage_id": "...",
+#          ... no "type" key }
+#
+# Below we detect the flat shape (``contact_id`` at the top level), fold
+# it into the nested shape the rest of the router already understands,
+# and auto-detect the event type from which fields are present.
+_FLAT_CONTACT_KEYS = (
+    "first_name", "last_name", "email", "phone",
+    "date_of_birth", "address1", "city", "state", "postal_code",
+    "tags", "source",
+)
+_FLAT_OPP_KEYS = (
+    "opportunity_id", "opportunity_status",
+    "pipeline_id", "pipeline_stage_id",
+)
+
+
+def _is_flat_payload(body: dict) -> bool:
+    """Top-level ``contact_id`` is the cheap, reliable tell. Some GHL
+    workflow steps also include ``contact`` as a nested object, but the
+    flat fields then sit alongside — we still want to normalise so the
+    contact id propagates."""
+    if not isinstance(body, dict):
+        return False
+    return "contact_id" in body or "location_id" in body
+
+
+def _normalize_flat_payload(body: dict) -> dict:
+    """Translate a flat GHL automation payload into the nested API shape.
+
+    Returns a *new* dict — callers should use the result. Any keys
+    already present in the nested form (e.g. ``contact`` already a
+    dict) are preserved and merged with the flat fields.
+    """
+    if not isinstance(body, dict):
+        return body
+    nested_contact = body.get("contact") if isinstance(body.get("contact"), dict) else {}
+    nested_opp = body.get("opportunity") if isinstance(body.get("opportunity"), dict) else {}
+
+    # Promote each flat field into the nested contact dict if a value is
+    # present in the flat form. We don't overwrite values the nested
+    # shape already supplied — the nested API source wins on conflict.
+    if "contact_id" in body and not nested_contact.get("id"):
+        nested_contact["id"] = body.get("contact_id")
+    flat_to_nested_contact = {
+        "first_name": "firstName",
+        "last_name": "lastName",
+        "email": "email",
+        "phone": "phone",
+        "date_of_birth": "dateOfBirth",
+        "address1": "address1",
+        "city": "city",
+        "state": "state",
+        "postal_code": "postalCode",
+        "source": "source",
+    }
+    for flat_key, nested_key in flat_to_nested_contact.items():
+        if flat_key in body and not nested_contact.get(nested_key):
+            nested_contact[nested_key] = body.get(flat_key)
+    if "tags" in body and not nested_contact.get("tags"):
+        nested_contact["tags"] = body.get("tags") or []
+
+    # Opportunity rollup.
+    flat_to_nested_opp = {
+        "opportunity_id": "id",
+        "opportunity_status": "status",
+        "pipeline_id": "pipelineId",
+        "pipeline_stage_id": "pipelineStageId",
+    }
+    for flat_key, nested_key in flat_to_nested_opp.items():
+        if flat_key in body and not nested_opp.get(nested_key):
+            nested_opp[nested_key] = body.get(flat_key)
+
+    normalised: Dict[str, Any] = dict(body)  # keep any extras
+    if nested_contact:
+        normalised["contact"] = nested_contact
+    if nested_opp:
+        normalised["opportunity"] = nested_opp
+    if "location_id" in body and not normalised.get("locationId"):
+        normalised["locationId"] = body.get("location_id")
+    return normalised
+
+
+def _detect_event_type(body: dict) -> str:
+    """When the workflow webhook omits ``type``, infer one from shape.
+
+    Rule:
+      - any opportunity-shaped field → OpportunityCreate
+      - else                          → ContactCreate
+    Update vs. Create can't be distinguished from a single payload; we
+    pick the Create variant and let the handlers fall through to
+    update-or-create based on existing-record lookup.
+    """
+    if not isinstance(body, dict):
+        return "ContactCreate"
+    has_flat_opp = any(body.get(k) for k in _FLAT_OPP_KEYS)
+    nested_opp = body.get("opportunity") or {}
+    has_nested_opp = isinstance(nested_opp, dict) and (
+        nested_opp.get("id") or nested_opp.get("pipelineStageId")
+    )
+    if has_flat_opp or has_nested_opp:
+        return "OpportunityCreate"
+    return "ContactCreate"
 
 
 def _sanitized_metadata(payload_dict: dict) -> dict:
@@ -323,13 +446,25 @@ async def ghl_webhook(request: Request, db=Depends(get_db)):
         or ""
     )
 
-    if not _verify_signature(raw, sig):
-        # 400 is the one signal we send back — invalid signature is the
-        # only thing we want GHL to NOT retry. Everything else returns
-        # 200 so legitimate retries don't spiral.
-        logger.warning("GHL webhook signature mismatch from %s",
-                       get_remote_address(request))
-        return JSONResponse({"error": "invalid_signature"}, status_code=400)
+    # Signature verification is optional: when GHL_WEBHOOK_SECRET is set
+    # we enforce it strictly; when it isn't, we skip the check (with a
+    # warning). GHL Automation workflow steps don't sign their payloads
+    # at all, so requiring a signature would lock that surface out.
+    if _signature_secret_configured():
+        if not _verify_signature(raw, sig):
+            # 400 is the one signal we send back — invalid signature is
+            # the only thing we want GHL to NOT retry. Everything else
+            # returns 200 so legitimate retries don't spiral.
+            logger.warning("GHL webhook signature mismatch from %s",
+                           get_remote_address(request))
+            return JSONResponse({"error": "invalid_signature"}, status_code=400)
+    else:
+        logger.warning(
+            "GHL webhook received without signature verification — "
+            "GHL_WEBHOOK_SECRET is not configured. Acceptable for "
+            "Automation workflow webhooks, but native webhooks should "
+            "set this env var."
+        )
 
     # Parse / validate. Wrap everything from this point onward in a broad
     # try so an unexpected payload shape still returns 200.
@@ -342,6 +477,18 @@ async def ghl_webhook(request: Request, db=Depends(get_db)):
             metadata={"bytes": len(raw)},
         )
         return JSONResponse({"ok": True, "note": "unparseable"}, status_code=200)
+
+    # GHL Automation steps send flat snake_case payloads; native webhooks
+    # send nested camelCase. Normalise here so the rest of the pipeline
+    # only ever sees the nested shape.
+    payload_format = "nested"
+    if _is_flat_payload(body_dict):
+        payload_format = "flat"
+        body_dict = _normalize_flat_payload(body_dict)
+
+    # Auto-detect event type when GHL Automation omits it.
+    if not (body_dict.get("type") or "").strip():
+        body_dict["type"] = _detect_event_type(body_dict)
 
     try:
         payload = GHLWebhookPayload(**body_dict)
@@ -357,7 +504,7 @@ async def ghl_webhook(request: Request, db=Depends(get_db)):
     await write_audit(
         db, "ghl_webhook_received",
         request=request,
-        metadata=_sanitized_metadata(body_dict),
+        metadata={**_sanitized_metadata(body_dict), "payload_format": payload_format},
     )
 
     try:
