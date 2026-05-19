@@ -238,6 +238,12 @@ _CSRF_EXEMPT_PATHS = {
     "/api/applications/extract",
     "/api/applications/submit",
     "/api/applications/webhook",
+    # AI chat widget — Bedrock-backed POST returning SSE. Auth is enforced
+    # by get_current_user; same product decision as /api/commission/chat.
+    # The widget uses raw fetch (not axios) so the CSRF interceptor isn't
+    # in play even though we could plumb it; exempting here keeps the chat
+    # endpoint behaving like the other AI surfaces.
+    "/api/chat",
 }
 
 # Path prefixes for parameterised routes. CSRF-exempt when request.url.path
