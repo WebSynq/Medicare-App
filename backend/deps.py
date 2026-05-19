@@ -106,6 +106,58 @@ def require_roles(*roles: str):
     return _checker
 
 
+def agent_filter(current_user: dict,
+                 override_agent_id: Optional[str] = None) -> dict:
+    """Build a Mongo filter that scopes results to one agent's data.
+
+    - Admin / compliance roles see everything by default (empty filter). If
+      they pass ``override_agent_id`` (e.g. via the X-Agent-ID impersonation
+      header), the filter narrows to that agent.
+    - Everyone else (agents) is pinned to their own ``agent_id`` — the
+      ``override_agent_id`` argument is silently ignored for non-privileged
+      roles so an attacker can't widen their scope.
+
+    Pair with ``get_effective_agent`` (which does the impersonation check
+    centrally) when you want both behaviors driven by the same header.
+    """
+    role = current_user.get("role", "agent")
+    if role in ("admin", "compliance"):
+        if override_agent_id:
+            return {"agent_id": override_agent_id}
+        return {}
+    return {"agent_id": current_user["id"]}
+
+
+async def get_effective_agent(
+    request: Request,
+    current_user=Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+) -> dict:
+    """Resolve the user whose data should be returned for this request.
+
+    For agents this is always themselves (header is ignored). For admin /
+    compliance, an ``X-Agent-ID`` header swaps the effective user to the
+    target agent's DB row so the caller sees that agent's data — useful for
+    "view as agent" support and audit-trail debugging.
+
+    The returned dict carries two metadata fields the caller can audit-log:
+      - ``_impersonated_by``     — caller's email
+      - ``_impersonated_by_id``  — caller's user id
+    """
+    target_id = request.headers.get("X-Agent-ID", "")
+    if not target_id:
+        return current_user
+    role = current_user.get("role", "agent")
+    if role not in ("admin", "compliance"):
+        raise HTTPException(403, "Only admins can impersonate agents")
+    target = await db.users.find_one({"id": target_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Agent not found")
+    target["_impersonated_by"] = current_user.get("email")
+    target["_impersonated_by_id"] = current_user.get("id")
+    return target
+
+
 def get_client_ip(request: Request) -> Optional[str]:
     xff = request.headers.get("x-forwarded-for")
     if xff:

@@ -34,7 +34,7 @@ from audit_router import router as audit_router  # noqa: E402
 from application_router import router as application_router  # noqa: E402
 from clients_router import router as clients_router  # noqa: E402
 from production_records_router import router as production_records_router  # noqa: E402
-from seed import seed_admin  # noqa: E402
+from seed import seed_admin, backfill_agent_identity  # noqa: E402
 
 
 logging.basicConfig(level=logging.INFO,
@@ -360,6 +360,9 @@ async def on_startup():
     await db.policies.create_index([("ghl_contact_id", 1), ("product_type", 1)])
 
     await seed_admin(db)
+    # Stamp agent_id / agent_name on any pre-existing user rows that pre-date
+    # workspace-isolation scoping. Idempotent — no-op once everyone is stamped.
+    await backfill_agent_identity(db)
     logger.info("Startup complete. Admin seeded if missing.")
 
     # Boot background schedulers. Gated by DISABLE_SCHEDULER=1 (set in

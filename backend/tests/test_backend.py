@@ -192,7 +192,16 @@ def test_authenticated_lead_post_succeeds(client, db, admin_headers):
 # ── ComTrack live endpoint sources agent_name from DB ───────────────────────
 @pytest.mark.asyncio
 async def test_commissions_live_400_without_agent_name(client, db, admin_headers):
-    """Default admin has no agent_name set — endpoint must 400."""
+    """When agent_name is missing the endpoint must 400.
+
+    The Phase 1 startup backfill stamps agent_name = full_name, so the
+    seeded test admin no longer has a null agent_name by default. We
+    explicitly null it here to exercise the missing-agent-name code path.
+    """
+    await db.users.update_one(
+        {"email": os.environ["SEED_ADMIN_EMAIL"]},
+        {"$set": {"agent_name": None}},
+    )
     r = client.get("/api/commissions/live", headers=admin_headers)
     assert r.status_code == 400
     assert "Agent name not configured" in r.json()["detail"]
@@ -796,14 +805,16 @@ async def test_leaderboard_aggregates_from_production_records(client, db,
 
 async def test_leaderboard_marks_is_self(client, db, admin_headers):
     """An agent's own row is flagged via is_self for UI highlighting."""
-    # Invite + register Bob with agent_name="Bob"
+    # Invite + register Bob. Phase 1: register stamps agent_name = full_name
+    # so we use "Bob" for full_name to keep it aligned with the production
+    # rows seeded below (which key off agent_name).
     inv = client.post("/api/auth/invite", headers=admin_headers, json={
-        "email": "lb.bob@example.com", "full_name": "LB Bob",
+        "email": "lb.bob@example.com", "full_name": "Bob",
         "agency_name": "B", "agent_name": "Bob",
     }).json()
     reg = client.post("/api/auth/register", json={
         "email": "lb.bob@example.com", "password": "LbBobPass!2026",
-        "full_name": "LB Bob", "agency_name": "B",
+        "full_name": "Bob", "agency_name": "B",
         "invite_token": inv["token"],
     })
     client.post(f"/api/auth/users/{reg.json()['id']}/approve",

@@ -49,6 +49,9 @@ class UserBase(BaseModel):
     # Agent identity for downstream lookups (ComTrack, carrier portals, etc.).
     # We resolve agent identity from these server-side fields only — never from
     # request body or query params — so a JWT cannot impersonate another agent.
+    # agent_id is the canonical scoping key (defaults to the user's own id);
+    # admins/compliance can override per-request via the X-Agent-ID header.
+    agent_id: Optional[str] = None
     agent_name: Optional[str] = None
     agent_npn: Optional[str] = None
 

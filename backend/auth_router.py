@@ -94,6 +94,9 @@ def _user_public(user: dict) -> UserPublic:
         is_active=user.get("is_active", True),
         status=user.get("status", "active"),
         agency_name=user.get("agency_name"),
+        # Fall back to the user's own id if agent_id hasn't been backfilled
+        # yet — defensive so /auth/me never returns a null scoping key.
+        agent_id=user.get("agent_id") or user.get("id"),
         agent_name=user.get("agent_name"),
         agent_npn=user.get("agent_npn"),
         mfa_enabled=user.get("mfa_enabled", False),
@@ -186,21 +189,25 @@ async def register(
     existing = await db.users.find_one({"email": email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-    # Agent identity: prefer values from the invite (admin-controlled) over
-    # whatever the registering user typed, so a registering agent cannot mint
-    # their own NPN. Fall back to registration body only when the invite is
-    # silent on the field.
-    agent_name = invite.get("agent_name") or body.agent_name
+    # Agent identity at write time:
+    #   - agent_id = the new user's own id (scoping key for agent_filter)
+    #   - agent_name = full_name (kept in lockstep so downstream lookups
+    #     like ComTrack and the leaderboard resolve immediately)
+    #   - agent_npn = invite's NPN if set, else body's. Admins control NPN
+    #     via the invite so a registering agent cannot mint their own.
+    new_user_id = str(uuid.uuid4())
+    full_name = body.full_name.strip()
     agent_npn = invite.get("agent_npn") or body.agent_npn
     user_doc = {
-        "id": str(uuid.uuid4()),
+        "id": new_user_id,
+        "agent_id": new_user_id,
         "email": email,
-        "full_name": body.full_name.strip(),
+        "full_name": full_name,
         "role": "agent",
         "is_active": False,
         "status": "pending",
         "agency_name": body.agency_name.strip(),
-        "agent_name": agent_name,
+        "agent_name": full_name,
         "agent_npn": agent_npn,
         "hashed_password": hash_password(body.password),
         "mfa_secret": None,
