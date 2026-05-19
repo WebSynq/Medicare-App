@@ -3,7 +3,7 @@
 ## Stack
 - Frontend: React CRA + Tailwind + shadcn/ui → Vercel
 - Backend: FastAPI (Python 3.11.9) → Render
-- Database: MongoDB (Atlas)
+- Database: MongoDB (Atlas) — DB_NAME = `gruening_medicare`
 - Auth: JWT (HS256) + httpOnly cookie + CSRF middleware
 - Repo: github.com/WebSynq/Medicare-App
 
@@ -56,3 +56,77 @@ Import scripts:
 - ANTHROPIC_API_KEY in Render env vars only — never in code
 - Python 3.11.9 compatible syntax only (no match statements, no 3.12+ features)
 - One commit per task
+
+## Agent Isolation Patterns
+
+Workspace isolation is enforced server-side. Every new endpoint that
+touches per-agent data MUST use the helpers below — do not roll your
+own scoping or stamp `agent_id` off the request body.
+
+### `agent_filter(current_user, override_agent_id=None)` — `deps.py`
+Returns a MongoDB filter dict to scope a read.
+- Admin / compliance → `{}` (full visibility), or
+  `{"agent_id": override_agent_id}` when impersonating.
+- Agent → `{"agent_id": current_user["id"]}` (override is silently
+  ignored so a leaked header can't widen scope).
+
+Use on every list endpoint:
+```python
+query = {**agent_filter(current_user), "status": "new"}
+cursor = db.leads.find(query, {"_id": 0})
+```
+
+### `get_effective_agent(request, current_user, db)` — `deps.py`
+FastAPI dependency that returns the user whose data should be stamped
+on a write.
+- Admin / compliance + `X-Agent-ID` header → returns that agent's user
+  doc, with `_impersonated_by` + `_impersonated_by_id` metadata for
+  audit logging.
+- Agent + `X-Agent-ID` header → 403 (only privileged roles may
+  impersonate).
+- No header → returns `current_user` unchanged.
+
+Use on every create / write endpoint that needs ownership stamping:
+```python
+async def create_lead(..., effective: dict = Depends(get_effective_agent)):
+    doc["agent_id"]    = effective["id"]
+    doc["agent_email"] = (effective.get("email") or "").lower() or None
+    doc["agent_name"]  = effective.get("agent_name") or effective.get("full_name")
+```
+
+### IDOR check on single-resource GET/PATCH/DELETE
+Pattern (see `leads_router._idor_or_403`): fetch the doc, then 404 if
+missing, 403 if it exists but the caller isn't admin / compliance and
+doesn't own it. Never trust the path id alone.
+
+### `X-Agent-ID` header
+Set automatically by the AgentContext → Axios interceptor pair in
+`frontend/src/lib/api.js`. Admin impersonating an agent → every
+request carries the header. Backend `get_effective_agent()` reads it;
+`agent_filter()` reads it only when the caller passes
+`override_agent_id` explicitly.
+
+### `AgentContext` — `frontend/src/context/AgentContext.jsx`
+React context provider wrapping `<App>`. `useAgent()` exposes:
+- `selectedAgent`
+- `isImpersonating`
+- `setSelectedAgent(agent)`
+- `clearAgent()`
+
+Persists the selected agent to `localStorage` so the X-Agent-ID
+header (a module-level var in `api.js` that resets on reload) and
+the impersonation banner stay in sync after a page refresh.
+
+### `ImpersonationBanner` — `frontend/src/components/ImpersonationBanner.jsx`
+Drop directly under the page title on every data page. Renders
+`null` when not impersonating, otherwise shows the orange-bordered
+"Viewing as: [name]" pill. Already wired on AgentDashboard,
+ClientsList, ClientProfile, ApplicationSubmission, CommissionsDashboard,
+Leaderboard.
+
+### Backfill / migration
+`backend/scripts/migrate_agent_ownership.py` — one-shot backfill that
+stamps `agent_id` on legacy records that pre-date the isolation
+work, assigning them to the first admin user. Safe to re-run
+(idempotent on records that already have `agent_id`). Already
+executed in prod — **6,666 records stamped**.
