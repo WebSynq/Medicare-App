@@ -85,11 +85,112 @@ const ACCEPT = ".pdf,.csv,.xlsx,.xls,.txt";
 
 // ── component ─────────────────────────────────────────────────────────────────
 
+// ── Admin / compliance view ──────────────────────────────────────────────
+// Senior staff don't have a personal commissions view — they see an
+// agency-wide production roll-up. Reconciliation lives in /admin/accounting.
+function AgencyProductionSummary() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      try {
+        const { data } = await api.get("/leaderboard", {
+          params: { period: "all", limit: 1000 },
+        });
+        if (!alive) return;
+        setRows(data.rows || []);
+      } catch (e) {
+        if (alive) setRows([]);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  return (
+    <div className="p-6 md:p-8">
+      <main className="max-w-6xl mx-auto w-full space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold text-[#1e2d3d]">
+            Agency Production Summary
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Production rolled up by agent. Detailed reconciliation available in
+            Accounting.
+          </p>
+        </div>
+        <Card className="bg-surface">
+          <CardContent className="p-5">
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Agent</TableHead>
+                    <TableHead className="text-right">Policies</TableHead>
+                    <TableHead className="text-right">Total Revenue</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {loading && (
+                    <TableRow>
+                      <TableCell
+                        colSpan={3}
+                        className="text-center py-8 text-muted-foreground"
+                      >
+                        Loading…
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {!loading && rows.length === 0 && (
+                    <TableRow>
+                      <TableCell
+                        colSpan={3}
+                        className="text-center py-8 text-muted-foreground"
+                      >
+                        No production records yet.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {rows.map((r) => (
+                    <TableRow
+                      key={`${r.agent_name}-${r.rank}`}
+                      data-testid={`agency-row-${r.rank}`}
+                    >
+                      <TableCell className="font-medium">
+                        {r.agent_name}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {r.policies_count}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums font-medium">
+                        {fmt(r.revenue_total)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      </main>
+    </div>
+  );
+}
+
+
 export default function CommissionsDashboard() {
   const navigate = useNavigate();
   const fileRef = useRef(null);
 
   const user = auth.getUser();
+  const isAdminOrCompliance =
+    user?.role === "admin" || user?.role === "compliance";
 
   const [summary, setSummary] = useState(null);
   const [history, setHistory] = useState([]);
@@ -126,9 +227,10 @@ export default function CommissionsDashboard() {
   }, []);
 
   useEffect(() => {
+    if (isAdminOrCompliance) return;  // admin sees the agency view; skip personal fetches
     fetchSummary();
     fetchHistory();
-  }, [fetchSummary, fetchHistory]);
+  }, [fetchSummary, fetchHistory, isAdminOrCompliance]);
 
   // ── upload ──────────────────────────────────────────────────────────────────
 
@@ -219,6 +321,12 @@ export default function CommissionsDashboard() {
       sub: summary?.mock ? "⚠ Mock data — connect Comtrack" : "Live data",
     },
   ];
+
+  // Admin/compliance see the agency-wide rollup; personal commission view
+  // (ComTrack, audit, stats) is agent-only.
+  if (isAdminOrCompliance) {
+    return <AgencyProductionSummary />;
+  }
 
   return (
     <div className="p-6 md:p-8">

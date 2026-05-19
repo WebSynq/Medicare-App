@@ -104,6 +104,10 @@ export default function AccountingDashboard() {
   const [allRows, setAllRows] = useState([]);
   const [loadingSummary, setLoadingSummary] = useState(true);
   const [loadingRows, setLoadingRows] = useState(true);
+  // Canonical agent list from the leaderboard. Used so the agent filter
+  // shows every active agent even when they have no audit rows in the
+  // current period (otherwise the dropdown would shrink as data fades).
+  const [leaderboardAgents, setLeaderboardAgents] = useState([]);
 
   // Modal state for "Mark Resolved"
   const [resolveRow, setResolveRow] = useState(null); // record being resolved
@@ -144,13 +148,40 @@ export default function AccountingDashboard() {
   useEffect(() => { fetchSummary(); }, [fetchSummary]);
   useEffect(() => { fetchRows(); }, [fetchRows]);
 
+  // One-time load of the canonical agent list (period-independent).
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { data } = await api.get("/leaderboard", {
+          params: { period: "all", limit: 1000 },
+        });
+        if (!alive) return;
+        const names = (data.rows || [])
+          .map((r) => r.agent_name)
+          .filter(Boolean);
+        setLeaderboardAgents(names);
+      } catch (e) {
+        // Non-fatal — fall back to row-derived agent options below.
+        if (alive) setLeaderboardAgents([]);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
   // ── derived ──────────────────────────────────────────────────────────────
   // Dropdown options come from the data we have, so the lists are scoped to
   // what's actually present in this period — no stale carriers or agents.
   const agentOptions = useMemo(() => {
-    const set = new Set(allRows.map((r) => r.agent_name).filter(Boolean));
+    // Leaderboard list is the canonical source; we also union any agents
+    // that appear in the current rows but aren't on the leaderboard yet
+    // so admins never see a row whose agent isn't selectable.
+    const set = new Set(leaderboardAgents);
+    allRows.forEach((r) => {
+      if (r.agent_name) set.add(r.agent_name);
+    });
     return Array.from(set).sort();
-  }, [allRows]);
+  }, [leaderboardAgents, allRows]);
 
   const carrierOptions = useMemo(() => {
     const set = new Set(allRows.map((r) => r.carrier).filter(Boolean));

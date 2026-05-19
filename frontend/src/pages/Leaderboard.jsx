@@ -59,7 +59,7 @@ function RankBadge({ rank }) {
 function SkeletonRow() {
   return (
     <TableRow>
-      <TableCell colSpan={5}>
+      <TableCell colSpan={4}>
         <div className="h-9 rounded bg-secondary/60 animate-pulse" />
       </TableCell>
     </TableRow>
@@ -167,7 +167,6 @@ export default function Leaderboard() {
                     <TableHead>Agent</TableHead>
                     <TableHead className="text-right">Policies</TableHead>
                     <TableHead className="text-right">Revenue</TableHead>
-                    <TableHead className="text-right">Gap</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -183,7 +182,7 @@ export default function Leaderboard() {
                   {!loading && rows.length === 0 && (
                     <TableRow>
                       <TableCell
-                        colSpan={5}
+                        colSpan={4}
                         className="text-center py-12 text-muted-foreground"
                       >
                         No production records yet. Import the tracker to populate
@@ -213,22 +212,6 @@ export default function Leaderboard() {
                       </TableCell>
                       <TableCell className="text-right tabular-nums font-medium">
                         {fmtUSD(r.revenue_total)}
-                      </TableCell>
-                      <TableCell
-                        className={`text-right tabular-nums ${
-                          r.audit_gap == null || r.audit_gap === 0
-                            ? ""
-                            : r.audit_gap < 0
-                              ? "text-red-600 font-medium"
-                              : "text-emerald-600 font-medium"
-                        }`}
-                      >
-                        {r.audit_gap == null
-                          ? "—"
-                          : r.audit_gap === 0
-                            ? "$0.00"
-                            : (r.audit_gap < 0 ? "−" : "+") +
-                              fmtUSD(Math.abs(r.audit_gap))}
                       </TableCell>
                     </TableRow>
                   ))}
