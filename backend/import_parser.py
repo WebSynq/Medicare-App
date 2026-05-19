@@ -2,9 +2,20 @@
 import_parser.py
 ===============
 Parses the GHW Plecto production tracker spreadsheet.
-Handles messy real-world data: mixed premium formats,
-date variations, product name inconsistencies,
-multiple table sections in one file.
+
+The file layout has been verified (Running sheet, sheet_name=0):
+
+  Row 0   — headers. Col 0 has no header (the agent email column).
+            Col 1 = " Agent" (leading space), Col 2 = Client,
+            Col 3 = Carrier, Col 4 = Product, Col 5 = Premium,
+            Col 6 = Revenue, Col 7 = App Date, Col 8 = Effective Date,
+            Col 11 = New Client (Y/N), Col 12 = Lead Source.
+  Row 1+  — data rows.
+
+Because the layout is fixed and well-known we map columns directly by
+position rather than fuzzy-matching header text. Earlier versions of this
+file tried to detect headers and that proved fragile against the real
+spreadsheet (leading spaces, blank email header, no mid-file re-headers).
 """
 import hashlib
 import io
@@ -85,6 +96,10 @@ def parse_date(val: Any) -> Optional[str]:
     s = str(val).strip()
     if not s or s in ("", "N/A", "n/a"):
         return None
+    # pandas reads Excel datetimes as "2025-01-02 00:00:00". Drop the time
+    # half so the ISO regex below catches the date part.
+    if " " in s and ":" in s:
+        s = s.split(" ")[0]
     # Already ISO format
     if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
         # Validate it's a real date
@@ -134,25 +149,8 @@ def is_valid_production_row(row: Dict) -> Tuple[bool, str]:
     return True, ""
 
 
-def _is_header_row(row_vals: List) -> bool:
-    """Detect header rows by checking for known column names."""
-    row_str = " ".join(str(v).lower() for v in row_vals if v)
-    return any(kw in row_str for kw in [
-        "agent", "carrier", "product", "premium", "revenue",
-        "app date", "effective date", "email",
-    ])
-
-
-def _looks_like_email(val: Any) -> bool:
-    if not val:
-        return False
-    s = str(val)
-    return "@" in s and "." in s.split("@")[-1]
-
-
-def parse_production_file(file_bytes: bytes,
-                          filename: str) -> Dict:
-    """Parse a GHW production tracker XLSX or CSV file.
+def parse_production_file(file_bytes: bytes, filename: str) -> Dict:
+    """Parse the GHW production tracker XLSX or CSV file.
 
     Returns:
       {
@@ -161,6 +159,10 @@ def parse_production_file(file_bytes: bytes,
         agents: {email: name},
         total_raw: int,
       }
+
+    Column mapping is direct/positional — the layout is fixed in the GHW
+    spreadsheet and was previously failing because fuzzy header detection
+    couldn't deal with the headerless email column at index 0.
     """
     # Lazy import — keeps the helper-only entry points (clean_premium,
     # normalize_product, parse_date) usable without pandas installed,
@@ -171,16 +173,15 @@ def parse_production_file(file_bytes: bytes,
     errors: List[Dict] = []
     agents_seen: Dict[str, str] = {}
 
-    # Load file
     try:
         if filename.lower().endswith(".csv"):
-            df_raw = pd.read_csv(
+            df = pd.read_csv(
                 io.BytesIO(file_bytes),
                 header=None,
                 dtype=str,
             )
         else:
-            df_raw = pd.read_excel(
+            df = pd.read_excel(
                 io.BytesIO(file_bytes),
                 header=None,
                 dtype=str,
@@ -190,101 +191,73 @@ def parse_production_file(file_bytes: bytes,
         return {
             "rows": [],
             "errors": [{"row_num": 0, "raw": "",
-                         "reason": f"File parse error: {e}"}],
+                         "reason": f"File error: {e}"}],
             "agents": {},
             "total_raw": 0,
         }
 
-    # Fill NaN with empty string so downstream str() calls don't produce "nan"
-    df_raw = df_raw.fillna("")
+    df = df.fillna("")
+    total_raw = len(df)
 
-    total_raw = len(df_raw)
-    current_headers = None
-    col_idx: Dict[str, int] = {}
+    # FIXED COLUMN MAP — direct positional mapping:
+    #   0 = email, 1 = agent, 2 = client, 3 = carrier, 4 = product,
+    #   5 = premium, 6 = revenue, 7 = app_date, 8 = effective_date,
+    #   11 = new_client, 12 = lead_source, 14 = cancel (some sections)
+    # Skip row 0 — it's the header row.
 
-    for row_num, row in df_raw.iterrows():
-        vals = list(row.values)
+    for row_num in range(1, len(df)):
+        row = df.iloc[row_num]
 
-        # Detect header rows. The tracker has multiple stacked tables, each
-        # with its own header — we rebuild col_idx every time we see one.
-        if _is_header_row(vals):
-            current_headers = [str(v).strip().lower() for v in vals]
-            col_idx = {}
-            for i, h in enumerate(current_headers):
-                if "email" in h:
-                    col_idx["email"] = i
-                elif h == "agent" or h == "agent name":
-                    col_idx["agent"] = i
-                elif "client" in h:
-                    col_idx["client"] = i
-                elif "carrier" in h:
-                    col_idx["carrier"] = i
-                elif "product" in h:
-                    col_idx["product"] = i
-                elif "premium" in h and "monthly" not in h:
-                    col_idx.setdefault("premium", i)
-                elif "revenue" in h:
-                    col_idx["revenue"] = i
-                elif "app date" in h or ("app" in h and "date" in h):
-                    col_idx["app_date"] = i
-                elif "effective" in h and "date" in h:
-                    col_idx["effective_date"] = i
-                elif "lead source" in h or "source" in h:
-                    col_idx.setdefault("lead_source", i)
-                elif "new client" in h:
-                    col_idx["new_client"] = i
-                elif "cancel" in h:
-                    col_idx["cancel"] = i
-            continue
-
-        if not col_idx:
-            continue
-
-        def g(key: str, default: str = "") -> str:
-            idx = col_idx.get(key)
-            if idx is None or idx >= len(vals):
+        def g(idx: int, default: str = "") -> str:
+            try:
+                v = row.iloc[idx]
+                return str(v).strip() if v else default
+            except Exception:
                 return default
-            return str(vals[idx]).strip()
 
-        raw_email = g("email")
-        raw_agent = g("agent")
-
-        # Normalize Leadership / Agency PT → Chase's email
-        email_lower = raw_email.lower()
-        if email_lower in AGENT_EMAIL_MAP:
-            raw_email = AGENT_EMAIL_MAP[email_lower]
-        agent_lower = raw_agent.lower()
-        if agent_lower in AGENT_EMAIL_MAP:
-            raw_email = AGENT_EMAIL_MAP[agent_lower]
+        raw_email = g(0)
 
         # Must have a valid email to be a production row
-        if not _looks_like_email(raw_email):
+        if not ("@" in raw_email and "." in raw_email.split("@")[-1]):
             continue
 
-        raw_product = g("product")
-        product_type = normalize_product(raw_product)
+        # Normalize Leadership / Agency PT to Chase's email. Match either
+        # the email field or the agent-name field on substring (the real
+        # data has "Leadership" both as a name and embedded in some emails).
+        raw_agent = g(1)
+        email_lower = raw_email.lower()
+        agent_lower = raw_agent.lower().strip()
+        for alias, real_email in AGENT_EMAIL_MAP.items():
+            if alias in email_lower or alias in agent_lower:
+                raw_email = real_email
+                break
 
-        # Skip out-of-scope products
-        if raw_product.strip().lower() in SKIP_PRODUCTS:
+        raw_client = g(2)
+        raw_carrier = g(3)
+        raw_product = g(4)
+
+        # Skip rows without carrier or product (coaching/membership rows)
+        if not raw_carrier or not raw_product:
             continue
 
-        # Skip coaching/membership rows (no carrier)
-        raw_carrier = g("carrier")
-        if not raw_carrier:
-            continue
-
-        # Skip FIA rows for now (different calc)
+        # Skip FIA/annuity (different calc, out of scope)
         if raw_product.strip().lower() == "fia":
             continue
 
-        raw_client = g("client")
-        raw_premium = g("premium")
-        raw_revenue = g("revenue")
-        raw_app_date = g("app_date")
-        raw_eff_date = g("effective_date")
-        raw_source = g("lead_source")
-        raw_new = g("new_client")
-        raw_cancel = g("cancel")
+        # Skip IHP / IPH (out of scope)
+        if raw_product.strip().lower() in ("ihp", "iph"):
+            continue
+
+        product_type = normalize_product(raw_product)
+
+        raw_premium = g(5)
+        raw_revenue = g(6)
+        raw_app_date = g(7)
+        raw_eff_date = g(8)
+        raw_new = g(11)
+        raw_source = g(12)
+        # Some sections add a Cancel column at index 14; safe-default when absent.
+        raw_cancel = g(14)
 
         monthly_premium = clean_premium(raw_premium)
         revenue = clean_premium(raw_revenue)
@@ -299,8 +272,8 @@ def parse_production_file(file_bytes: bytes,
         normalized = {
             "agent_email": raw_email.lower().strip(),
             "agent_name": raw_agent.strip(),
-            "client_name": raw_client.strip(),
-            "carrier": raw_carrier.strip(),
+            "client_name": raw_client,
+            "carrier": raw_carrier,
             "raw_product": raw_product,
             "product_type": product_type,
             "monthly_premium": monthly_premium,
@@ -325,7 +298,7 @@ def parse_production_file(file_bytes: bytes,
             agents_seen[raw_email.lower().strip()] = raw_agent.strip()
         else:
             errors.append({
-                "row_num": int(row_num) + 1,
+                "row_num": row_num + 1,
                 "raw": f"{raw_agent} | {raw_client} | {raw_carrier} | {raw_product}",
                 "reason": reason,
             })
