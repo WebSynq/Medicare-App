@@ -99,7 +99,7 @@ class GHLClient:
         if self.mock_mode:
             return {"mock": True, "updated": True, "contact_id": contact_id}
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.patch(
+            resp = await client.put(
                 f"{self.base_url}/contacts/{contact_id}",
                 headers=self._headers(),
                 json={"customFields": custom_fields},
