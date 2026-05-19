@@ -219,6 +219,13 @@ _CSRF_EXEMPT_PATHS = {
     # get_current_user (JWT, cookie OR header); CSRF exempt by product
     # decision so the panel can post without echoing the csrf cookie.
     "/api/commission/chat",
+    # Application submission module — JWT-authenticated via get_current_user.
+    # /extract receives multipart PDF uploads; /submit posts JSON to GHL;
+    # /webhook is a future inbound hook from external systems (no browser
+    # session → no CSRF cookie possible).
+    "/api/applications/extract",
+    "/api/applications/submit",
+    "/api/applications/webhook",
 }
 
 # Path prefixes for parameterised routes. CSRF-exempt when request.url.path
