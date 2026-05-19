@@ -20,6 +20,7 @@ from deps import (
     ACCESS_TOKEN_COOKIE,
     get_current_user,
     get_db,
+    require_roles,
     write_audit,
 )
 from security import decode_token
@@ -196,8 +197,25 @@ async def chat(
     )
 
     def event_stream():
+        # Explicit log of the exact model+region we're about to call so
+        # Render logs answer "what is the chat endpoint actually hitting"
+        # without guesswork.
+        logger.info(
+            "Bedrock chat invoke: model=%s region=%s msgs=%d",
+            BEDROCK_MODEL_ID, AWS_REGION, len(messages),
+        )
+
+        client = None
         try:
             client = _get_bedrock_client()
+        except Exception as e:
+            logger.exception("Bedrock client init failed: %s", e)
+            yield _sse({"type": "error", "content": "Assistant unavailable. Try again."})
+            yield "data: [DONE]\n\n"
+            return
+
+        # ── Attempt 1: streaming ──
+        try:
             resp = client.invoke_model_with_response_stream(
                 modelId=BEDROCK_MODEL_ID,
                 body=body_json,
@@ -221,12 +239,42 @@ async def chat(
                 elif etype == "message_stop":
                     break
             yield "data: [DONE]\n\n"
+            return
+        except Exception as stream_err:
+            # Some Bedrock model variants / IAM policies refuse the
+            # streaming API but accept invoke_model. Log the full
+            # traceback and try the non-streaming path before giving up.
+            logger.exception(
+                "Bedrock streaming failed for model=%s — falling back to "
+                "non-streaming invoke_model: %s",
+                BEDROCK_MODEL_ID, stream_err,
+            )
+
+        # ── Attempt 2: non-streaming fallback ──
+        try:
+            resp = client.invoke_model(
+                modelId=BEDROCK_MODEL_ID,
+                body=body_json,
+                contentType="application/json",
+                accept="application/json",
+            )
+            raw = resp["body"].read()
+            data = json.loads(raw) if raw else {}
+            text_parts = []
+            for block in data.get("content") or []:
+                if block.get("type") == "text":
+                    text_parts.append(block.get("text") or "")
+            full = "".join(text_parts).strip()
+            if full:
+                yield _sse({"type": "text", "content": full})
+            else:
+                yield _sse({"type": "error", "content": "Assistant returned no content."})
+            yield "data: [DONE]\n\n"
         except Exception as e:
-            # Don't leak provider error details to the browser — log the
-            # full traceback server-side, return a generic message to the
-            # client. ClientError / BotoCoreError carry the most useful
-            # diagnostic info (missing creds, region misconfig, throttle).
-            logger.exception("Bedrock chat stream failed: %s", e)
+            logger.exception(
+                "Bedrock non-streaming fallback also failed for model=%s: %s",
+                BEDROCK_MODEL_ID, e,
+            )
             yield _sse({"type": "error", "content": "Assistant unavailable. Try again."})
             yield "data: [DONE]\n\n"
 
@@ -238,3 +286,72 @@ async def chat(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ── Diagnostic ────────────────────────────────────────────────────────────
+@router.get("/health")
+async def chat_health(
+    _admin: dict = Depends(require_roles("admin")),
+):
+    """Admin-only Bedrock reachability probe.
+
+    Uses the exact same client init + model id as POST /chat, so a
+    failure here pinpoints the production wiring issue (credentials,
+    region, model access, IAM policy) without needing to open the
+    widget. No rate limit — admins re-run this while debugging.
+
+    Returns either:
+      { "ok": true, model_id, region, has_*, "response": <provider body> }
+    or:
+      { "ok": false, model_id, region, has_*, "error": { type, message,
+          aws_error_code, aws_error_message, aws_request_id, aws_status } }
+
+    Credential VALUES are never echoed — only the presence flags.
+    """
+    diag = {
+        "model_id": BEDROCK_MODEL_ID,
+        "region": AWS_REGION,
+        "has_aws_access_key_id": bool(os.environ.get("AWS_ACCESS_KEY_ID")),
+        "has_aws_secret_access_key": bool(os.environ.get("AWS_SECRET_ACCESS_KEY")),
+        "has_aws_session_token": bool(os.environ.get("AWS_SESSION_TOKEN")),
+    }
+    try:
+        client = _get_bedrock_client()
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "say hello"}],
+        })
+        resp = client.invoke_model(
+            modelId=BEDROCK_MODEL_ID,
+            body=body,
+            contentType="application/json",
+            accept="application/json",
+        )
+        raw = resp["body"].read()
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = {"raw_bytes": len(raw)}
+        return {"ok": True, **diag, "response": parsed}
+    except Exception as e:
+        err = {
+            "type": type(e).__name__,
+            "message": str(e),
+        }
+        # boto3 ClientError carries a structured .response dict with the
+        # AWS error code (AccessDeniedException, ValidationException,
+        # ThrottlingException, etc.) — pull those out explicitly so the
+        # admin doesn't have to grep the stringified message.
+        aws_resp = getattr(e, "response", None)
+        if isinstance(aws_resp, dict):
+            err["aws_error_code"] = aws_resp.get("Error", {}).get("Code")
+            err["aws_error_message"] = aws_resp.get("Error", {}).get("Message")
+            err["aws_request_id"] = (
+                aws_resp.get("ResponseMetadata", {}).get("RequestId")
+            )
+            err["aws_status"] = (
+                aws_resp.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            )
+        logger.exception("Bedrock health-check failed: %s", e)
+        return {"ok": False, **diag, "error": err}
