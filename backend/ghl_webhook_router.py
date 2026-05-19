@@ -32,6 +32,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from deps import get_db, require_roles, write_audit
+from ghl_client import GHLClient
 
 
 logger = logging.getLogger("gruening.ghl.webhook")
@@ -573,4 +574,111 @@ async def webhook_config(
         "secret_configured": bool(os.environ.get("GHL_WEBHOOK_SECRET", "").strip()),
         "last_received_at": last_received,
         "leads_received_total": leads_received,
+    }
+
+
+# ── Admin: manual contact sync via API pull ───────────────────────────────
+@router.post("/sync")
+async def sync_contacts(
+    request: Request,
+    current_user: dict = Depends(require_roles("admin")),
+    db=Depends(get_db),
+):
+    """Pull the current page of GHL contacts and reconcile against our
+    leads collection.
+
+    Useful when the workflow webhook has been disabled, when bootstrapping
+    a freshly-deployed environment, or when an admin wants to backfill
+    after editing the GHL→agent location mapping. Uses the same
+    `_find_existing_lead` dedup and the same per-event handlers as the
+    inbound webhook so behaviour stays consistent.
+
+    Limits itself to a single page of 100 contacts per call — running it
+    again walks past the previous page via the `startAfterId` cursor.
+    Mock mode (no `GHL_PRIVATE_TOKEN` configured) returns 0/0/0 so the
+    UI doesn't error in dev.
+    """
+    client = GHLClient()
+    if client.mock_mode:
+        return {
+            "synced": 0,
+            "created": 0,
+            "updated": 0,
+            "note": "GHL is in mock mode — set GHL_PRIVATE_TOKEN to enable.",
+        }
+
+    try:
+        contacts = await client.list_contacts(limit=100)
+    except Exception as e:
+        logger.exception("GHL list_contacts failed during manual sync: %s", e)
+        await write_audit(
+            db, "ghl_manual_sync_failed",
+            actor_email=current_user.get("email"),
+            actor_id=current_user.get("id"),
+            request=request,
+            metadata={"error_type": type(e).__name__},
+        )
+        from fastapi import HTTPException
+        raise HTTPException(status_code=502, detail="GHL upstream error")
+
+    created = 0
+    updated = 0
+    skipped = 0
+    location_id = os.environ.get("GHL_LOCATION_ID", "") or None
+
+    for raw in contacts:
+        if not isinstance(raw, dict):
+            continue
+        # Reuse the webhook payload model so the sync path and the
+        # webhook path can't drift.
+        payload = GHLWebhookPayload(
+            type="ContactCreate",
+            locationId=raw.get("locationId") or location_id,
+            contact=GHLContact(**{
+                k: raw.get(k) for k in (
+                    "id", "firstName", "lastName", "phone", "email",
+                    "tags", "customFields", "source", "dateOfBirth",
+                    "address1", "city", "state", "postalCode",
+                ) if k in raw
+            }),
+        )
+        existing = await _find_existing_lead(db, payload.contact or GHLContact())
+        try:
+            if existing:
+                res = await _handle_contact_update(db, payload, request)
+                if res.get("action") == "updated":
+                    updated += 1
+                else:
+                    skipped += 1
+            else:
+                res = await _handle_contact_create(db, payload, request)
+                if res.get("action") == "created":
+                    created += 1
+                else:
+                    skipped += 1
+        except Exception as e:
+            # One bad contact shouldn't tank the whole batch.
+            logger.warning("Sync per-contact failed: %s", e)
+            skipped += 1
+
+    synced = created + updated
+    await write_audit(
+        db, "ghl_manual_sync",
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
+        request=request,
+        metadata={
+            "location_id": location_id,
+            "fetched": len(contacts),
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+        },
+    )
+    return {
+        "synced": synced,
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "fetched": len(contacts),
     }

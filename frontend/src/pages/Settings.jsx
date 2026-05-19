@@ -1201,12 +1201,61 @@ function IntegrationsTab() {
                   </li>
                 ))}
               </ul>
+              {key === "ghl" && <GhlSyncNow />}
             </CardContent>
           </Card>
         ))}
       </div>
 
       <GhlWebhookStatus />
+    </div>
+  );
+}
+
+// Sync-Now button rendered inside the GHL integration card. POSTs to
+// /api/ghl/sync which pulls a page of contacts and reconciles them
+// against our leads collection. Disabled while in-flight.
+function GhlSyncNow() {
+  const [busy, setBusy] = useState(false);
+
+  async function handleSync() {
+    setBusy(true);
+    try {
+      const { data } = await api.post("/ghl/sync");
+      if (data?.note) {
+        toast.message(data.note);
+      } else {
+        const synced = data?.synced ?? 0;
+        const created = data?.created ?? 0;
+        const updated = data?.updated ?? 0;
+        toast.success(
+          `Synced ${synced} contacts (${created} new, ${updated} updated)`,
+        );
+      }
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.detail || err?.message || "GHL sync failed",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="pt-1">
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        onClick={handleSync}
+        disabled={busy}
+        data-testid="ghl-sync-now"
+      >
+        <RefreshCw
+          className={`w-3.5 h-3.5 mr-1.5 ${busy ? "animate-spin" : ""}`}
+        />
+        {busy ? "Syncing…" : "Sync Now"}
+      </Button>
     </div>
   );
 }

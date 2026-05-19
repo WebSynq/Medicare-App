@@ -107,6 +107,37 @@ class GHLClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def list_contacts(
+        self,
+        limit: int = 100,
+        start_after_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Pull the next page of contacts for this location.
+
+        Used by the manual /api/ghl/sync endpoint. Page boundaries are
+        controlled by ``startAfterId`` (the GHL v2 cursor) — pass the
+        previous page's last contact id to walk past it. We return the
+        raw list of contact dicts so the caller can decide how many to
+        sync per invocation.
+        """
+        if self.mock_mode:
+            return []
+        params: Dict[str, Any] = {
+            "locationId": self.location_id,
+            "limit": limit,
+        }
+        if start_after_id:
+            params["startAfterId"] = start_after_id
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"{self.base_url}/contacts/",
+                headers=self._headers(),
+                params=params,
+            )
+            resp.raise_for_status()
+            data = resp.json() or {}
+            return data.get("contacts", []) or []
+
     async def search_contacts(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         if self.mock_mode:
             return [
