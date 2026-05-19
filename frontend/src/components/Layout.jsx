@@ -24,6 +24,7 @@ import { Link, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { api, auth } from "@/lib/api";
 import { useAgent } from "@/context/AgentContext";
 import { Button } from "@/components/ui/button";
+import ChatWidget from "@/components/ChatWidget";
 
 const SIDEBAR_BG = "#0d1b2a";
 const ACCENT = "#e85d2f";
@@ -487,6 +488,10 @@ export function AppLayout({ children }) {
 
       {/* Main content */}
       <main className="md:pl-[220px] min-h-screen">{children}</main>
+
+      {/* Floating AI assistant — rendered outside main so it stays put
+          regardless of page-level scroll containers. */}
+      <ChatWidget />
     </div>
   );
 }

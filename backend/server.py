@@ -37,6 +37,7 @@ from production_records_router import router as production_records_router  # noq
 from profile_router import router as profile_router  # noqa: E402
 from integrations_router import router as integrations_router  # noqa: E402
 from agent_management_router import router as agent_management_router  # noqa: E402
+from chat_router import router as chat_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
 
 
@@ -140,6 +141,7 @@ app.include_router(production_records_router)
 app.include_router(profile_router, prefix="/api")
 app.include_router(integrations_router, prefix="/api")
 app.include_router(agent_management_router, prefix="/api")
+app.include_router(chat_router, prefix="/api")
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
