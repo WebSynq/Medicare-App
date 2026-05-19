@@ -47,6 +47,25 @@ function readCsrfCookie() {
 
 const STATE_CHANGING_METHODS = new Set(["post", "put", "patch", "delete"]);
 
+// ── Agent impersonation (admin/compliance "view as agent") ────────────────
+// Module-local store for the impersonated agent id. AgentContext owns the
+// React-facing state and pushes changes here via setImpersonatedAgent so the
+// request interceptor can attach X-Agent-ID without re-importing React.
+let _impersonatedAgentId = null;
+
+export function setImpersonatedAgent(agent) {
+  // Accept the full agent object, just the id, or null/undefined to clear.
+  if (!agent) {
+    _impersonatedAgentId = null;
+    return;
+  }
+  _impersonatedAgentId = typeof agent === "string" ? agent : agent.id || null;
+}
+
+export function getImpersonatedAgentId() {
+  return _impersonatedAgentId;
+}
+
 api.interceptors.request.use(
   (config) => {
     // Session-expiry guard: if a previous activity timestamp exists and is
@@ -68,6 +87,14 @@ api.interceptors.request.use(
       if (csrf) {
         config.headers["X-CSRF-Token"] = csrf;
       }
+    }
+
+    // Attach the impersonation header when an admin/compliance user has a
+    // target agent selected. The backend (get_effective_agent) ignores this
+    // header for non-privileged callers, so a leaked header from an agent
+    // session cannot widen scope server-side.
+    if (_impersonatedAgentId) {
+      config.headers["X-Agent-ID"] = _impersonatedAgentId;
     }
     return config;
   },

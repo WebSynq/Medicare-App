@@ -24,6 +24,7 @@ import PrivacyPolicy from "@/pages/PrivacyPolicy";
 import SecurityPage from "@/pages/SecurityPage";
 import { auth } from "@/lib/api";
 import { AppLayout } from "@/components/Layout";
+import { AgentProvider } from "@/context/AgentContext";
 
 function Protected({ children, roles, noLayout }) {
   const user = auth.getUser();
@@ -35,9 +36,10 @@ function Protected({ children, roles, noLayout }) {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Toaster richColors position="top-right" />
-      <Routes>
+    <AgentProvider>
+      <BrowserRouter>
+        <Toaster richColors position="top-right" />
+        <Routes>
         <Route path="/" element={<HomePortal />} />
         <Route path="/intake" element={<Protected noLayout><IntakeWizard /></Protected>} />
         <Route path="/login" element={<Login />} />
@@ -93,8 +95,9 @@ export default function App() {
             </Protected>
           }
         />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </AgentProvider>
   );
 }
