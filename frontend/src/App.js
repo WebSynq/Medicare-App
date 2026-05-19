@@ -19,6 +19,7 @@ import Leaderboard from "@/pages/Leaderboard";
 import ClientsList from "@/pages/ClientsList";
 import ClientProfile from "@/pages/ClientProfile";
 import DataImport from "@/pages/DataImport";
+import AgentManagement from "@/pages/AgentManagement";
 import Settings from "@/pages/Settings";
 import PrivacyPolicy from "@/pages/PrivacyPolicy";
 import SecurityPage from "@/pages/SecurityPage";
@@ -84,6 +85,14 @@ export default function App() {
           element={
             <Protected roles={["admin"]}>
               <DataImport />
+            </Protected>
+          }
+        />
+        <Route
+          path="/agents"
+          element={
+            <Protected roles={["admin", "compliance"]}>
+              <AgentManagement />
             </Protected>
           }
         />

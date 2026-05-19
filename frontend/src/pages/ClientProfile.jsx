@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import ImpersonationBanner from "@/components/ImpersonationBanner";
 
 const STATUS_BADGE = {
   new: "bg-blue-100 text-blue-900",
@@ -440,6 +441,7 @@ export default function ClientProfile() {
                     </Badge>
                   )}
                 </div>
+                <ImpersonationBanner />
               </div>
               <div className="flex items-center gap-2">
                 {editing ? (

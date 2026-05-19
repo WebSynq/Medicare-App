@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import ImpersonationBanner from "@/components/ImpersonationBanner";
 
 const PAGE_SIZE = 20;
 
@@ -333,6 +334,7 @@ export default function ClientsList() {
             <p className="text-sm text-muted-foreground mt-1">
               All Medicare clients and leads
             </p>
+            <ImpersonationBanner />
           </div>
           <Button onClick={() => setSheetOpen(true)} data-testid="new-client-btn">
             <Plus className="w-4 h-4 mr-1.5" />

@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { CheckCircle2, UploadCloud, FileText, Sparkles, ExternalLink, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import ImpersonationBanner from "@/components/ImpersonationBanner";
 
 // Step machine — no STEP_SELECT_TYPE; AI auto-detects from PDF content.
 const STEP = {
@@ -259,6 +260,7 @@ export default function ApplicationSubmission() {
             Upload a signed insurance application PDF. AI identifies the product
             type and extracts the fields automatically.
           </p>
+          <ImpersonationBanner />
         </div>
 
         <StepBar current={step} />

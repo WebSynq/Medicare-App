@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/table";
 import { toast } from "sonner";
 import { api, auth } from "@/lib/api";
+import ImpersonationBanner from "@/components/ImpersonationBanner";
 import InviteAgentModal from "@/components/InviteAgentModal";
 
 const STATUS_COLORS = {
@@ -109,6 +110,7 @@ export default function AgentDashboard() {
             <p className="text-sm text-muted-foreground mt-1">
               Daily operations overview
             </p>
+            <ImpersonationBanner />
             {!user?.mfa_enabled && (
               <button
                 type="button"

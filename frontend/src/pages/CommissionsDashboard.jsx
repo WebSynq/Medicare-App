@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/table";
 import { toast } from "sonner";
 import { api, auth } from "@/lib/api";
+import ImpersonationBanner from "@/components/ImpersonationBanner";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -124,6 +125,7 @@ function AgencyProductionSummary() {
             Production rolled up by agent. Detailed reconciliation available in
             Accounting.
           </p>
+          <ImpersonationBanner />
         </div>
         <Card className="bg-surface">
           <CardContent className="p-5">
@@ -344,6 +346,7 @@ export default function CommissionsDashboard() {
                 </span>
               )}
             </p>
+            <ImpersonationBanner />
           </div>
         </div>
 

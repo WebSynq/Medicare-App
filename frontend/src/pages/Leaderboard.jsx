@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/table";
 import { Trophy, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
+import ImpersonationBanner from "@/components/ImpersonationBanner";
 
 const REFRESH_MS = 60_000;
 
@@ -119,6 +120,7 @@ export default function Leaderboard() {
             <p className="text-sm text-muted-foreground mt-1">
               Production rankings by revenue
             </p>
+            <ImpersonationBanner />
           </div>
           <div className="flex items-center gap-2">
             <Select value={period} onValueChange={setPeriod}>
