@@ -25,10 +25,13 @@ import {
   Check,
   X,
   FileSignature,
+  FileText,
   Plus,
   Download,
   Upload,
   Clock,
+  DollarSign,
+  Activity,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -40,6 +43,43 @@ const STATUS_BADGE = {
   enrolled: "bg-emerald-100 text-emerald-900",
   lost: "bg-gray-200 text-gray-700",
 };
+
+// Per-product palette for the Policies tab — keyed by the product_type
+// short code stored on each policy row so it never drifts when display
+// labels change. Matches the server-side PRODUCT_COLORS map.
+const PRODUCT_BADGE = {
+  medsupp: "bg-blue-100 text-blue-900",
+  ma: "bg-purple-100 text-purple-900",
+  pdp: "bg-teal-100 text-teal-900",
+  cancer: "bg-rose-100 text-rose-900",
+  hs: "bg-red-100 text-red-900",
+  hip: "bg-orange-100 text-orange-900",
+  rc: "bg-amber-100 text-amber-900",
+  dvh: "bg-green-100 text-green-900",
+  life: "bg-indigo-100 text-indigo-900",
+  annuity: "bg-slate-200 text-slate-900",
+};
+
+// Status colors for the per-policy status pill.
+function policyStatusClass(status) {
+  const s = (status || "").toLowerCase();
+  if (s === "active") return "bg-emerald-100 text-emerald-900";
+  if (s === "pending" || s === "") return "bg-amber-100 text-amber-900";
+  if (s === "cancelled" || s === "lapsed" || s === "terminated")
+    return "bg-red-100 text-red-900";
+  return "bg-secondary text-secondary-foreground";
+}
+
+function fmtUSD(val) {
+  if (val == null || val === "") return "—";
+  const n = typeof val === "number" ? val : parseFloat(val);
+  if (Number.isNaN(n)) return String(val);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(n);
+}
 
 function maskMBI(mbi) {
   if (!mbi) return "—";
@@ -91,43 +131,6 @@ function IconRow({ icon: Icon, label, value }) {
   );
 }
 
-// ── Policies tab — collect any product blocks present on the lead doc.
-// The lead model currently surfaces only the "submitting" plan_type_premium;
-// per-product details land here once /applications/submit pushes them through.
-const POLICY_GROUPS = [
-  { code: "medsupp", label: "Medicare Supplement", prefix: "medsupp_" },
-  { code: "ma", label: "Medicare Advantage", prefix: "ma_" },
-  { code: "pdp", label: "Prescription Drug Plan", prefix: "pdp_" },
-  { code: "cancer", label: "Cancer", prefix: "cancer_" },
-  { code: "hs", label: "Heart/Stroke", prefix: "hs_" },
-  { code: "hip", label: "Hospital Indemnity", prefix: "hip_" },
-  { code: "rc", label: "Recovery Care", prefix: "rc_" },
-  { code: "dvh", label: "Dental/Vision/Hearing", prefix: "dvh_" },
-  { code: "life", label: "Life / Final Expense", prefix: "life_" },
-];
-
-function policiesFromLead(lead) {
-  if (!lead) return [];
-  const out = [];
-  for (const g of POLICY_GROUPS) {
-    const fields = Object.entries(lead).filter(
-      ([k, v]) => k.startsWith(g.prefix) && v !== null && v !== undefined && v !== ""
-    );
-    if (!fields.length) continue;
-    const obj = Object.fromEntries(fields);
-    out.push({
-      ...g,
-      carrier: obj[`${g.prefix}carrier`] || lead[`final_expense_carrier`],
-      plan: obj[`${g.prefix}plan`] || obj[`${g.prefix}plan_name`] || obj[`${g.prefix}product_name`],
-      policy: obj[`${g.prefix}policy_id`] || obj[`${g.prefix}policy_number`],
-      premium: obj[`${g.prefix}premium`] || obj[`${g.prefix}client_premium`],
-      status: obj[`${g.prefix}policy_status`] || obj[`${g.prefix}status`],
-      effective: obj[`${g.prefix}effective_date`] || obj[`life_coverage_effective_date`],
-      renewal: obj[`${g.prefix}renewal_date`],
-    });
-  }
-  return out;
-}
 
 export default function ClientProfile() {
   const { leadId } = useParams();
@@ -150,6 +153,11 @@ export default function ClientProfile() {
   const [docsLoading, setDocsLoading] = useState(false);
   const uploadRef = useRef(null);
   const [uploading, setUploading] = useState(false);
+
+  // Tab 2: policies (server-persisted) + summary stats for Overview
+  const [serverPolicies, setServerPolicies] = useState([]);
+  const [policiesLoading, setPoliciesLoading] = useState(false);
+  const [policySummary, setPolicySummary] = useState(null);
 
   useEffect(() => {
     let alive = true;
@@ -198,6 +206,41 @@ export default function ClientProfile() {
     loadDocs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId]);
+
+  // Server-persisted policies live keyed by GHL contact_id. We fetch as soon
+  // as the lead document has a contact ID; before that there are no policies
+  // to show (the lead was never pushed to GHL → no apps could have been
+  // submitted against it either).
+  useEffect(() => {
+    const cid = lead?.ghl_contact_id;
+    if (!cid) {
+      setServerPolicies([]);
+      setPolicySummary(null);
+      return;
+    }
+    let alive = true;
+    (async () => {
+      setPoliciesLoading(true);
+      try {
+        const [polRes, sumRes] = await Promise.all([
+          api.get(`/clients/${encodeURIComponent(cid)}/policies`),
+          api.get(`/clients/${encodeURIComponent(cid)}/summary`),
+        ]);
+        if (!alive) return;
+        setServerPolicies(polRes.data?.policies || []);
+        setPolicySummary(sumRes.data || null);
+      } catch (err) {
+        if (!alive) return;
+        setServerPolicies([]);
+        setPolicySummary(null);
+      } finally {
+        if (alive) setPoliciesLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [lead?.ghl_contact_id]);
 
   async function saveEdits() {
     setSaving(true);
@@ -330,8 +373,6 @@ export default function ClientProfile() {
     }
     return items.sort((a, b) => (a.ts < b.ts ? 1 : -1));
   }, [lead, docs]);
-
-  const policies = useMemo(() => policiesFromLead(lead), [lead]);
 
   if (loading) {
     return (
@@ -524,6 +565,67 @@ export default function ClientProfile() {
 
           {/* Tab 1: Overview */}
           <TabsContent value="overview" className="space-y-4 mt-4">
+            {policySummary && (
+              <div className="grid grid-cols-3 gap-3" data-testid="policy-summary">
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs uppercase tracking-widest text-muted-foreground">
+                        Active policies
+                      </div>
+                      <ShieldCheck className="w-4 h-4 text-muted-foreground" />
+                    </div>
+                    <div
+                      className="text-2xl font-bold mt-1 tabular-nums"
+                      style={{ fontFamily: "Outfit" }}
+                    >
+                      {policySummary.active_count}
+                      {policySummary.total_count > policySummary.active_count && (
+                        <span className="text-sm text-muted-foreground font-normal">
+                          {" "}
+                          / {policySummary.total_count}
+                        </span>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs uppercase tracking-widest text-muted-foreground">
+                        Monthly premium
+                      </div>
+                      <DollarSign className="w-4 h-4 text-muted-foreground" />
+                    </div>
+                    <div
+                      className="text-2xl font-bold mt-1 tabular-nums"
+                      style={{ fontFamily: "Outfit" }}
+                    >
+                      {fmtUSD(policySummary.total_monthly_premium)}
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs uppercase tracking-widest text-muted-foreground">
+                        Last activity
+                      </div>
+                      <Activity className="w-4 h-4 text-muted-foreground" />
+                    </div>
+                    <div
+                      className="text-sm font-medium mt-2"
+                      style={{ fontFamily: "Outfit" }}
+                    >
+                      {policySummary.last_activity
+                        ? fmtDate(policySummary.last_activity)
+                        : "—"}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+
             <Card>
               <CardContent className="p-5">
                 <h3 className="text-sm font-semibold mb-3">Scope of Appointment</h3>
@@ -627,10 +729,19 @@ export default function ClientProfile() {
             </Card>
           </TabsContent>
 
-          {/* Tab 2: Policies */}
+          {/* Tab 2: Policies — sourced from /api/clients/{contact_id}/policies.
+              Each row is one submitted application; the contact ID comes from
+              the lead document's ghl_contact_id field (populated at GHL sync). */}
           <TabsContent value="policies" className="mt-4">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold">Policies on file</h3>
+              <h3 className="text-sm font-semibold">
+                Policies on file
+                {serverPolicies.length > 0 && (
+                  <span className="ml-2 text-xs text-muted-foreground font-normal">
+                    ({serverPolicies.length})
+                  </span>
+                )}
+              </h3>
               <Button
                 size="sm"
                 onClick={() =>
@@ -645,61 +756,109 @@ export default function ClientProfile() {
                 <Plus className="w-3.5 h-3.5 mr-1.5" /> Add Application
               </Button>
             </div>
-            {policies.length === 0 ? (
+            {policiesLoading ? (
               <Card>
                 <CardContent className="p-8 text-center text-sm text-muted-foreground">
-                  No policies on file. Submit an application to add coverage.
+                  Loading policies…
+                </CardContent>
+              </Card>
+            ) : serverPolicies.length === 0 ? (
+              <Card>
+                <CardContent className="p-8 text-center space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    No policies on file yet.
+                    <br />
+                    Submit an application to add coverage records.
+                  </p>
+                  <Button
+                    size="sm"
+                    onClick={() =>
+                      navigate(
+                        `/applications?contact_id=${encodeURIComponent(
+                          lead.ghl_contact_id || ""
+                        )}`
+                      )
+                    }
+                    data-testid="empty-submit-application-btn"
+                  >
+                    <Plus className="w-3.5 h-3.5 mr-1.5" /> Submit Application
+                  </Button>
                 </CardContent>
               </Card>
             ) : (
               <div className="grid md:grid-cols-2 gap-3">
-                {policies.map((p) => (
-                  <Card key={p.code} data-testid={`policy-card-${p.code}`}>
-                    <CardContent className="p-5 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                            {p.label}
-                          </div>
-                          <div className="font-semibold text-base">
+                {serverPolicies.map((p, idx) => (
+                  <Card
+                    key={`${p.product_type}-${p.submitted_at || idx}`}
+                    data-testid={`policy-card-${p.product_type}`}
+                  >
+                    <CardContent className="p-5 space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <Badge
+                            className={`rounded-full text-[10px] mb-2 ${
+                              PRODUCT_BADGE[p.product_type] ||
+                              "bg-secondary text-secondary-foreground"
+                            }`}
+                          >
+                            {p.product_label || p.product_type}
+                          </Badge>
+                          <div className="font-semibold text-base truncate">
                             {p.carrier || "—"}
                           </div>
+                          {p.plan && (
+                            <div className="text-sm text-muted-foreground truncate">
+                              {p.plan}
+                            </div>
+                          )}
                         </div>
-                        {p.status && (
-                          <Badge
-                            variant="secondary"
-                            className="rounded-full capitalize"
-                          >
-                            {p.status}
-                          </Badge>
-                        )}
+                        <Badge
+                          className={`rounded-full capitalize ${policyStatusClass(
+                            p.policy_status
+                          )}`}
+                        >
+                          {p.policy_status || "Pending"}
+                        </Badge>
                       </div>
                       <div className="grid grid-cols-2 gap-2 text-xs">
                         <div>
-                          <div className="text-muted-foreground">Plan</div>
-                          <div className="font-medium">{p.plan || "—"}</div>
+                          <div className="text-muted-foreground">Premium / mo</div>
+                          <div className="font-medium">{fmtUSD(p.premium)}</div>
                         </div>
                         <div>
                           <div className="text-muted-foreground">Policy #</div>
-                          <div className="font-medium font-mono">
-                            {p.policy || "—"}
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-muted-foreground">Premium</div>
-                          <div className="font-medium">
-                            {p.premium ? `$${p.premium}` : "—"}
+                          <div className="font-medium font-mono truncate">
+                            {p.policy_id || "—"}
                           </div>
                         </div>
                         <div>
                           <div className="text-muted-foreground">Effective</div>
-                          <div className="font-medium">{fmtDate(p.effective)}</div>
-                        </div>
-                        {p.renewal && (
-                          <div>
-                            <div className="text-muted-foreground">Renewal</div>
-                            <div className="font-medium">{fmtDate(p.renewal)}</div>
+                          <div className="font-medium">
+                            {fmtDate(p.effective_date)}
                           </div>
+                        </div>
+                        <div>
+                          <div className="text-muted-foreground">Renewal</div>
+                          <div className="font-medium">
+                            {fmtDate(p.renewal_date) || "—"}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between pt-2 border-t border-border">
+                        <div className="text-[11px] text-muted-foreground">
+                          {p.submitted_by ? `By ${p.submitted_by} · ` : ""}
+                          {fmtDateTime(p.submitted_at)}
+                        </div>
+                        {p.pdf_url && (
+                          <a
+                            href={p.pdf_url}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            className="inline-flex items-center gap-1 text-xs font-medium text-[#e85d2f] hover:underline"
+                            data-testid={`policy-view-pdf-${p.product_type}`}
+                          >
+                            <FileText className="w-3.5 h-3.5" /> View PDF
+                          </a>
                         )}
                       </div>
                     </CardContent>

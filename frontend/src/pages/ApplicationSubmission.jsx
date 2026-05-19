@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import { Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle2, UploadCloud, FileText, Sparkles } from "lucide-react";
+import { CheckCircle2, UploadCloud, FileText, Sparkles, ExternalLink, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 
@@ -93,6 +94,7 @@ export default function ApplicationSubmission() {
   const [productLabel, setProductLabel] = useState("");
   const [fieldsAvailable, setFieldsAvailable] = useState([]);
   const [autoDetected, setAutoDetected] = useState(false);
+  const [pdfUrl, setPdfUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   // Step 4: done
@@ -163,6 +165,7 @@ export default function ApplicationSubmission() {
       setProductLabel(data.product_label || "");
       setFieldsAvailable(data.fields_available || []);
       setAutoDetected(!!data.auto_detected);
+      setPdfUrl(data.pdf_url || "");
       toast.success(
         `AI detected ${data.product_label || "application"} · ${data.field_count} field(s)`
       );
@@ -196,6 +199,7 @@ export default function ApplicationSubmission() {
         product_type: productType,
         extracted,
         contact_name: contactDisplay(selectedContact),
+        pdf_url: pdfUrl || undefined,
       });
       setSyncedCount(data.fields_synced || 0);
       setGhlMock(!!data.ghl_mock);
@@ -220,8 +224,25 @@ export default function ApplicationSubmission() {
     setProductLabel("");
     setFieldsAvailable([]);
     setAutoDetected(false);
+    setPdfUrl("");
     setSyncedCount(0);
     setGhlMock(false);
+  }
+
+  // "Submit Another" path — keep the same contact selected, clear everything
+  // else, and drop the agent back at the upload step. Saves the contact-search
+  // detour when the same client has multiple products on the same day.
+  function submitAnotherForSameContact() {
+    setFile(null);
+    setExtracted(null);
+    setProductType("");
+    setProductLabel("");
+    setFieldsAvailable([]);
+    setAutoDetected(false);
+    setPdfUrl("");
+    setSyncedCount(0);
+    setGhlMock(false);
+    setStep(STEP.UPLOAD);
   }
 
   return (
@@ -468,7 +489,7 @@ export default function ApplicationSubmission() {
               </div>
               <div>
                 <h2 className="text-lg font-semibold tracking-tight">
-                  Application submitted
+                  Application Synced
                 </h2>
                 <p className="text-sm text-muted-foreground mt-1">
                   Pushed {syncedCount} field{syncedCount === 1 ? "" : "s"} to{" "}
@@ -476,9 +497,30 @@ export default function ApplicationSubmission() {
                   {ghlMock ? " (mock mode)" : ""}.
                 </p>
               </div>
-              <div className="flex items-center justify-center gap-2 pt-2">
-                <Button onClick={resetAll} data-testid="submit-another-btn">
-                  Submit another
+              <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                <Button
+                  asChild
+                  variant="outline"
+                  data-testid="view-client-profile-btn"
+                >
+                  <Link to={`/clients/${selectedContact?.id || ""}`}>
+                    <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
+                    View Client Profile
+                  </Link>
+                </Button>
+                <Button
+                  onClick={submitAnotherForSameContact}
+                  data-testid="submit-another-same-contact-btn"
+                >
+                  <Plus className="w-3.5 h-3.5 mr-1.5" />
+                  Submit Another for {contactDisplay(selectedContact)}
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={resetAll}
+                  data-testid="submit-another-btn"
+                >
+                  New client
                 </Button>
               </div>
             </CardContent>

@@ -2,7 +2,7 @@
 PHI HANDLING: PDF bytes never written to disk. Bedrock covered by AWS HIPAA BAA.
 All submissions audit-logged. No raw PHI stored in MongoDB.
 """
-import os, json, base64, logging
+import os, json, base64, logging, asyncio, uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import boto3
@@ -21,6 +21,22 @@ router = APIRouter(prefix="/api/applications", tags=["applications"])
 
 BEDROCK_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "")
+
+# GHL custom-field keys that accept the S3 URL of the uploaded PDF. Keyed by
+# product_type code (not display label) so this can't drift when labels change.
+# Annuity intentionally omitted — no file-upload field in the GHL schema.
+_GHL_PDF_FIELD_KEYS = {
+    "medsupp": "medsupp_file_upload__current_policy",
+    "ma": "ma_file_upload__current_policy",
+    "pdp": "pdp_file_upload__current_policy",
+    "cancer": "cancer_file_upload__current_policy",
+    "hs": "hs_file_upload__current_policy",
+    "hip": "hip_file_upload__current_policy",
+    "rc": "rc_file_upload__current_policy",
+    "dvh": "dvh_file_upload__current_policy",
+    "life": "final_expense_pdf",
+}
 
 def _get_bedrock_client():
     return boto3.client(
@@ -29,6 +45,58 @@ def _get_bedrock_client():
         aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
     )
+
+
+def _get_s3_client():
+    return boto3.client(
+        service_name="s3",
+        region_name=AWS_REGION,
+        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+    )
+
+
+async def _upload_pdf_to_s3(
+    pdf_bytes: bytes,
+    contact_id: str,
+    product_type: str,
+) -> str:
+    """Upload PDF to S3. Returns S3 URL or empty string if not configured.
+
+    Graceful: returns "" both when AWS_S3_BUCKET is unset and when boto3
+    raises (network, perms, etc.). The caller treats "" as "no PDF stored"
+    so the submission path keeps working without S3.
+    """
+    if not S3_BUCKET:
+        return ""
+    date_prefix = datetime.now(timezone.utc).strftime("%Y/%m/%d")
+    safe_product = product_type.lower().replace(" ", "_").replace("/", "_")
+    key = (
+        f"applications/{date_prefix}/{contact_id}/"
+        f"{safe_product}_{uuid.uuid4().hex[:8]}.pdf"
+    )
+
+    def _upload():
+        s3 = _get_s3_client()
+        s3.put_object(
+            Bucket=S3_BUCKET,
+            Key=key,
+            Body=pdf_bytes,
+            ContentType="application/pdf",
+            ServerSideEncryption="AES256",
+            Metadata={
+                "contact_id": contact_id,
+                "product_type": product_type,
+            },
+        )
+        return f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{key}"
+
+    try:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _upload)
+    except Exception as e:
+        logger.warning("S3 upload failed (non-fatal): %s", e)
+        return ""
 
 FIELD_MAPS: Dict[str, Dict[str, str]] = {
     "medsupp": {
@@ -278,16 +346,33 @@ async def extract_application(
         extracted = parsed
 
     field_count = sum(1 for v in extracted.values() if v is not None)
+
+    # Upload the raw PDF to S3 for archival + GHL file-field push at submit time.
+    # contact_id isn't known at extract time (the wizard sequences contact pick
+    # before upload but the endpoint signature doesn't carry it), so we use
+    # "pending" as the key segment. Non-fatal — empty URL on any failure.
+    pdf_url = await _upload_pdf_to_s3(contents, "pending", product_type)
+
     return {"product_type": product_type, "product_label": PRODUCT_LABELS[product_type],
             "extracted": extracted, "field_count": field_count,
             "fields_available": list(FIELD_MAPS[product_type].keys()),
-            "auto_detected": auto}
+            "auto_detected": auto,
+            "pdf_url": pdf_url}
 
 class SubmitApplicationRequest(BaseModel):
     contact_id: str
     product_type: str
     extracted: Dict[str, Any]
     contact_name: Optional[str] = None
+    pdf_url: Optional[str] = None
+
+
+def _split_name(full_name: Optional[str]) -> tuple[str, str]:
+    parts = (full_name or "").split()
+    if not parts:
+        return ("", "")
+    return (parts[0], " ".join(parts[1:]))
+
 
 @router.post("/submit")
 async def submit_application(
@@ -308,6 +393,23 @@ async def submit_application(
     except Exception as e:
         logger.error("GHL update failed: %s", e)
         raise HTTPException(status_code=502, detail="GHL sync failed.")
+
+    # Second GHL update: push the S3 PDF URL into the product-specific file
+    # field. Non-fatal — if GHL rejects the field key, log and continue. The
+    # primary submission already succeeded above.
+    pdf_field_key = _GHL_PDF_FIELD_KEYS.get(payload.product_type)
+    if payload.pdf_url and pdf_field_key:
+        try:
+            await ghl.update_contact(
+                payload.contact_id,
+                [{"key": pdf_field_key, "field_value": payload.pdf_url}],
+            )
+        except Exception as e:
+            logger.warning(
+                "GHL PDF field push failed (non-fatal) for %s: %s",
+                payload.contact_id, e,
+            )
+
     await db["audit_logs"].insert_one({
         "action": "application_submitted",
         "agent_email": current_user.get("email"),
@@ -318,6 +420,123 @@ async def submit_application(
         "ghl_mock": result.get("mock", False),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
+
+    # ── MongoDB persistence ──────────────────────────────────────────────
+    # Both writes are non-fatal. The agent has already pushed to GHL, so a
+    # local-DB hiccup must not surface as a 5xx — but we still log loudly so
+    # ops can backfill.
+    now_iso = datetime.now(timezone.utc).isoformat()
+    first_name, last_name = _split_name(payload.contact_name)
+    try:
+        await db["clients"].update_one(
+            {"ghl_contact_id": payload.contact_id},
+            {
+                "$set": {
+                    "ghl_contact_id": payload.contact_id,
+                    "full_name": payload.contact_name or "",
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "updated_at": now_iso,
+                },
+                "$setOnInsert": {
+                    "created_at": now_iso,
+                    "created_by": current_user.get("email", ""),
+                },
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning(
+            "clients upsert failed (non-fatal) for %s: %s",
+            payload.contact_id, e,
+        )
+
+    try:
+        extracted = payload.extracted or {}
+        await db["policies"].insert_one({
+            "ghl_contact_id": payload.contact_id,
+            "contact_name": payload.contact_name or "",
+            "product_type": payload.product_type,
+            "product_label": PRODUCT_LABELS.get(payload.product_type, payload.product_type),
+            "carrier": (
+                extracted.get("carrier")
+                or extracted.get(f"{payload.product_type}_carrier")
+                or extracted.get("ma_carrier")
+                or extracted.get("pdp_carrier")
+                or extracted.get("life_carrier")
+                or ""
+            ),
+            "policy_id": (
+                extracted.get("policy_id")
+                or extracted.get(f"{payload.product_type}_policy_id")
+                or extracted.get("policy_number")
+                or extracted.get(f"{payload.product_type}_policy_number")
+                or ""
+            ),
+            "plan": (
+                extracted.get("plan_name")
+                or extracted.get(f"{payload.product_type}_plan")
+                or extracted.get(f"{payload.product_type}_plan_name")
+                or extracted.get(f"{payload.product_type}_product_name")
+                or extracted.get("med_supp_plan_name")
+                or ""
+            ),
+            "premium": (
+                extracted.get("premium")
+                or extracted.get("client_premium")
+                or extracted.get(f"{payload.product_type}_premium")
+                or extracted.get(f"{payload.product_type}_client_premium")
+                or ""
+            ),
+            "effective_date": (
+                extracted.get("effective_date")
+                or extracted.get(f"{payload.product_type}_effective_date")
+                or extracted.get("life_coverage_effective_date")
+                or ""
+            ),
+            "renewal_date": (
+                extracted.get("renewal_date")
+                or extracted.get(f"{payload.product_type}_renewal_date")
+                or ""
+            ),
+            "term_date": (
+                extracted.get("term_date")
+                or extracted.get(f"{payload.product_type}_term_date")
+                or ""
+            ),
+            "enrollment_type": (
+                extracted.get("enrollment_type")
+                or extracted.get(f"{payload.product_type}_enrollment_type")
+                or ""
+            ),
+            "election_period": (
+                extracted.get("election_period")
+                or extracted.get(f"{payload.product_type}_election_period")
+                or ""
+            ),
+            "policy_status": (
+                extracted.get("policy_status")
+                or extracted.get(f"{payload.product_type}_policy_status")
+                or "Pending"
+            ),
+            "pay_frequency": (
+                extracted.get("pay_frequency")
+                or extracted.get(f"{payload.product_type}_pay_frequency")
+                or ""
+            ),
+            "pdf_url": payload.pdf_url or "",
+            "all_fields": extracted,
+            "submitted_by": current_user.get("email", ""),
+            "submitted_at": now_iso,
+            "ghl_synced": True,
+            "ghl_mock": result.get("mock", False),
+        })
+    except Exception as e:
+        logger.warning(
+            "policies insert failed (non-fatal) for %s: %s",
+            payload.contact_id, e,
+        )
+
     return {"success": True, "contact_id": payload.contact_id,
             "fields_synced": len(custom_fields), "ghl_mock": result.get("mock", False)}
 

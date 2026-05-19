@@ -32,6 +32,7 @@ from leaderboard_router import router as leaderboard_router  # noqa: E402
 from soa_router import router as soa_router  # noqa: E402
 from audit_router import router as audit_router  # noqa: E402
 from application_router import router as application_router  # noqa: E402
+from clients_router import router as clients_router  # noqa: E402
 from seed import seed_admin  # noqa: E402
 
 
@@ -130,6 +131,7 @@ app.include_router(leaderboard_router, prefix="/api")
 app.include_router(soa_router, prefix="/api")
 app.include_router(audit_router, prefix="/api")
 app.include_router(application_router)
+app.include_router(clients_router)
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
@@ -336,6 +338,13 @@ async def on_startup():
 
     # Daily ComTrack sync run log
     await db.commission_sync_runs.create_index("completed_at")
+
+    # Application-submission persistence (Phase 3) — one row per GHL contact
+    # in `clients`, one row per submitted application in `policies`.
+    await db.clients.create_index("ghl_contact_id", unique=True)
+    await db.policies.create_index("ghl_contact_id")
+    await db.policies.create_index("submitted_at")
+    await db.policies.create_index([("ghl_contact_id", 1), ("product_type", 1)])
 
     await seed_admin(db)
     logger.info("Startup complete. Admin seeded if missing.")
