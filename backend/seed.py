@@ -42,10 +42,15 @@ async def seed_admin(db) -> None:
             )
             return
 
+    # Default admin identity. Override at seed time via env
+    # (SEED_ADMIN_FULL_NAME) or after the fact via PATCH /auth/users/{id}/profile.
+    # Tim Arnold is the CTO/admin of record for GHW.
+    full_name = os.environ.get("SEED_ADMIN_FULL_NAME", "Tim Arnold").strip() or "Tim Arnold"
+
     await db.users.insert_one({
         "id": str(uuid.uuid4()),
         "email": email,
-        "full_name": "Administrator",
+        "full_name": full_name,
         "role": "admin",
         "is_active": True,
         "status": "active",
@@ -55,4 +60,4 @@ async def seed_admin(db) -> None:
         "mfa_enabled": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
-    logger.info("Seeded admin account: %s", email)
+    logger.info("Seeded admin account: %s (%s)", email, full_name)
