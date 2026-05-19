@@ -15,7 +15,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from deps import get_db, get_current_user, require_roles, write_audit
+from deps import (
+    get_db,
+    get_current_user,
+    require_roles,
+    write_audit,
+    COMPLIANCE_ROLES,
+)
 
 
 router = APIRouter(prefix="/agents", tags=["agent-management"])
@@ -27,7 +33,7 @@ class AgentStatusUpdate(BaseModel):
 
 @router.get("")
 async def list_agents(
-    _user: dict = Depends(require_roles("admin", "compliance")),
+    _user: dict = Depends(require_roles(*COMPLIANCE_ROLES)),
     db=Depends(get_db),
 ):
     """Roster view with rolled-up production counts per agent.

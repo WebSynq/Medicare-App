@@ -42,7 +42,22 @@ UserStatus = Literal["pending", "active", "rejected"]
 class UserBase(BaseModel):
     email: EmailStr
     full_name: Optional[str] = None
-    role: Literal["admin", "agent", "compliance"] = "agent"
+    # Expanded role set so non-agent team members (back-office, support,
+    # security) can each carry an appropriate access profile. Layout.jsx
+    # groups them client-side: va/support/crm_specialist/onboarding map
+    # to the agent nav profile, cyber_security/sales_manager/compliance
+    # map to the compliance nav profile. admin retains full access.
+    role: Literal[
+        "admin",
+        "agent",
+        "compliance",
+        "va",
+        "support",
+        "crm_specialist",
+        "cyber_security",
+        "sales_manager",
+        "onboarding",
+    ] = "agent"
     is_active: bool = True
     status: UserStatus = "active"
     agency_name: Optional[str] = None
@@ -139,6 +154,18 @@ class InviteRequest(BaseModel):
     agency_name: Optional[str] = None
     agent_name: Optional[str] = None
     agent_npn: Optional[str] = None
+    # Invite-time role assignment. Admin cannot be granted via invite —
+    # that has to be done manually in the DB / via the admin tools.
+    role: Optional[Literal[
+        "agent",
+        "compliance",
+        "va",
+        "support",
+        "crm_specialist",
+        "cyber_security",
+        "sales_manager",
+        "onboarding",
+    ]] = "agent"
 
     @field_validator("agent_name")
     @classmethod

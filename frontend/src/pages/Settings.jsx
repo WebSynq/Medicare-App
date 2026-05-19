@@ -1209,11 +1209,29 @@ function IntegrationsTab() {
   );
 }
 
+// Friendly labels for every role we let an admin invite. Admin is
+// deliberately omitted — promoting someone to admin requires a manual
+// DB / tools change, not a UI invite.
+const INVITABLE_ROLES = [
+  { value: "agent", label: "Agent" },
+  { value: "va", label: "Virtual Assistant" },
+  { value: "support", label: "Customer Support" },
+  { value: "crm_specialist", label: "CRM Specialist" },
+  { value: "cyber_security", label: "Cyber Security" },
+  { value: "sales_manager", label: "Sales Manager" },
+  { value: "onboarding", label: "Onboarding Specialist" },
+  { value: "compliance", label: "Compliance" },
+];
+
 // ── Team tab (admin only) ────────────────────────────────────────────────
 function TeamTab() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("agent");
   const [inviting, setInviting] = useState(false);
+  // We surface the generated invite URL to the admin because the backend
+  // doesn't ship email itself — the admin copies the link and sends it
+  // out-of-band (Slack/email).
+  const [lastInvite, setLastInvite] = useState(null);
 
   const [invites, setInvites] = useState([]);
   const [invitesLoading, setInvitesLoading] = useState(true);
@@ -1257,12 +1275,20 @@ function TeamTab() {
     }
     setInviting(true);
     try {
-      await api.post("/auth/invite", {
+      const { data } = await api.post("/auth/invite", {
         email: inviteEmail.trim(),
         full_name: "",
         agency_name: "",
+        role: inviteRole,
       });
-      toast.success(`Invite sent to ${inviteEmail}.`);
+      // Show the invite URL inline — there's no mail service wired up,
+      // the admin copies and sends manually.
+      setLastInvite({
+        email: inviteEmail.trim(),
+        url: data?.invite_url || "",
+        expires_at: data?.expires_at || "",
+      });
+      toast.success(`Invite link created for ${inviteEmail}. Copy & send.`);
       setInviteEmail("");
       loadInvites();
     } catch (err) {
@@ -1271,6 +1297,16 @@ function TeamTab() {
       );
     } finally {
       setInviting(false);
+    }
+  }
+
+  async function copyInviteUrl() {
+    if (!lastInvite?.url) return;
+    try {
+      await navigator.clipboard.writeText(lastInvite.url);
+      toast.success("Invite link copied to clipboard.");
+    } catch {
+      toast.error("Couldn't copy — select the link manually.");
     }
   }
 
@@ -1299,8 +1335,11 @@ function TeamTab() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="agent">Agent</SelectItem>
-                  <SelectItem value="compliance">Compliance</SelectItem>
+                  {INVITABLE_ROLES.map((r) => (
+                    <SelectItem key={r.value} value={r.value}>
+                      {r.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -1310,13 +1349,46 @@ function TeamTab() {
             disabled={inviting}
             data-testid="team-invite-send"
           >
-            {inviting ? "Sending…" : "Send invite"}
+            {inviting ? "Sending…" : "Create invite link"}
           </Button>
           <p className="text-[11px] text-muted-foreground">
-            The role dropdown is informational on this tab — the invite link
-            creates an agent by default. Use Agent Management to upgrade a
-            user's role after they accept.
+            We don't email invites yet — copy the generated link below and
+            send it to the new team member directly. The role chosen above
+            is applied when they register.
           </p>
+
+          {lastInvite?.url && (
+            <div
+              className="mt-3 p-3 rounded-md border border-emerald-500/30 bg-emerald-50 space-y-2"
+              data-testid="team-invite-result"
+            >
+              <div className="text-xs font-medium text-emerald-900">
+                Invite link for {lastInvite.email}
+              </div>
+              <div className="flex items-stretch gap-2">
+                <Input
+                  readOnly
+                  value={lastInvite.url}
+                  onFocus={(e) => e.target.select()}
+                  className="font-mono text-xs"
+                  data-testid="team-invite-link"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={copyInviteUrl}
+                  data-testid="team-invite-copy"
+                >
+                  Copy
+                </Button>
+              </div>
+              {lastInvite.expires_at && (
+                <div className="text-[11px] text-emerald-900/70">
+                  Expires {new Date(lastInvite.expires_at).toLocaleString()}
+                </div>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
 

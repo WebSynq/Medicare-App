@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from deps import get_db, get_current_user, require_roles, write_audit
+from deps import get_db, get_current_user, require_roles, write_audit, COMPLIANCE_ROLES
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ def _status(total_uploads: int, last_upload: str | None) -> str:
 @router.get("")
 async def get_all_agent_commissions(
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(require_roles("admin", "compliance")),
+    current_user: dict = Depends(require_roles(*COMPLIANCE_ROLES)),
 ):
     """
     Return all agents with their commission upload stats.

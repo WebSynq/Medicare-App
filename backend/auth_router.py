@@ -198,12 +198,17 @@ async def register(
     new_user_id = str(uuid.uuid4())
     full_name = body.full_name.strip()
     agent_npn = invite.get("agent_npn") or body.agent_npn
+    # Honour the role stamped on the invite (defaults to "agent" for any
+    # invite that pre-dates the role expansion). The Pydantic Literal on
+    # InviteRequest prevents "admin" from ever landing on an invite, so
+    # this fallback is safe.
+    assigned_role = invite.get("role") or "agent"
     user_doc = {
         "id": new_user_id,
         "agent_id": new_user_id,
         "email": email,
         "full_name": full_name,
-        "role": "agent",
+        "role": assigned_role,
         "is_active": False,
         "status": "pending",
         "agency_name": body.agency_name.strip(),
@@ -508,6 +513,10 @@ async def create_invite(
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     expires = now + timedelta(hours=24)
 
+    # Role on the invite — defaults to "agent". Admin is explicitly NOT
+    # invitable from this endpoint (the Pydantic Literal excludes it) so
+    # privilege escalation requires DB-level intervention.
+    invite_role = invite.role or "agent"
     invite_doc = {
         "id": str(uuid.uuid4()),
         "token_hash": token_hash,
@@ -516,6 +525,7 @@ async def create_invite(
         "agency_name": invite.agency_name or "",
         "agent_name": invite.agent_name,
         "agent_npn": invite.agent_npn,
+        "role": invite_role,
         "created_by": current_user["id"],
         "created_at": now.isoformat(),
         "expires_at": expires.isoformat(),
@@ -531,7 +541,11 @@ async def create_invite(
         actor_id=current_user["id"],
         target_type="invite",
         target_id=invite_doc["id"],
-        metadata={"invited_email": invite.email, "expires_at": expires.isoformat()},
+        metadata={
+            "invited_email": invite.email,
+            "role": invite_role,
+            "expires_at": expires.isoformat(),
+        },
     )
 
     # Render needs FRONTEND_URL set in env (e.g. https://medicare-app-sandy-tau.vercel.app)

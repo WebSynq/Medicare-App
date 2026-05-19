@@ -27,10 +27,26 @@ import { auth } from "@/lib/api";
 import { AppLayout } from "@/components/Layout";
 import { AgentProvider } from "@/context/AgentContext";
 
+// Compliance-bucket roles — see the same screens as legacy "compliance".
+// Kept in sync with backend deps.COMPLIANCE_ROLES.
+const COMPLIANCE_BUCKET = ["compliance", "cyber_security", "sales_manager"];
+
 function Protected({ children, roles, noLayout }) {
   const user = auth.getUser();
   if (!user) return <Navigate to="/login" replace />;
-  if (roles && !roles.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  // Expand "compliance" in route role lists to include the wider
+  // compliance bucket so cyber_security/sales_manager hit the same set
+  // of pages.
+  const expanded = roles
+    ? Array.from(
+        new Set(
+          roles.flatMap((r) => (r === "compliance" ? COMPLIANCE_BUCKET : [r])),
+        ),
+      )
+    : null;
+  if (expanded && !expanded.includes(user.role)) {
+    return <Navigate to="/dashboard" replace />;
+  }
   if (noLayout) return children;
   return <AppLayout>{children}</AppLayout>;
 }

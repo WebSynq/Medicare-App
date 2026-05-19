@@ -146,7 +146,13 @@ function AgentSwitcher({ role, onNavigate }) {
   const [loaded, setLoaded] = useState(false);
   const [open, setOpen] = useState(false);
 
-  const canSee = role === "admin" || role === "compliance";
+  // Same role profile as the admin-area sidebar: anything in the
+  // compliance bucket plus admin proper can impersonate.
+  const canSee =
+    role === "admin" ||
+    role === "compliance" ||
+    role === "cyber_security" ||
+    role === "sales_manager";
 
   useEffect(() => {
     if (!canSee) return;
@@ -280,9 +286,25 @@ function AgentSwitcher({ role, onNavigate }) {
   );
 }
 
+// Role nav profiles. Extending the user roles without remapping nav would
+// leave new team members staring at an empty sidebar — these groups give
+// each role a sensible default surface area:
+//   - admin               → everything (admin)
+//   - compliance buckets  → see admin tools (audit, compliance panel) but
+//     not destructive admin-only routes (accounting, data import).
+//     Includes: compliance, cyber_security, sales_manager.
+//   - agent buckets       → standard producer nav.
+//     Includes: agent, va, support, crm_specialist, onboarding.
+const COMPLIANCE_LIKE_ROLES = new Set([
+  "compliance",
+  "cyber_security",
+  "sales_manager",
+]);
+
 function SidebarContent({ user, role, onNavigate, onSignOut }) {
   const isAdmin = role === "admin";
-  const isAdminOrCompliance = role === "admin" || role === "compliance";
+  const isAdminOrCompliance =
+    role === "admin" || COMPLIANCE_LIKE_ROLES.has(role);
   const displayName = user?.full_name || user?.email || "Agent";
   return (
     <div className="flex flex-col h-full text-white" style={{ background: SIDEBAR_BG }}>

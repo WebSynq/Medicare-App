@@ -180,6 +180,11 @@ export default function ChatWidget() {
       }
     } catch (e) {
       if (e?.name !== "AbortError") {
+        // Surface the actual error to the browser console — invisible to
+        // end users, but the only signal a developer gets if Bedrock /
+        // CSRF / CORS misbehaves in prod.
+        // eslint-disable-next-line no-console
+        console.error("Chat request failed", e);
         toast.error(e?.message || "Chat request failed");
       }
     } finally {

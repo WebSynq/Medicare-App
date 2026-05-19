@@ -3,7 +3,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from deps import get_db, require_roles
+from deps import get_db, require_roles, COMPLIANCE_ROLES
 
 
 router = APIRouter(prefix="/audit", tags=["audit"])
@@ -17,7 +17,7 @@ async def list_audit_events(
     target_id: Optional[str] = None,
     limit: int = Query(200, le=1000),
     db: AsyncIOMotorDatabase = Depends(get_db),
-    _user=Depends(require_roles("admin", "compliance")),
+    _user=Depends(require_roles(*COMPLIANCE_ROLES)),
 ):
     q: dict = {}
     if event_type:
@@ -35,7 +35,7 @@ async def list_audit_events(
 @router.get("/summary")
 async def audit_summary(
     db: AsyncIOMotorDatabase = Depends(get_db),
-    _user=Depends(require_roles("admin", "compliance")),
+    _user=Depends(require_roles(*COMPLIANCE_ROLES)),
 ):
     pipeline = [
         {"$group": {"_id": "$event_type", "count": {"$sum": 1}}},

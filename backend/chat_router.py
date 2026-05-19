@@ -222,9 +222,11 @@ async def chat(
                     break
             yield "data: [DONE]\n\n"
         except Exception as e:
-            # Don't leak provider error details to the browser — log
-            # server-side, return a generic message to the client.
-            logger.warning("Bedrock chat stream failed: %s", e)
+            # Don't leak provider error details to the browser — log the
+            # full traceback server-side, return a generic message to the
+            # client. ClientError / BotoCoreError carry the most useful
+            # diagnostic info (missing creds, region misconfig, throttle).
+            logger.exception("Bedrock chat stream failed: %s", e)
             yield _sse({"type": "error", "content": "Assistant unavailable. Try again."})
             yield "data: [DONE]\n\n"
 

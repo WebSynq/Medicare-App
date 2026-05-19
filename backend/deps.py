@@ -106,6 +106,18 @@ def require_roles(*roles: str):
     return _checker
 
 
+# Role groups. Use these constants when gating an endpoint so the
+# expanded team roles (cyber_security, sales_manager, etc.) inherit
+# the same access we already grant compliance — extending the list
+# here updates every callsite without a hunt across routers.
+COMPLIANCE_ROLES = (
+    "admin",
+    "compliance",
+    "cyber_security",
+    "sales_manager",
+)
+
+
 def agent_filter(current_user: dict,
                  override_agent_id: Optional[str] = None) -> dict:
     """Build a Mongo filter that scopes results to one agent's data.

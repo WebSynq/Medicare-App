@@ -25,6 +25,24 @@ import {
 import { api, auth } from "@/lib/api";
 import { useAgent } from "@/context/AgentContext";
 
+// Maps raw role strings to human labels for the agent table.
+const ROLE_LABELS = {
+  admin: "Administrator",
+  agent: "Agent",
+  compliance: "Compliance",
+  va: "Virtual Assistant",
+  support: "Customer Support",
+  crm_specialist: "CRM Specialist",
+  cyber_security: "Cyber Security",
+  sales_manager: "Sales Manager",
+  onboarding: "Onboarding Specialist",
+};
+
+function roleLabel(raw) {
+  if (!raw) return "—";
+  return ROLE_LABELS[raw] || raw;
+}
+
 function StatCard({ label, value, icon: Icon, tone = "default" }) {
   const toneClasses = {
     default: "text-foreground",
@@ -238,6 +256,9 @@ export default function AgentManagement() {
                           <div>{a.full_name || a.agent_name || "—"}</div>
                           <div className="text-xs text-muted-foreground">
                             {a.email}
+                          </div>
+                          <div className="text-[11px] mt-0.5 inline-block px-1.5 py-0.5 rounded bg-secondary text-foreground/70">
+                            {roleLabel(a.role)}
                           </div>
                         </TableCell>
                         <TableCell>
