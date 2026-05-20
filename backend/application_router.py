@@ -432,6 +432,199 @@ def _split_name(full_name: Optional[str]) -> tuple[str, str]:
     return (parts[0], " ".join(parts[1:]))
 
 
+# ── Contact extraction from product-specific Bedrock output ──────────────
+# Each product uses different field-name prefixes (medsupp_first_name vs
+# ma_first_name etc.). When auto-creating a portal lead from an
+# application we walk all the obvious variants until something hits.
+_CONTACT_FIELD_HINTS = {
+    "first_name": (
+        "first_name", "firstName",
+        "client_first_name", "applicant_first_name",
+        "med_supp_first_name", "medsupp_first_name", "ma_first_name",
+        "pdp_first_name", "life_first_name", "cancer_first_name",
+        "hs_first_name", "hip_first_name", "rc_first_name", "dvh_first_name",
+    ),
+    "last_name": (
+        "last_name", "lastName",
+        "client_last_name", "applicant_last_name",
+        "med_supp_last_name", "medsupp_last_name", "ma_last_name",
+        "pdp_last_name", "life_last_name", "cancer_last_name",
+        "hs_last_name", "hip_last_name", "rc_last_name", "dvh_last_name",
+    ),
+    "email": (
+        "email", "client_email", "applicant_email",
+        "med_supp_email", "medsupp_email", "ma_email", "pdp_email",
+    ),
+    "phone": (
+        "phone", "phone_number", "client_phone", "applicant_phone",
+        "med_supp_phone", "medsupp_phone", "ma_phone", "pdp_phone",
+    ),
+    "date_of_birth": (
+        "date_of_birth", "dob", "birthdate", "birth_date",
+        "client_dob", "applicant_dob", "applicant_date_of_birth",
+        "med_supp_dob", "medsupp_dob", "ma_dob", "pdp_dob",
+    ),
+    "address_line1": (
+        "address1", "address_line1", "street_address",
+        "client_address", "applicant_address",
+    ),
+    "city": ("city", "client_city", "applicant_city"),
+    "state": ("state", "client_state", "applicant_state"),
+    "zip_code": (
+        "zip_code", "postal_code", "zip",
+        "client_zip", "client_postal_code", "applicant_zip",
+    ),
+}
+
+
+def _pluck_contact_fields(extracted: Dict[str, Any]) -> Dict[str, Any]:
+    """Pull a normalised lead-shaped dict out of the Bedrock extraction.
+
+    Iterates the known per-product field-name variants and takes the
+    first non-empty hit. Returns only keys we found values for —
+    callers merge this on top of name/contact info already known.
+    """
+    out: Dict[str, Any] = {}
+    for portal_key, candidates in _CONTACT_FIELD_HINTS.items():
+        for c in candidates:
+            v = extracted.get(c)
+            if v not in (None, ""):
+                out[portal_key] = v.strip() if isinstance(v, str) else v
+                break
+    return out
+
+
+async def _find_or_create_lead_for_submission(
+    db,
+    payload: "SubmitApplicationRequest",
+    effective: dict,
+    current_user: dict,
+) -> Dict[str, Any]:
+    """Locate the portal lead this application belongs to, creating one
+    if it doesn't exist yet.
+
+    Lookup order (idempotency guarantee — never duplicates):
+      1. ghl_contact_id == payload.contact_id
+      2. email match (normalised lowercase)
+      3. phone match (raw equality)
+
+    If nothing matches we build a new lead row from the extracted fields,
+    status="enrolled" (this *is* an enrollment by definition), Phase-2
+    scoping from the effective agent, and ``created_via =
+    "application_submission"``. We then best-effort push it to GHL via
+    create_contact and stamp the returned id back on the lead.
+
+    Returns a dict the caller can read: ``lead_id``, ``lead_name``,
+    ``ghl_contact_id`` (may differ from payload.contact_id if we just
+    created the contact in GHL), plus ``created_new: bool``.
+    """
+    extracted = payload.extracted or {}
+    plucked = _pluck_contact_fields(extracted)
+    name_first, name_last = _split_name(payload.contact_name)
+    if not name_first and plucked.get("first_name"):
+        name_first = plucked["first_name"]
+    if not name_last and plucked.get("last_name"):
+        name_last = plucked["last_name"]
+    email = (plucked.get("email") or "").lower().strip() or None
+    phone = (plucked.get("phone") or "").strip() or None
+
+    # 1) Find by GHL contact id
+    existing = None
+    if payload.contact_id:
+        existing = await db.leads.find_one(
+            {"ghl_contact_id": payload.contact_id}, {"_id": 0},
+        )
+    # 2) Email
+    if not existing and email:
+        existing = await db.leads.find_one({"email": email}, {"_id": 0})
+    # 3) Phone
+    if not existing and phone:
+        existing = await db.leads.find_one({"phone": phone}, {"_id": 0})
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if existing:
+        # Promote to "enrolled" if it wasn't already, and backfill
+        # ghl_contact_id if the search came from GHL but we missed it.
+        updates: Dict[str, Any] = {"updated_at": now_iso}
+        if (existing.get("status") or "").lower() != "enrolled":
+            updates["status"] = "enrolled"
+        if payload.contact_id and not existing.get("ghl_contact_id"):
+            updates["ghl_contact_id"] = payload.contact_id
+        if len(updates) > 1:  # more than just updated_at
+            await db.leads.update_one({"id": existing["id"]}, {"$set": updates})
+        return {
+            "lead_id": existing["id"],
+            "lead_name": (
+                f"{existing.get('first_name', '')} {existing.get('last_name', '')}".strip()
+                or payload.contact_name
+                or "Client"
+            ),
+            "ghl_contact_id": existing.get("ghl_contact_id") or payload.contact_id,
+            "created_new": False,
+        }
+
+    # ── Auto-create path ──
+    new_lead_id = str(uuid.uuid4())
+    lead_doc: Dict[str, Any] = {
+        "id": new_lead_id,
+        "first_name": name_first or "",
+        "last_name": name_last or "",
+        "email": email,
+        "phone": phone,
+        "status": "enrolled",
+        "soa_signed": False,
+        "document_ids": [],
+        # Phase-2 scoping triple
+        "agent_id": effective["id"],
+        "agent_email": (effective.get("email") or "").lower() or None,
+        "agent_name": effective.get("agent_name") or effective.get("full_name"),
+        "agent_assigned_id": effective["id"],
+        # GHL provenance — populated below after create_contact
+        "ghl_contact_id": payload.contact_id or None,
+        "ghl_sync_status": "pending",
+        # Audit-style provenance
+        "created_via": "application_submission",
+        "product_interest": payload.product_type,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    # Fold in the extracted address / DOB / etc.
+    for k in ("date_of_birth", "address_line1", "city", "state", "zip_code"):
+        if plucked.get(k):
+            lead_doc[k] = plucked[k]
+
+    await db.leads.insert_one(lead_doc.copy())
+
+    # Best-effort GHL push when we don't already have a GHL contact id.
+    # create_contact is the "never throw" helper from ghl_client — it
+    # returns None on failure, which is fine, the lead still exists.
+    ghl_id = payload.contact_id or None
+    if not ghl_id:
+        try:
+            ghl = GHLClient()
+            ghl_id = await ghl.create_contact(lead_doc)
+        except Exception as e:
+            logger.warning("GHL create_contact during /submit failed: %s", e)
+            ghl_id = None
+    if ghl_id and ghl_id != lead_doc.get("ghl_contact_id"):
+        await db.leads.update_one(
+            {"id": new_lead_id},
+            {"$set": {
+                "ghl_contact_id": ghl_id,
+                "ghl_sync_status": "synced",
+                "ghl_synced_at": now_iso,
+            }},
+        )
+
+    return {
+        "lead_id": new_lead_id,
+        "lead_name": f"{name_first} {name_last}".strip() or payload.contact_name or "Client",
+        "ghl_contact_id": ghl_id,
+        "created_new": True,
+    }
+
+
 @router.post("/submit")
 async def submit_application(
     payload: SubmitApplicationRequest,
@@ -441,8 +634,23 @@ async def submit_application(
 ):
     if payload.product_type not in FIELD_MAPS:
         raise HTTPException(status_code=400, detail="Unknown product_type.")
-    if not payload.contact_id.strip():
-        raise HTTPException(status_code=400, detail="contact_id required.")
+    # contact_id used to be required, but the auto-create path now
+    # handles the "agent never picked a GHL contact" case by creating
+    # the GHL contact on submit. We still need *something* to identify
+    # the client — at minimum a name or extracted contact field.
+    has_identity = (
+        (payload.contact_id and payload.contact_id.strip())
+        or (payload.contact_name and payload.contact_name.strip())
+        or any(
+            (payload.extracted or {}).get(k)
+            for k in ("first_name", "last_name", "email", "phone")
+        )
+    )
+    if not has_identity:
+        raise HTTPException(
+            status_code=400,
+            detail="contact_id, contact_name, or an extracted identity field is required.",
+        )
     custom_fields = _fields_to_ghl_array(payload.extracted)
     if not custom_fields:
         raise HTTPException(status_code=400, detail="No non-null fields to submit.")
@@ -454,6 +662,19 @@ async def submit_application(
     agent_id = effective["id"]
     agent_email = (effective.get("email") or "").lower().strip() or None
     agent_name = effective.get("agent_name") or effective.get("full_name") or None
+
+    # Resolve (or create) the portal lead for this submission BEFORE we
+    # round-trip to GHL. If the contact didn't exist in the portal we
+    # create it here and push it to GHL ourselves, then keep using the
+    # resolved ghl_contact_id for the field update below.
+    lead_resolution = await _find_or_create_lead_for_submission(
+        db, payload, effective, current_user,
+    )
+    lead_id = lead_resolution["lead_id"]
+    if lead_resolution.get("ghl_contact_id"):
+        # If we just created the contact in GHL, swap the payload contact
+        # id so the update_contact + PDF push below target the right id.
+        payload.contact_id = lead_resolution["ghl_contact_id"] or payload.contact_id
 
     ghl = GHLClient()
     try:
@@ -545,7 +766,8 @@ async def submit_application(
             "agent_name": agent_name,
             "impersonated_by": effective.get("_impersonated_by"),
             "ghl_contact_id": payload.contact_id,
-            "contact_name": payload.contact_name or "",
+            "lead_id": lead_id,
+            "contact_name": payload.contact_name or lead_resolution.get("lead_name", ""),
             "product_type": payload.product_type,
             "product_label": PRODUCT_LABELS.get(payload.product_type, payload.product_type),
             "carrier": (
@@ -632,14 +854,83 @@ async def submit_application(
             payload.contact_id, e,
         )
 
-    return {"success": True, "contact_id": payload.contact_id,
-            "fields_synced": len(custom_fields), "ghl_mock": result.get("mock", False)}
+    return {
+        "success": True,
+        "contact_id": payload.contact_id,
+        "lead_id": lead_id,
+        "lead_name": lead_resolution.get("lead_name"),
+        "lead_created": lead_resolution.get("created_new", False),
+        "fields_synced": len(custom_fields),
+        "ghl_mock": result.get("mock", False),
+    }
+
+async def _import_ghl_contact_to_portal(
+    db,
+    ghl_contact: Dict[str, Any],
+    effective: dict,
+) -> Optional[str]:
+    """Ensure a GHL search result has a corresponding portal lead.
+
+    Idempotent by ``ghl_contact_id``. Returns the portal lead_id. Never
+    raises — on any DB / mapping failure we just return None and let the
+    caller continue (the search endpoint will still return the GHL
+    contact, just without a portal link).
+    """
+    ghl_id = ghl_contact.get("id")
+    if not ghl_id:
+        return None
+    try:
+        existing = await db.leads.find_one(
+            {"ghl_contact_id": ghl_id}, {"_id": 0, "id": 1},
+        )
+        if existing:
+            return existing["id"]
+        now_iso = datetime.now(timezone.utc).isoformat()
+        new_id = str(uuid.uuid4())
+        lead_doc = {
+            "id": new_id,
+            "first_name": (ghl_contact.get("firstName") or "").strip(),
+            "last_name": (ghl_contact.get("lastName") or "").strip(),
+            "email": (ghl_contact.get("email") or "").lower().strip() or None,
+            "phone": (ghl_contact.get("phone") or "").strip() or None,
+            "date_of_birth": ghl_contact.get("dateOfBirth") or None,
+            "address_line1": ghl_contact.get("address1") or None,
+            "city": ghl_contact.get("city") or None,
+            "state": ghl_contact.get("state") or None,
+            "zip_code": ghl_contact.get("postalCode") or None,
+            "status": "new",
+            "soa_signed": False,
+            "document_ids": [],
+            # Phase-2 scoping triple
+            "agent_id": effective["id"],
+            "agent_email": (effective.get("email") or "").lower() or None,
+            "agent_name": effective.get("agent_name") or effective.get("full_name"),
+            "agent_assigned_id": effective["id"],
+            "ghl_contact_id": ghl_id,
+            "ghl_sync_status": "synced",
+            "ghl_synced_at": now_iso,
+            "created_via": "ghl_search_import",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+        await db.leads.insert_one(lead_doc.copy())
+        return new_id
+    except Exception as e:
+        logger.warning("Auto-import GHL contact to portal failed: %s", e)
+        return None
+
 
 @router.get("/search-contacts")
 async def search_contacts(
     query: str,
+    db=Depends(get_db),
     current_user: dict = Depends(get_current_user),
+    effective: dict = Depends(get_effective_agent),
 ):
+    """Search the GHL location for matching contacts. Each result is
+    side-effect-imported into the portal's ``leads`` collection if it
+    doesn't already exist, so picking a contact in the UI never lands
+    on a stub that can't be opened in /clients."""
     if len(query.strip()) < 2:
         raise HTTPException(status_code=400,
             detail="Query must be 2+ characters.")
@@ -654,4 +945,15 @@ async def search_contacts(
         logger.error("Contact search failed: %s", e)
         raise HTTPException(status_code=502,
             detail=f"Contact search unavailable: {str(e)}")
-    return {"contacts": contacts}
+
+    # Auto-import every result. lead_id is attached inline so the
+    # frontend can deep-link to /clients/{lead_id} without a second
+    # round-trip.
+    enriched: List[Dict[str, Any]] = []
+    for c in contacts or []:
+        if not isinstance(c, dict):
+            continue
+        lead_id = await _import_ghl_contact_to_portal(db, c, effective)
+        enriched.append({**c, "lead_id": lead_id})
+
+    return {"contacts": enriched}

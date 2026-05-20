@@ -101,6 +101,12 @@ export default function ApplicationSubmission() {
   // Step 4: done
   const [syncedCount, setSyncedCount] = useState(0);
   const [ghlMock, setGhlMock] = useState(false);
+  // Populated from /api/applications/submit response. The portal lead id
+  // is what /clients/:leadId expects — NOT the GHL contact id — and the
+  // backend auto-creates a lead row on submission if one didn't exist.
+  const [submittedLeadId, setSubmittedLeadId] = useState(null);
+  const [submittedLeadName, setSubmittedLeadName] = useState("");
+  const [leadCreated, setLeadCreated] = useState(false);
 
   useEffect(() => {
     const q = contactQuery.trim();
@@ -204,6 +210,11 @@ export default function ApplicationSubmission() {
       });
       setSyncedCount(data.fields_synced || 0);
       setGhlMock(!!data.ghl_mock);
+      setSubmittedLeadId(data.lead_id || null);
+      setSubmittedLeadName(
+        data.lead_name || contactDisplay(selectedContact) || "Client",
+      );
+      setLeadCreated(!!data.lead_created);
       setStep(STEP.DONE);
     } catch (err) {
       const detail =
@@ -491,38 +502,43 @@ export default function ApplicationSubmission() {
               </div>
               <div>
                 <h2 className="text-lg font-semibold tracking-tight">
-                  Application Synced
+                  Application submitted successfully!
                 </h2>
                 <p className="text-sm text-muted-foreground mt-1">
-                  Pushed {syncedCount} field{syncedCount === 1 ? "" : "s"} to{" "}
-                  {contactDisplay(selectedContact)}
+                  Policy saved for{" "}
+                  <span className="font-medium text-foreground">
+                    {submittedLeadName || contactDisplay(selectedContact)}
+                  </span>
                   {ghlMock ? " (mock mode)" : ""}.
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Pushed {syncedCount} field{syncedCount === 1 ? "" : "s"} to GHL
+                  {leadCreated ? " · new client added to your book" : ""}.
                 </p>
               </div>
               <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                {submittedLeadId && (
+                  <Button asChild data-testid="view-client-profile-btn">
+                    <Link to={`/clients/${submittedLeadId}`}>
+                      <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
+                      View Client Profile
+                    </Link>
+                  </Button>
+                )}
                 <Button
-                  asChild
                   variant="outline"
-                  data-testid="view-client-profile-btn"
-                >
-                  <Link to={`/clients/${selectedContact?.id || ""}`}>
-                    <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
-                    View Client Profile
-                  </Link>
-                </Button>
-                <Button
                   onClick={submitAnotherForSameContact}
                   data-testid="submit-another-same-contact-btn"
                 >
                   <Plus className="w-3.5 h-3.5 mr-1.5" />
-                  Submit Another for {contactDisplay(selectedContact)}
+                  Submit Another for {submittedLeadName || contactDisplay(selectedContact)}
                 </Button>
                 <Button
                   variant="ghost"
                   onClick={resetAll}
                   data-testid="submit-another-btn"
                 >
-                  New client
+                  Submit Another (new client)
                 </Button>
               </div>
             </CardContent>

@@ -1238,3 +1238,101 @@ def test_dashboard_quote_stable_within_day():
     q2 = _quote_for_today()
     assert q1 == q2
     assert q1["text"]
+
+
+# ── Application submission auto-create / search auto-import ─────────────────
+@pytest.mark.asyncio
+async def test_submit_application_auto_creates_lead(client, db, admin_headers):
+    """Submitting a policy for a brand-new contact must create the
+    portal lead row, stamp a GHL contact id (mock), save the policy
+    with lead_id, and return lead_id in the response."""
+    payload = {
+        "contact_id": "",  # no GHL id yet — auto-create path
+        "product_type": "medsupp",
+        "extracted": {
+            "first_name": "Brand", "last_name": "New",
+            "email": "brand.new@example.com",
+            "phone": "555-9911",
+            "medsupp_policy_status": "Active",
+        },
+        "contact_name": "Brand New",
+    }
+    r = client.post("/api/applications/submit", headers=admin_headers, json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["success"] is True
+    assert body["lead_id"], "lead_id should be returned"
+    assert body["lead_created"] is True
+    assert body["lead_name"] == "Brand New"
+    # Lead row exists with the expected fields.
+    lead = await db.leads.find_one({"id": body["lead_id"]})
+    assert lead is not None
+    assert lead["email"] == "brand.new@example.com"
+    assert lead["status"] == "enrolled"
+    assert lead["created_via"] == "application_submission"
+    assert lead["product_interest"] == "medsupp"
+    # GHL mock id was stamped back onto the row.
+    assert (lead.get("ghl_contact_id") or "").startswith("mock_")
+
+
+@pytest.mark.asyncio
+async def test_submit_application_reuses_existing_lead(client, db, admin_headers):
+    """Submitting a second application for the same email must NOT
+    create a duplicate lead — it should reuse the existing one."""
+    # Seed a lead with the email we'll submit against.
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    await db.leads.insert_one({
+        "id": "lead-dup-test",
+        "first_name": "Dup", "last_name": "Email",
+        "email": "dup.email@example.com",
+        "status": "contacted",
+        "soa_signed": False, "document_ids": [],
+        "agent_id": "admin-1",
+        "ghl_sync_status": "synced",
+        "created_via": "intake",
+        "created_at": now, "updated_at": now,
+    })
+    payload = {
+        "contact_id": "",
+        "product_type": "medsupp",
+        "extracted": {
+            "first_name": "Dup", "last_name": "Email",
+            "email": "dup.email@example.com",
+        },
+        "contact_name": "Dup Email",
+    }
+    r = client.post("/api/applications/submit", headers=admin_headers, json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["lead_id"] == "lead-dup-test"
+    assert body["lead_created"] is False
+    # Only one row for that email exists.
+    count = await db.leads.count_documents({"email": "dup.email@example.com"})
+    assert count == 1
+    # Status promoted to enrolled.
+    promoted = await db.leads.find_one({"id": "lead-dup-test"})
+    assert promoted["status"] == "enrolled"
+
+
+@pytest.mark.asyncio
+async def test_search_contacts_auto_imports_portal_lead(client, db, admin_headers):
+    """GET /api/applications/search-contacts should return GHL contacts
+    with portal lead_id attached, auto-creating portal rows for any
+    contact that isn't already in leads."""
+    # Mock GHL returns two contacts with ids mock_contact_1 / mock_contact_2.
+    r = client.get(
+        "/api/applications/search-contacts?query=smith",
+        headers=admin_headers,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["contacts"]) >= 1
+    # Every result has a portal lead_id.
+    for c in body["contacts"]:
+        assert c.get("lead_id"), c
+        # And the lead actually exists.
+        lead = await db.leads.find_one({"id": c["lead_id"]})
+        assert lead is not None
+        assert lead["created_via"] == "ghl_search_import"
+        assert lead["ghl_contact_id"] == c["id"]
