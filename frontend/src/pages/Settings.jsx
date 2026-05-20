@@ -1504,6 +1504,27 @@ function TeamTab() {
     }
   }
 
+  async function revokeInvite(invite) {
+    if (!invite?.id) return;
+    if (!window.confirm(
+      `Revoke the invite for ${invite.email}? The link will stop working immediately.`,
+    )) {
+      return;
+    }
+    try {
+      await api.delete(`/auth/invites/${invite.id}`);
+      toast.success(`Invite for ${invite.email} revoked.`);
+      // Optimistic local removal so the row disappears even before the
+      // server-side list refreshes.
+      setInvites((prev) => prev.filter((i) => i.id !== invite.id));
+      loadInvites();
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.detail || err?.message || "Revoke failed",
+      );
+    }
+  }
+
   return (
     <div className="space-y-4">
       <Card>
@@ -1551,40 +1572,69 @@ function TeamTab() {
             is applied when they register.
           </p>
 
-          {lastInvite?.url && (
-            <div
-              className="mt-3 p-3 rounded-md border border-emerald-500/30 bg-emerald-50 space-y-2"
-              data-testid="team-invite-result"
-            >
-              <div className="text-xs font-medium text-emerald-900">
-                Invite link for {lastInvite.email}
-              </div>
-              <div className="flex items-stretch gap-2">
-                <Input
-                  readOnly
-                  value={lastInvite.url}
-                  onFocus={(e) => e.target.select()}
-                  className="font-mono text-xs"
-                  data-testid="team-invite-link"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={copyInviteUrl}
-                  data-testid="team-invite-copy"
-                >
-                  Copy
-                </Button>
-              </div>
-              {lastInvite.expires_at && (
-                <div className="text-[11px] text-emerald-900/70">
-                  Expires {new Date(lastInvite.expires_at).toLocaleString()}
-                </div>
-              )}
-            </div>
-          )}
         </CardContent>
       </Card>
+
+      {/* Invite-link result panel — pulled out of the form Card so it
+          renders as a high-contrast standalone block that the agent
+          can't miss. Stays visible until they create another invite. */}
+      {lastInvite?.url && (
+        <Card
+          className="border-[#e85d2f]/40 bg-orange-50"
+          data-testid="team-invite-result"
+        >
+          <CardContent className="p-5 space-y-3">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-[#e85d2f]" />
+                <h3 className="text-sm font-semibold text-[#1e2d3d]">
+                  Invite link for {lastInvite.email}
+                </h3>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setLastInvite(null)}
+                className="h-7 text-xs"
+                data-testid="team-invite-dismiss"
+              >
+                Dismiss
+              </Button>
+            </div>
+            <p className="text-[11px] text-foreground/70">
+              Copy this link and send it to the new team member. It
+              expires in 24 hours and can only be used once.
+            </p>
+            <div className="flex items-stretch gap-2">
+              <Input
+                readOnly
+                value={lastInvite.url}
+                onFocus={(e) => e.target.select()}
+                className="font-mono text-xs"
+                data-testid="team-invite-link"
+              />
+              <Button
+                type="button"
+                onClick={copyInviteUrl}
+                className="text-white"
+                style={{
+                  background:
+                    "linear-gradient(135deg, #e85d2f 0%, #c84416 100%)",
+                }}
+                data-testid="team-invite-copy"
+              >
+                Copy
+              </Button>
+            </div>
+            {lastInvite.expires_at && (
+              <div className="text-[11px] text-foreground/60">
+                Expires {new Date(lastInvite.expires_at).toLocaleString()}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <ScrollableCard
         title="Pending Invites"
@@ -1599,22 +1649,46 @@ function TeamTab() {
           <TableHeader>
             <TableRow>
               <TableHead>Email</TableHead>
-              <TableHead>Sent</TableHead>
+              <TableHead>Role</TableHead>
+              <TableHead>Created</TableHead>
               <TableHead>Expires</TableHead>
+              <TableHead className="text-right">Action</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {invites.map((iv) => (
-              <TableRow key={iv.id}>
-                <TableCell className="text-sm">{iv.email}</TableCell>
-                <TableCell className="text-xs text-muted-foreground">
-                  {fmtDateTime(iv.created_at)}
-                </TableCell>
-                <TableCell className="text-xs">
-                  {fmtDateTime(iv.expires_at)}
-                </TableCell>
-              </TableRow>
-            ))}
+            {invites.map((iv) => {
+              const roleLabel =
+                (INVITABLE_ROLES.find((r) => r.value === iv.role) || {}).label
+                || iv.role
+                || "Agent";
+              return (
+                <TableRow key={iv.id} data-testid={`team-invite-row-${iv.id}`}>
+                  <TableCell className="text-sm">{iv.email}</TableCell>
+                  <TableCell className="text-xs">
+                    <Badge className="rounded-full bg-secondary text-foreground/80 border-0">
+                      {roleLabel}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {fmtDateTime(iv.created_at)}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {fmtDateTime(iv.expires_at)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => revokeInvite(iv)}
+                      data-testid={`team-invite-revoke-${iv.id}`}
+                    >
+                      Revoke
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </ScrollableCard>

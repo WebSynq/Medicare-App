@@ -651,6 +651,59 @@ async def list_invites(
     return {"invites": invites, "total": len(invites)}
 
 
+@router.delete("/invites/{invite_id}", status_code=200)
+async def revoke_invite(
+    invite_id: str,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    """Revoke a pending invite.
+
+    We don't hard-delete — flipping ``used=true`` keeps the audit trail
+    intact (you can still see who was invited and when) while making
+    the token unusable. Idempotent: revoking an already-used invite
+    returns 200 with ``already_used: true`` rather than 404 so the UI
+    can flush its local list without surfacing a confusing error.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    inv = await db.invite_tokens.find_one({"id": invite_id}, {"_id": 0})
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invite not found")
+
+    if inv.get("used"):
+        await write_audit(
+            db, "invite_revoke_noop",
+            actor_email=current_user.get("email"),
+            actor_id=current_user.get("id"),
+            target_type="invite", target_id=invite_id,
+            request=request,
+            metadata={"reason": "already_used",
+                      "invited_email": inv.get("email")},
+        )
+        return {"ok": True, "already_used": True}
+
+    await db.invite_tokens.update_one(
+        {"id": invite_id},
+        {"$set": {
+            "used": True,
+            "used_at": now_iso,
+            "revoked_by": current_user.get("id"),
+            "revoked_at": now_iso,
+        }},
+    )
+    await write_audit(
+        db, "invite_revoked",
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
+        target_type="invite", target_id=invite_id,
+        request=request,
+        metadata={"invited_email": inv.get("email"),
+                  "role": inv.get("role")},
+    )
+    return {"ok": True, "revoked": True}
+
+
 @router.post("/users/{user_id}/unlock")
 async def unlock_account(
     user_id: str,
