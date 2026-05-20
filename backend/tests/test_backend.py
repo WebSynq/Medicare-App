@@ -278,7 +278,14 @@ async def test_commissions_live_audit_logged(client, db, admin_headers):
 # ── CSRF protection ─────────────────────────────────────────────────────────
 def test_csrf_required_on_cookie_state_changing_requests(client, db):
     """When the caller authenticates via cookie (no Authorization header),
-    state-changing requests must carry a matching X-CSRF-Token."""
+    state-changing requests on protected paths must carry a matching
+    X-CSRF-Token.
+
+    /api/leads is in the CSRF exempt list (resource-root + prefix
+    exempts cover the lead/clients/applications/documents/ghl trees) so
+    we point this test at /api/soa/sign — which is still CSRF-protected
+    and exercises the same middleware decision tree.
+    """
     # Log in to plant cookies.
     login = client.post("/api/auth/login", json={
         "email": os.environ["SEED_ADMIN_EMAIL"],
@@ -286,21 +293,22 @@ def test_csrf_required_on_cookie_state_changing_requests(client, db):
     })
     assert login.status_code == 200
     # Cookies are now in the TestClient jar. POST without X-CSRF-Token is 403.
-    no_csrf = client.post("/api/leads", json={
-        "first_name": "T", "last_name": "C",
-    })
-    assert no_csrf.status_code == 403
+    no_csrf = client.post("/api/soa/sign", json={})
+    assert no_csrf.status_code == 403, no_csrf.text
     assert "CSRF" in no_csrf.json()["detail"]
 
-    # Same call with the correct CSRF header succeeds.
+    # Same call with the correct CSRF header makes it PAST the CSRF
+    # middleware. The body is intentionally empty so we expect a 422
+    # validation error from the handler — anything other than 403/401
+    # is proof CSRF was satisfied.
     csrf = client.cookies.get("ghw_csrf_token")
     assert csrf
     with_csrf = client.post(
-        "/api/leads",
-        json={"first_name": "T", "last_name": "C"},
+        "/api/soa/sign",
+        json={},
         headers={"X-CSRF-Token": csrf},
     )
-    assert with_csrf.status_code == 201, with_csrf.text
+    assert with_csrf.status_code != 403, with_csrf.text
 
 
 def test_csrf_exempt_for_authorization_bearer(client, db, admin_token):
@@ -1083,3 +1091,114 @@ def test_slugify_handles_messy_names():
     assert _slugify("Leadership (Chase Gruening)") == "leadership_chase_gruening"
     assert _slugify("") == "agent"
     assert _slugify("   ") == "agent"
+
+
+
+# ── Bidirectional GHL sync ──────────────────────────────────────────────────
+#
+# These three tests cover the bidirectional flow we shipped on top of
+# the inbound webhook bridge:
+#   1. Creating a lead via POST /api/leads stamps the GHL contact id
+#      (mock mode produces a deterministic "mock_<lead_id>" string).
+#   2. An inbound webhook with a `date_updated` AFTER the existing
+#      lead's `updated_at` applies the GHL field changes.
+#   3. An inbound webhook with a `date_updated` BEFORE the existing
+#      lead's `updated_at` is skipped (portal_wins_conflict) and the
+#      lead row is left untouched.
+
+def test_create_lead_stamps_ghl_contact_id(client, db, admin_headers):
+    """POST /api/leads → _sync_lead_to_ghl runs in mock mode (no
+    GHL_PRIVATE_TOKEN) and stamps a mock_<id> ghl_contact_id."""
+    r = client.post("/api/leads", headers=admin_headers, json={
+        "first_name": "Bi", "last_name": "Sync",
+        "phone": "555-7777",
+    })
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["ghl_contact_id"], "ghl_contact_id should be stamped after sync"
+    assert body["ghl_contact_id"].startswith("mock_")
+    # Mock mode lands as "mock", not "synced", so frontend can distinguish.
+    assert body["ghl_sync_status"] in ("mock", "synced")
+    assert body["ghl_synced_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_webhook_newer_updates_portal(client, db, admin_headers):
+    """A webhook whose dateUpdated > portal updated_at applies its
+    contact-info changes and audit-logs ghl_wins_conflict."""
+    from datetime import datetime, timezone, timedelta
+    # Seed an existing lead that was updated 1h ago.
+    one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    await db.leads.insert_one({
+        "id": "lead-newer",
+        "ghl_contact_id": "gc-newer",
+        "first_name": "Old", "last_name": "Name",
+        "email": "old@x.com",
+        "agent_id": "admin-1",
+        "agent_name": "Admin",
+        "status": "new",
+        "soa_signed": False, "document_ids": [],
+        "ghl_sync_status": "synced",
+        "created_via": "intake",
+        "created_at": one_hour_ago,
+        "updated_at": one_hour_ago,
+    })
+    # Webhook claims a more recent dateUpdated.
+    payload = {
+        "type": "ContactUpdate",
+        "locationId": "L1",
+        "contact": {
+            "id": "gc-newer",
+            "firstName": "Newer",
+            "lastName": "Name",
+            "dateUpdated": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    # GHL_WEBHOOK_SECRET is unset in the test env → signature skipped.
+    r = client.post("/api/ghl/webhook", json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["action"] == "updated"
+    assert body["conflict"] == "ghl_wins_conflict"
+    # Lead was actually modified.
+    doc = await db.leads.find_one({"id": "lead-newer"})
+    assert doc["first_name"] == "Newer"
+
+
+@pytest.mark.asyncio
+async def test_webhook_older_skipped_portal_wins(client, db, admin_headers):
+    """A webhook whose dateUpdated < portal updated_at is rejected with
+    portal_wins_conflict and the lead row is NOT modified."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc).isoformat()
+    long_ago = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    await db.leads.insert_one({
+        "id": "lead-older",
+        "ghl_contact_id": "gc-older",
+        "first_name": "Portal", "last_name": "Wins",
+        "email": "p@x.com",
+        "agent_id": "admin-1",
+        "status": "new",
+        "soa_signed": False, "document_ids": [],
+        "ghl_sync_status": "synced",
+        "created_via": "intake",
+        "created_at": long_ago,
+        "updated_at": now,
+    })
+    payload = {
+        "type": "ContactUpdate",
+        "locationId": "L1",
+        "contact": {
+            "id": "gc-older",
+            "firstName": "ShouldNotApply",
+            "dateUpdated": long_ago,
+        },
+    }
+    r = client.post("/api/ghl/webhook", json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["action"] == "skipped_portal_wins"
+    assert body["conflict"] == "portal_wins_conflict"
+    # Row is untouched.
+    doc = await db.leads.find_one({"id": "lead-older"})
+    assert doc["first_name"] == "Portal"

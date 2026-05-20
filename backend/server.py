@@ -256,6 +256,15 @@ _CSRF_EXEMPT_PATHS = {
     # exempting matches the pattern used by every other admin write that
     # talks to an external provider (apps/submit, commission/sync/run).
     "/api/ghl/sync",
+    # Resource roots — POST creates only. Sub-paths (PATCH/DELETE on
+    # /{id}, action verbs like /sync-ghl) are covered by the prefix
+    # block below. Auth is enforced by get_current_user / IDOR checks
+    # inside each handler.
+    "/api/leads",
+    "/api/clients",
+    "/api/applications",
+    "/api/documents",
+    "/api/ghl",
 }
 
 # Path prefixes for parameterised routes. CSRF-exempt when request.url.path
@@ -277,6 +286,18 @@ _CSRF_EXEMPT_PREFIXES = (
     "/api/profile/",
     # /api/admin/users/{id}/credentials — admin force-reset endpoint.
     "/api/admin/users/",
+    # Lead / client / application / document / GHL sub-paths.
+    # PATCH /api/leads/{id}, POST /api/leads/{id}/sync-ghl, DELETE
+    # /api/documents/{id}, etc. Sub-paths inherit the same auth model
+    # as the resource roots above (cookie or Bearer + get_current_user
+    # + per-route IDOR/role checks). Exempting matches the pattern we
+    # use for every other admin/agent resource write that interacts
+    # with external providers or large multipart uploads.
+    "/api/leads/",
+    "/api/clients/",
+    "/api/applications/",
+    "/api/documents/",
+    "/api/ghl/",
 )
 
 

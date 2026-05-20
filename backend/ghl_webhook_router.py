@@ -58,6 +58,9 @@ class GHLContact(BaseModel):
     city: Optional[str] = None
     state: Optional[str] = None
     postalCode: Optional[str] = None
+    # GHL-side modification timestamp; used for conflict resolution
+    # against the portal's ``updated_at`` field.
+    dateUpdated: Optional[str] = None
 
 
 class GHLOpportunity(BaseModel):
@@ -185,6 +188,10 @@ def _normalize_flat_payload(body: dict) -> dict:
         "state": "state",
         "postal_code": "postalCode",
         "source": "source",
+        # Carry through the GHL-side modification timestamp so the
+        # conflict-resolution comparison in _handle_contact_update has
+        # something to compare against.
+        "date_updated": "dateUpdated",
     }
     for flat_key, nested_key in flat_to_nested_contact.items():
         if flat_key in body and not nested_contact.get(nested_key):
@@ -360,6 +367,44 @@ async def _handle_contact_create(
     return {"action": "created", "lead_id": lead_id}
 
 
+# Fields the portal owns outright. They can never be overwritten by an
+# inbound GHL update — agents, business logic, and PHI captured in the
+# portal don't round-trip through GHL.
+_PORTAL_PROTECTED_FIELDS = frozenset({
+    "agent_id",
+    "agent_email",
+    "agent_name",
+    "agent_assigned_id",
+    "product_interest",
+    "notes",
+    "mbi_number",
+    "medicare_part_a_effective",
+    "medicare_part_b_effective",
+    "doctors",
+    "prescriptions",
+    "document_ids",
+    "policies",
+    "soa_signed",
+    "soa_signed_at",
+    "status",
+})
+
+
+def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
+    """Best-effort ISO-8601 parse. Returns None on any failure."""
+    if not ts or not isinstance(ts, str):
+        return None
+    try:
+        # Tolerate trailing 'Z'.
+        cleaned = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
+        dt = datetime.fromisoformat(cleaned)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
 async def _handle_contact_update(
     db, payload: GHLWebhookPayload, request: Request,
 ) -> Dict[str, Any]:
@@ -370,7 +415,39 @@ async def _handle_contact_update(
         # webhook for the same contact, and we'd rather have a row than not.
         return await _handle_contact_create(db, payload, request)
 
-    updates = {k: v for k, v in _lead_fields_from_contact(contact).items() if v}
+    # ── Conflict resolution ──
+    # Portal is master. If our updated_at is newer than the GHL
+    # dateUpdated, the portal wins and we skip the write. If GHL is
+    # newer (or no timestamp on either side — pre-existing rows), we
+    # apply the GHL update.
+    portal_dt = _parse_iso(existing.get("updated_at"))
+    ghl_dt = _parse_iso(contact.dateUpdated)
+    portal_wins = bool(portal_dt and ghl_dt and portal_dt > ghl_dt)
+    if portal_wins:
+        await write_audit(
+            db, "ghl_lead_update_skipped",
+            actor_email=None, actor_id=None,
+            target_type="lead", target_id=existing["id"],
+            request=request,
+            metadata={
+                "conflict": "portal_wins_conflict",
+                "portal_updated_at": existing.get("updated_at"),
+                "ghl_date_updated": contact.dateUpdated,
+                "ghl_contact_id": contact.id,
+            },
+        )
+        return {
+            "action": "skipped_portal_wins",
+            "lead_id": existing["id"],
+            "conflict": "portal_wins_conflict",
+        }
+
+    candidate = {k: v for k, v in _lead_fields_from_contact(contact).items() if v}
+    # Strip portal-protected fields defensively. _lead_fields_from_contact
+    # only emits contact-info fields today, but this guard means if anyone
+    # ever extends it, agent_id et al. still can't be touched from a
+    # webhook.
+    updates = {k: v for k, v in candidate.items() if k not in _PORTAL_PROTECTED_FIELDS}
     if contact.id and not existing.get("ghl_contact_id"):
         updates["ghl_contact_id"] = contact.id
     if payload.locationId and not existing.get("ghl_location_id"):
@@ -383,6 +460,12 @@ async def _handle_contact_update(
         return {"action": "no_changes", "lead_id": existing["id"]}
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.leads.update_one({"id": existing["id"]}, {"$set": updates})
+    # Tag with the conflict outcome so we can build SLO-style dashboards
+    # later — "how often does GHL win", "are agents losing edits", etc.
+    conflict_label = (
+        "ghl_wins_conflict" if (portal_dt and ghl_dt and ghl_dt > portal_dt)
+        else "no_conflict"
+    )
     await write_audit(
         db, "ghl_lead_updated",
         actor_email=None, actor_id=None,
@@ -392,9 +475,16 @@ async def _handle_contact_update(
             "ghl_contact_id": contact.id,
             "location_id": payload.locationId,
             "fields": list(updates.keys()),
+            "conflict": conflict_label,
+            "portal_updated_at": existing.get("updated_at"),
+            "ghl_date_updated": contact.dateUpdated,
         },
     )
-    return {"action": "updated", "lead_id": existing["id"]}
+    return {
+        "action": "updated",
+        "lead_id": existing["id"],
+        "conflict": conflict_label,
+    }
 
 
 async def _handle_opportunity_event(

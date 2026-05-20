@@ -218,6 +218,105 @@ async def get_lead(
     return Lead(**doc)
 
 
+# Portal lead status → GHL pipeline stage name. The right-hand strings are
+# matched case-insensitively against the stage names in the pipeline
+# identified by GHL_PIPELINE_ID. "Won" / "Lost" are GHL's terminal labels.
+_STATUS_TO_GHL_STAGE = {
+    "new": "New",
+    "contacted": "Contacted",
+    "qualified": "Qualified",
+    "appointment_set": "Appointment Set",
+    "enrolled": "Won",
+    "not_interested": "Lost",
+    "lost": "Lost",
+}
+
+
+# Subset of portal Lead fields we mirror to GHL on PATCH. Notes, mbi_number,
+# documents, policies, agent_* are deliberately excluded — they're either
+# PHI we don't push or portal-only state.
+_LEAD_FIELDS_PUSHED_TO_GHL = (
+    "first_name",
+    "last_name",
+    "email",
+    "phone",
+    "address_line1",
+    "city",
+    "state",
+    "zip_code",
+    "date_of_birth",
+    "lead_source",
+)
+
+
+async def _push_lead_update_to_ghl(
+    db: AsyncIOMotorDatabase,
+    lead_id: str,
+    updates: dict,
+    request: Request,
+    actor_email: Optional[str],
+    actor_id: Optional[str],
+) -> None:
+    """Best-effort outbound: mirror a PATCH onto the GHL contact.
+
+    Never raises. On any error the lead's ``ghl_sync_status`` is flipped
+    to ``"error"`` and an audit row is written. Stamps ``ghl_synced_at``
+    on success. Status changes also drive a pipeline-stage move when
+    ``GHL_PIPELINE_ID`` is configured.
+    """
+    doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    if not doc or not doc.get("ghl_contact_id"):
+        return
+    contact_id = doc["ghl_contact_id"]
+    client = GHLClient()
+    if client.mock_mode:
+        return
+
+    fields = {k: doc.get(k) for k in _LEAD_FIELDS_PUSHED_TO_GHL
+              if k in updates and doc.get(k) is not None}
+
+    field_result = None
+    if fields:
+        field_result = await client.update_contact_fields(contact_id, fields)
+
+    stage_result = None
+    if "status" in updates:
+        stage_name = _STATUS_TO_GHL_STAGE.get(updates["status"])
+        if stage_name:
+            stage_result = await client.move_opportunity_stage(
+                contact_id, stage_name,
+            )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    # update_contact_fields / move_opportunity_stage return None on failure.
+    # If we tried at least one and both failed, mark error; otherwise mark
+    # synced. We avoid touching ghl_sync_status when there was nothing to do.
+    tried_any = bool(fields) or "status" in updates
+    if not tried_any:
+        return
+    succeeded = (field_result is not None) if fields else True
+    succeeded = succeeded and ((stage_result is not None) if "status" in updates and _STATUS_TO_GHL_STAGE.get(updates["status"]) else True)
+    await db.leads.update_one(
+        {"id": lead_id},
+        {"$set": {
+            "ghl_synced_at": now_iso,
+            "ghl_sync_status": "synced" if succeeded else "error",
+        }},
+    )
+    await write_audit(
+        db,
+        "ghl_lead_pushed" if succeeded else "ghl_lead_push_failed",
+        actor_email=actor_email, actor_id=actor_id,
+        target_type="lead", target_id=lead_id,
+        request=request,
+        metadata={
+            "contact_id": contact_id,
+            "fields": list(fields.keys()),
+            "status_change": updates.get("status"),
+        },
+    )
+
+
 @router.patch("/{lead_id}", response_model=Lead)
 async def update_lead(
     lead_id: str,
@@ -240,6 +339,19 @@ async def update_lead(
     await write_audit(db, "lead_updated", actor_email=current_user["email"],
                       actor_id=current_user["id"], target_type="lead", target_id=lead_id,
                       request=request, metadata={"fields": list(updates.keys())})
+
+    # Best-effort outbound mirror to GHL. Wrapped so any failure path
+    # (network, missing contact id, mock mode) cannot turn a Mongo-success
+    # PATCH into a 500.
+    try:
+        await _push_lead_update_to_ghl(
+            db, lead_id, updates, request,
+            actor_email=current_user.get("email"),
+            actor_id=current_user.get("id"),
+        )
+    except Exception as e:
+        logger.warning("GHL PATCH mirror failed for lead %s: %s", lead_id, e)
+
     doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
     return Lead(**doc)
 

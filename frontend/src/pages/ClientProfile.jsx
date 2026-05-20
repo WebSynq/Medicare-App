@@ -61,6 +61,41 @@ const PRODUCT_BADGE = {
   annuity: "bg-slate-200 text-slate-900",
 };
 
+// Small inline pill summarising the GHL sync state of a lead. Sits next
+// to the "Sync to GHL" button so the agent has a constant answer to
+// "is this contact in GHL?" without expanding the timeline.
+//   green  — ghl_sync_status in ("synced", "mock") AND ghl_contact_id set
+//   orange — ghl_contact_id set but most recent sync errored / pending
+//   grey   — no ghl_contact_id (never reached GHL)
+function GhlSyncPill({ lead }) {
+  const cid = lead?.ghl_contact_id;
+  const status = (lead?.ghl_sync_status || "").toLowerCase();
+  let dot = "bg-gray-400";
+  let label = "Not in GHL";
+  let testid = "ghl-sync-pill-none";
+  if (cid) {
+    if (status === "synced" || status === "mock") {
+      dot = "bg-emerald-500";
+      label = status === "mock" ? "Synced (mock)" : "Synced to GHL";
+      testid = "ghl-sync-pill-ok";
+    } else {
+      dot = "bg-amber-500";
+      label = status === "error" ? "Sync error" : "Sync pending";
+      testid = "ghl-sync-pill-pending";
+    }
+  }
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md border border-border text-xs text-foreground/80"
+      data-testid={testid}
+      title={lead?.ghl_sync_error || undefined}
+    >
+      <span className={`w-2 h-2 rounded-full ${dot}`} />
+      {label}
+    </span>
+  );
+}
+
 // Status colors for the per-policy status pill.
 function policyStatusClass(status) {
   const s = (status || "").toLowerCase();
@@ -473,6 +508,7 @@ export default function ClientProfile() {
                     <Pencil className="w-3.5 h-3.5 mr-1.5" /> Edit
                   </Button>
                 )}
+                <GhlSyncPill lead={lead} />
                 {ghlUrl && (
                   <a
                     href={ghlUrl}
