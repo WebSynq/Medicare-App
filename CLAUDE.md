@@ -6,6 +6,17 @@
 - Database: MongoDB (Atlas) — DB_NAME = `gruening_medicare`
 - Auth: JWT (HS256) + httpOnly cookie + CSRF middleware
 - Repo: github.com/WebSynq/Medicare-App
+- Real GHW email domain: `grueninghealthwealth.com`
+  (the `grueninghw.com` references in older docs/code are aliases —
+  production accounts use the longer domain.)
+
+## Team Accounts
+| Name           | Email                                  | Role   |
+|----------------|----------------------------------------|--------|
+| Tim Arnold     | tim@websynqdesign.com                  | admin  |
+| Matt Monacelli | matt@grueninghealthwealth.com          | admin  |
+| Cesar          | cesar@grueninghealthwealth.com         | admin  |
+| Michael        | michael@grueninghealthwealth.com       | admin  |
 
 ## What's Built
 - Auth: login, MFA, invite-only register, lockout, profile PATCH
