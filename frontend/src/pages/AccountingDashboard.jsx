@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/table";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import ScrollableCard from "@/components/ScrollableCard";
 
 // ── Shared helpers (kept inline so this page stays self-contained) ──────────
 function fmt(val) {
@@ -411,78 +412,77 @@ export default function AccountingDashboard() {
           </CardContent>
         </Card>
 
-        {/* Records table */}
-        <Card>
-          <CardContent className="p-4">
-            {loadingRows ? (
-              <p className="text-sm text-muted-foreground py-6 text-center">Loading…</p>
-            ) : filteredRows.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-6 text-center">
-                No records match these filters.
-              </p>
-            ) : (
-              <div className="overflow-x-auto w-full">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Agent</TableHead>
-                      <TableHead>Carrier</TableHead>
-                      <TableHead>Policy</TableHead>
-                      <TableHead>Effective</TableHead>
-                      <TableHead className="text-right">Expected</TableHead>
-                      <TableHead className="text-right">Received</TableHead>
-                      <TableHead className="text-right">Gap</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead className="text-right">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredRows.map((r) => (
-                      <TableRow key={r.natural_key || r.policy_number}>
-                        <TableCell className="font-medium">{r.agent_name || "—"}</TableCell>
-                        <TableCell>{r.carrier || "—"}</TableCell>
-                        <TableCell className="text-xs font-mono text-muted-foreground">
-                          {r.policy_number || "—"}
-                        </TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {fmtDate(r.effective_date)}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {fmt(r.revenue_expected)}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {r.revenue_received == null
-                            ? <span className="text-muted-foreground italic">Pending</span>
-                            : fmt(r.revenue_received)}
-                        </TableCell>
-                        <TableCell className={`text-right tabular-nums font-medium ${
-                          r.gap < 0 ? "text-red-600" : r.gap > 0 ? "text-blue-600" : ""
-                        }`}>
-                          {fmtGap(r.gap)}
-                        </TableCell>
-                        <TableCell><StatusBadge status={r.status} /></TableCell>
-                        <TableCell className="text-right">
-                          {r.status === "resolved" ? (
-                            <span className="text-xs text-muted-foreground">—</span>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => openResolve(r)}
-                              data-testid={`accounting-resolve-${r.natural_key || r.policy_number}`}
-                            >
-                              Mark Resolved
-                            </Button>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        {/* Records table — fixed-height scroll so a long backlog never
+            pushes the action buttons off-screen. */}
+        <ScrollableCard
+          title="Records"
+          count={filteredRows.length}
+          height="calc(100vh - 420px)"
+          loading={loadingRows}
+          isEmpty={!loadingRows && filteredRows.length === 0}
+          emptyState="No records match these filters."
+          testId="accounting-records-card"
+        >
+          <div className="overflow-x-auto w-full">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>Carrier</TableHead>
+                  <TableHead>Policy</TableHead>
+                  <TableHead>Effective</TableHead>
+                  <TableHead className="text-right">Expected</TableHead>
+                  <TableHead className="text-right">Received</TableHead>
+                  <TableHead className="text-right">Gap</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredRows.map((r) => (
+                  <TableRow key={r.natural_key || r.policy_number}>
+                    <TableCell className="font-medium">{r.agent_name || "—"}</TableCell>
+                    <TableCell>{r.carrier || "—"}</TableCell>
+                    <TableCell className="text-xs font-mono text-muted-foreground">
+                      {r.policy_number || "—"}
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {fmtDate(r.effective_date)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {fmt(r.revenue_expected)}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {r.revenue_received == null
+                        ? <span className="text-muted-foreground italic">Pending</span>
+                        : fmt(r.revenue_received)}
+                    </TableCell>
+                    <TableCell className={`text-right tabular-nums font-medium ${
+                      r.gap < 0 ? "text-red-600" : r.gap > 0 ? "text-blue-600" : ""
+                    }`}>
+                      {fmtGap(r.gap)}
+                    </TableCell>
+                    <TableCell><StatusBadge status={r.status} /></TableCell>
+                    <TableCell className="text-right">
+                      {r.status === "resolved" ? (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openResolve(r)}
+                          data-testid={`accounting-resolve-${r.natural_key || r.policy_number}`}
+                        >
+                          Mark Resolved
+                        </Button>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </ScrollableCard>
       </main>
 
       {/* Mark Resolved modal */}

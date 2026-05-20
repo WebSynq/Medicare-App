@@ -23,6 +23,7 @@ import {
 import { toast } from "sonner";
 import { api, auth } from "@/lib/api";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
+import ScrollableCard from "@/components/ScrollableCard";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -127,59 +128,45 @@ function AgencyProductionSummary() {
           </p>
           <ImpersonationBanner />
         </div>
-        <Card className="bg-surface">
-          <CardContent className="p-5">
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Agent</TableHead>
-                    <TableHead className="text-right">Policies</TableHead>
-                    <TableHead className="text-right">Total Revenue</TableHead>
+        <ScrollableCard
+          title="Agency Production"
+          count={rows.length}
+          height="calc(100vh - 320px)"
+          loading={loading}
+          isEmpty={!loading && rows.length === 0}
+          emptyState="No production records yet."
+          testId="agency-production-card"
+        >
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Agent</TableHead>
+                  <TableHead className="text-right">Policies</TableHead>
+                  <TableHead className="text-right">Total Revenue</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r) => (
+                  <TableRow
+                    key={`${r.agent_name}-${r.rank}`}
+                    data-testid={`agency-row-${r.rank}`}
+                  >
+                    <TableCell className="font-medium">
+                      {r.agent_name}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {r.policies_count}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums font-medium">
+                      {fmt(r.revenue_total)}
+                    </TableCell>
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {loading && (
-                    <TableRow>
-                      <TableCell
-                        colSpan={3}
-                        className="text-center py-8 text-muted-foreground"
-                      >
-                        Loading…
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {!loading && rows.length === 0 && (
-                    <TableRow>
-                      <TableCell
-                        colSpan={3}
-                        className="text-center py-8 text-muted-foreground"
-                      >
-                        No production records yet.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {rows.map((r) => (
-                    <TableRow
-                      key={`${r.agent_name}-${r.rank}`}
-                      data-testid={`agency-row-${r.rank}`}
-                    >
-                      <TableCell className="font-medium">
-                        {r.agent_name}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {r.policies_count}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums font-medium">
-                        {fmt(r.revenue_total)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </ScrollableCard>
       </main>
     </div>
   );
@@ -445,60 +432,53 @@ export default function CommissionsDashboard() {
         </Card>
 
         {/* ── Upload history ── */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base text-[#1e2d3d]">Upload History</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loadingHistory ? (
-              <p className="text-sm text-muted-foreground py-4 text-center">
-                Loading…
-              </p>
-            ) : history.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-4 text-center">
-                No statements uploaded yet. Upload your first one above.
-              </p>
-            ) : (
-              <div className="overflow-x-auto w-full">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>File</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Uploaded</TableHead>
-                      <TableHead>Comtrack ID</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {history.map((row) => (
-                      <TableRow key={row.id}>
-                        <TableCell className="font-medium max-w-[220px] truncate">
-                          {row.filename}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={statusVariant(row.status)}>
-                            {statusLabel(row.status)}
-                          </Badge>
-                          {row.mock && (
-                            <span className="ml-2 text-xs text-muted-foreground">
-                              mock
-                            </span>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-sm">
-                          {fmtDate(row.uploaded_at)}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground font-mono truncate max-w-[160px]">
-                          {row.comtrack_file_id || "—"}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        <ScrollableCard
+          title="Upload History"
+          count={history.length}
+          height="400px"
+          loading={loadingHistory}
+          isEmpty={!loadingHistory && history.length === 0}
+          emptyState="No statements uploaded yet. Upload your first one above."
+          testId="upload-history-card"
+        >
+          <div className="overflow-x-auto w-full">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>File</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Uploaded</TableHead>
+                  <TableHead>Comtrack ID</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {history.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell className="font-medium max-w-[220px] truncate">
+                      {row.filename}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={statusVariant(row.status)}>
+                        {statusLabel(row.status)}
+                      </Badge>
+                      {row.mock && (
+                        <span className="ml-2 text-xs text-muted-foreground">
+                          mock
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-sm">
+                      {fmtDate(row.uploaded_at)}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground font-mono truncate max-w-[160px]">
+                      {row.comtrack_file_id || "—"}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </ScrollableCard>
 
           </TabsContent>
 
@@ -666,9 +646,10 @@ function AuditPanel() {
         </Card>
       </div>
 
-      {/* Filters + records table */}
+      {/* Filters — kept above the scroll container so they don't scroll
+          away with the records list. */}
       <Card>
-        <CardHeader>
+        <CardContent className="p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <CardTitle className="text-base text-[#1e2d3d]">Audit Records</CardTitle>
             <div className="flex flex-wrap items-center gap-2">
@@ -696,60 +677,60 @@ function AuditPanel() {
               </Select>
             </div>
           </div>
-        </CardHeader>
-        <CardContent>
-          {loadingRows ? (
-            <p className="text-sm text-muted-foreground py-6 text-center">Loading…</p>
-          ) : rows.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-6 text-center">
-              No records match these filters.
-            </p>
-          ) : (
-            <div className="overflow-x-auto w-full">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Carrier</TableHead>
-                    <TableHead>Policy</TableHead>
-                    <TableHead className="text-right">Expected</TableHead>
-                    <TableHead className="text-right">Received</TableHead>
-                    <TableHead className="text-right">Gap</TableHead>
-                    <TableHead>Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.map((r) => (
-                    <TableRow key={r.natural_key || r.policy_number}>
-                      <TableCell className="font-medium">{r.carrier || "—"}</TableCell>
-                      <TableCell className="text-xs font-mono text-muted-foreground">
-                        {r.policy_number || "—"}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {fmt(r.revenue_expected)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {r.revenue_received == null
-                          ? <span className="text-muted-foreground italic">Pending</span>
-                          : fmt(r.revenue_received)}
-                      </TableCell>
-                      <TableCell
-                        className={`text-right tabular-nums font-medium ${
-                          r.gap < 0 ? "text-red-600" : r.gap > 0 ? "text-blue-600" : ""
-                        }`}
-                      >
-                        {fmtGap(r.gap)}
-                      </TableCell>
-                      <TableCell>
-                        <AuditStatusBadge status={r.status} />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
         </CardContent>
       </Card>
+
+      <ScrollableCard
+        count={rows.length}
+        height="calc(100vh - 420px)"
+        loading={loadingRows}
+        isEmpty={!loadingRows && rows.length === 0}
+        emptyState="No records match these filters."
+        testId="audit-records-card"
+      >
+        <div className="overflow-x-auto w-full">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Carrier</TableHead>
+                <TableHead>Policy</TableHead>
+                <TableHead className="text-right">Expected</TableHead>
+                <TableHead className="text-right">Received</TableHead>
+                <TableHead className="text-right">Gap</TableHead>
+                <TableHead>Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((r) => (
+                <TableRow key={r.natural_key || r.policy_number}>
+                  <TableCell className="font-medium">{r.carrier || "—"}</TableCell>
+                  <TableCell className="text-xs font-mono text-muted-foreground">
+                    {r.policy_number || "—"}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {fmt(r.revenue_expected)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {r.revenue_received == null
+                      ? <span className="text-muted-foreground italic">Pending</span>
+                      : fmt(r.revenue_received)}
+                  </TableCell>
+                  <TableCell
+                    className={`text-right tabular-nums font-medium ${
+                      r.gap < 0 ? "text-red-600" : r.gap > 0 ? "text-blue-600" : ""
+                    }`}
+                  >
+                    {fmtGap(r.gap)}
+                  </TableCell>
+                  <TableCell>
+                    <AuditStatusBadge status={r.status} />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </ScrollableCard>
     </div>
   );
 }

@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/table";
 import { api, auth } from "@/lib/api";
 import { useAgent } from "@/context/AgentContext";
+import ScrollableCard from "@/components/ScrollableCard";
 
 // Maps raw role strings to human labels for the agent table.
 const ROLE_LABELS = {
@@ -203,43 +204,30 @@ export default function AgentManagement() {
           />
         </div>
 
-        <Card className="bg-surface">
-          <CardContent className="p-5">
-            <div className="overflow-x-auto w-full">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Agent</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Leads</TableHead>
-                    <TableHead className="text-right">Policies</TableHead>
-                    <TableHead className="text-right">Revenue</TableHead>
-                    <TableHead>Last Active</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {loading && (
-                    <TableRow>
-                      <TableCell
-                        colSpan={7}
-                        className="text-center py-10 text-muted-foreground"
-                      >
-                        Loading agents…
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {!loading && agents.length === 0 && (
-                    <TableRow>
-                      <TableCell
-                        colSpan={7}
-                        className="text-center py-10 text-muted-foreground"
-                      >
-                        No agents on file.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {agents.map((a) => {
+        <ScrollableCard
+          title="Roster"
+          count={agents.length}
+          height="calc(100vh - 320px)"
+          loading={loading}
+          isEmpty={!loading && agents.length === 0}
+          emptyState="No agents on file."
+          testId="agent-management-card"
+        >
+          <div className="overflow-x-auto w-full">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Leads</TableHead>
+                  <TableHead className="text-right">Policies</TableHead>
+                  <TableHead className="text-right">Revenue</TableHead>
+                  <TableHead>Last Active</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {agents.map((a) => {
                     const isSelf = a.id === myId;
                     const isActive = a.is_active !== false;
                     const isPending = a.status === "pending";
@@ -325,12 +313,11 @@ export default function AgentManagement() {
                         </TableCell>
                       </TableRow>
                     );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </ScrollableCard>
       </main>
     </div>
   );

@@ -19,6 +19,7 @@ import {
 import { Trophy, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
+import ScrollableCard from "@/components/ScrollableCard";
 
 const REFRESH_MS = 60_000;
 
@@ -159,69 +160,53 @@ export default function Leaderboard() {
           </div>
         </div>
 
-        <Card className="border-border bg-surface" data-testid="leaderboard-card">
-          <CardContent className="p-5">
-            <div className="overflow-x-auto w-full">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-16">Rank</TableHead>
-                    <TableHead>Agent</TableHead>
-                    <TableHead className="text-right">Policies</TableHead>
-                    <TableHead className="text-right">Revenue</TableHead>
+        <ScrollableCard
+          height="calc(100vh - 320px)"
+          loading={loading && rows.length === 0}
+          isEmpty={!loading && rows.length === 0}
+          emptyState="No production records yet. Import the tracker to populate the board."
+          testId="leaderboard-card"
+        >
+          <div className="overflow-x-auto w-full">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-16">Rank</TableHead>
+                  <TableHead>Agent</TableHead>
+                  <TableHead className="text-right">Policies</TableHead>
+                  <TableHead className="text-right">Revenue</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r) => (
+                  <TableRow
+                    key={r.agent_name + r.rank}
+                    className={r.is_self ? "bg-[#e85d2f]/5" : ""}
+                    data-testid={`leaderboard-row-${r.rank}`}
+                  >
+                    <TableCell>
+                      <RankBadge rank={r.rank} />
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-medium">{r.agent_name}</div>
+                      {r.is_self && (
+                        <Badge className="mt-1 rounded-full bg-[#e85d2f]/15 text-[#e85d2f] border-0 text-[10px]">
+                          you
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {r.policies_count}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums font-medium">
+                      {fmtUSD(r.revenue_total)}
+                    </TableCell>
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {loading && rows.length === 0 && (
-                    <>
-                      <SkeletonRow />
-                      <SkeletonRow />
-                      <SkeletonRow />
-                      <SkeletonRow />
-                      <SkeletonRow />
-                    </>
-                  )}
-                  {!loading && rows.length === 0 && (
-                    <TableRow>
-                      <TableCell
-                        colSpan={4}
-                        className="text-center py-12 text-muted-foreground"
-                      >
-                        No production records yet. Import the tracker to populate
-                        the board.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {rows.map((r) => (
-                    <TableRow
-                      key={r.agent_name + r.rank}
-                      className={r.is_self ? "bg-[#e85d2f]/5" : ""}
-                      data-testid={`leaderboard-row-${r.rank}`}
-                    >
-                      <TableCell>
-                        <RankBadge rank={r.rank} />
-                      </TableCell>
-                      <TableCell>
-                        <div className="font-medium">{r.agent_name}</div>
-                        {r.is_self && (
-                          <Badge className="mt-1 rounded-full bg-[#e85d2f]/15 text-[#e85d2f] border-0 text-[10px]">
-                            you
-                          </Badge>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {r.policies_count}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums font-medium">
-                        {fmtUSD(r.revenue_total)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </ScrollableCard>
 
         <p className="text-[11px] text-muted-foreground mt-3 text-right">
           {refreshedAt

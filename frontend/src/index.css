@@ -124,3 +124,43 @@ body {
         display: contents !important;
     }
 }
+
+/* ── ScrollableCard / global thin scrollbars ─────────────────────────────
+   The .ghw-scroll class lives on every fixed-height scroll container in
+   ScrollableCard. Styles also apply to any element marked `overflow-y-auto`
+   inside the app shell so non-ScrollableCard scroll regions (sheets,
+   timeline panes, etc.) stay visually consistent.
+
+   Targets WebKit (Chrome/Edge/Safari) explicitly and uses the standard
+   `scrollbar-*` properties for Firefox. */
+.ghw-scroll,
+.ghw-scroll * {
+    scrollbar-width: thin;
+    scrollbar-color: #e85d2f rgba(0, 0, 0, 0.05);
+}
+
+.ghw-scroll::-webkit-scrollbar,
+.ghw-scroll *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.ghw-scroll::-webkit-scrollbar-track,
+.ghw-scroll *::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.04);
+    border-radius: 999px;
+}
+
+.ghw-scroll::-webkit-scrollbar-thumb,
+.ghw-scroll *::-webkit-scrollbar-thumb {
+    background: #e85d2f;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    background-clip: padding-box;
+}
+
+.ghw-scroll::-webkit-scrollbar-thumb:hover,
+.ghw-scroll *::-webkit-scrollbar-thumb:hover {
+    background: #c84416;
+    background-clip: padding-box;
+}

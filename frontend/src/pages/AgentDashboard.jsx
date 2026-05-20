@@ -46,6 +46,7 @@ import { useAgent } from "@/context/AgentContext";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import InviteAgentModal from "@/components/InviteAgentModal";
 import QuickAddLeadSheet from "@/components/QuickAddLeadSheet";
+import ScrollableCard from "@/components/ScrollableCard";
 
 const PERIODS = [
   { value: "mtd", label: "MTD" },
@@ -666,19 +667,24 @@ export default function AgentDashboard() {
 
         {/* ── ROW 3: Product donut + Pipeline / Agent table ── */}
         {isAdminAgency ? (
-          <Card className="bg-surface mb-4">
-            <CardContent className="p-5">
-              <SectionTitle icon={Users2}>Agent Performance</SectionTitle>
-              {loading ? (
-                <SkeletonBlock className="h-32" />
-              ) : (
+          <div className="mb-4">
+            <ScrollableCard
+              title="Agent Performance"
+              count={stats?.agent_breakdown?.length}
+              height="400px"
+              loading={loading}
+              isEmpty={!loading && !(stats?.agent_breakdown || []).length}
+              emptyState="No agents on file yet."
+              testId="dashboard-agent-performance"
+            >
+              <div className="p-3">
                 <AgentPerformanceTable
                   rows={stats?.agent_breakdown}
                   onViewAs={handleViewAs}
                 />
-              )}
-            </CardContent>
-          </Card>
+              </div>
+            </ScrollableCard>
+          </div>
         ) : null}
 
         <div className="grid md:grid-cols-2 gap-4 mb-4">
@@ -705,44 +711,44 @@ export default function AgentDashboard() {
         </div>
 
         {/* ── ROW 4: Alerts ── */}
-        <Card className="bg-surface mb-4">
-          <CardContent className="p-5">
-            <SectionTitle
-              icon={Bell}
-              action={
-                stats?.alerts?.length ? (
-                  <Badge className="rounded-full bg-rose-100 text-rose-900 border-0">
-                    {stats.alerts.length}
-                  </Badge>
-                ) : null
-              }
-            >
-              Needs Attention
-            </SectionTitle>
-            {loading ? <SkeletonBlock className="h-24" /> : (
+        <div className="mb-4">
+          <ScrollableCard
+            title="Needs Attention"
+            count={stats?.alerts?.length}
+            height="360px"
+            loading={loading}
+            isEmpty={!loading && !(stats?.alerts || []).length}
+            emptyState="✅ All caught up — nothing needs attention today!"
+            testId="dashboard-alerts"
+          >
+            <div className="p-4">
               <AlertsList alerts={stats?.alerts} isAdminAgency={isAdminAgency} />
-            )}
-          </CardContent>
-        </Card>
+            </div>
+          </ScrollableCard>
+        </div>
 
         {/* ── ROW 5: Activity ── */}
-        <Card className="bg-surface mb-6">
-          <CardContent className="p-5">
-            <SectionTitle
-              icon={ClipboardList}
-              action={
-                <Button asChild size="sm" variant="ghost" className="h-7 text-xs">
-                  <Link to="/audit">
-                    Full audit log <ChevronRight className="w-3 h-3 ml-0.5" />
-                  </Link>
-                </Button>
-              }
-            >
-              Today&rsquo;s Activity
-            </SectionTitle>
-            {loading ? <SkeletonBlock className="h-32" /> : <ActivityFeed events={stats?.recent_activity} />}
-          </CardContent>
-        </Card>
+        <div className="mb-6">
+          <ScrollableCard
+            title="Today's Activity"
+            height="300px"
+            loading={loading}
+            isEmpty={!loading && !(stats?.recent_activity || []).length}
+            emptyState="Nothing recorded yet today."
+            headerAction={
+              <Button asChild size="sm" variant="ghost" className="h-7 text-xs">
+                <Link to="/audit">
+                  Full audit log <ChevronRight className="w-3 h-3 ml-0.5" />
+                </Link>
+              </Button>
+            }
+            testId="dashboard-activity"
+          >
+            <div className="p-4">
+              <ActivityFeed events={stats?.recent_activity} />
+            </div>
+          </ScrollableCard>
+        </div>
       </main>
 
       <QuickAddLeadSheet

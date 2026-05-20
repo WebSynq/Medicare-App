@@ -33,6 +33,7 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import QuickAddLeadSheet from "@/components/QuickAddLeadSheet";
+import ScrollableCard from "@/components/ScrollableCard";
 
 const PAGE_SIZE = 20;
 
@@ -206,8 +207,10 @@ export default function ClientsList() {
           />
         </div>
 
-        <Card className="bg-surface">
-          <CardContent className="p-5 space-y-4">
+        {/* Filter bar — always above the scroll container so it never
+            scrolls away with the table body. */}
+        <Card className="bg-surface mb-3">
+          <CardContent className="p-4">
             <div className="flex flex-wrap items-center gap-3">
               <div className="relative flex-1 min-w-[240px]">
                 <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -254,9 +257,20 @@ export default function ClientsList() {
                 </Select>
               )}
             </div>
+          </CardContent>
+        </Card>
 
-            <div className="overflow-x-auto w-full">
-              <Table>
+        <ScrollableCard
+          title="Clients"
+          count={filtered.length}
+          height="calc(100vh - 280px)"
+          loading={loading}
+          isEmpty={!loading && pageRows.length === 0}
+          emptyState="No clients match these filters."
+          testId="clients-list-card"
+        >
+          <div className="overflow-x-auto w-full">
+            <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Name</TableHead>
@@ -270,26 +284,6 @@ export default function ClientsList() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {loading && (
-                    <TableRow>
-                      <TableCell
-                        colSpan={8}
-                        className="text-center py-10 text-muted-foreground"
-                      >
-                        Loading…
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {!loading && pageRows.length === 0 && (
-                    <TableRow>
-                      <TableCell
-                        colSpan={8}
-                        className="text-center py-10 text-muted-foreground"
-                      >
-                        No clients match these filters.
-                      </TableCell>
-                    </TableRow>
-                  )}
                   {pageRows.map((l) => (
                     <TableRow
                       key={l.id}
@@ -369,41 +363,40 @@ export default function ClientsList() {
                 </TableBody>
               </Table>
             </div>
+          </ScrollableCard>
 
-            {filtered.length > PAGE_SIZE && (
-              <div className="flex items-center justify-between pt-2 text-sm">
-                <div className="text-muted-foreground">
-                  Showing {(page - 1) * PAGE_SIZE + 1}–
-                  {Math.min(page * PAGE_SIZE, filtered.length)} of{" "}
-                  {filtered.length}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    disabled={page === 1}
-                    data-testid="clients-prev"
-                  >
-                    Previous
-                  </Button>
-                  <span className="text-xs text-muted-foreground">
-                    Page {page} of {pageCount}
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-                    disabled={page >= pageCount}
-                    data-testid="clients-next"
-                  >
-                    Next
-                  </Button>
-                </div>
+          {filtered.length > PAGE_SIZE && (
+            <div className="flex items-center justify-between pt-3 text-sm">
+              <div className="text-muted-foreground">
+                Showing {(page - 1) * PAGE_SIZE + 1}–
+                {Math.min(page * PAGE_SIZE, filtered.length)} of{" "}
+                {filtered.length}
               </div>
-            )}
-          </CardContent>
-        </Card>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page === 1}
+                  data-testid="clients-prev"
+                >
+                  Previous
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Page {page} of {pageCount}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                  disabled={page >= pageCount}
+                  data-testid="clients-next"
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
       </main>
 
       <QuickAddLeadSheet

@@ -44,6 +44,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api, auth } from "@/lib/api";
+import ScrollableCard from "@/components/ScrollableCard";
 
 const PAGE_SIZE = 50;
 
@@ -763,59 +764,54 @@ function AuditLogTab({ me }) {
           </Button>
         </div>
 
-        <div className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Timestamp</TableHead>
-                <TableHead>User</TableHead>
-                <TableHead>Action</TableHead>
-                <TableHead>Details</TableHead>
-                <TableHead>IP</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading && (
+        <ScrollableCard
+          count={rows.length}
+          height="calc(100vh - 480px)"
+          loading={loading}
+          isEmpty={!loading && pageRows.length === 0}
+          emptyState="No audit entries match these filters."
+          testId="settings-audit-card"
+        >
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
-                    Loading…
-                  </TableCell>
+                  <TableHead>Timestamp</TableHead>
+                  <TableHead>User</TableHead>
+                  <TableHead>Action</TableHead>
+                  <TableHead>Details</TableHead>
+                  <TableHead>IP</TableHead>
                 </TableRow>
-              )}
-              {!loading && pageRows.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
-                    No audit entries match these filters.
-                  </TableCell>
-                </TableRow>
-              )}
-              {pageRows.map((r, i) => (
-                <TableRow key={`${r.timestamp}-${i}`}>
-                  <TableCell className="text-xs">
-                    {fmtDateTime(r.timestamp)}
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    <div>{r.actor_email || "—"}</div>
-                    {r.target_email && r.target_email !== r.actor_email && (
-                      <div className="text-[10px] text-muted-foreground">
-                        → {r.target_email}
-                      </div>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs">{r.action}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground max-w-[360px] truncate">
-                    {r.metadata
-                      ? JSON.stringify(r.metadata)
-                      : "—"}
-                  </TableCell>
-                  <TableCell className="text-xs font-mono">
-                    {r.ip_address || "—"}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+              </TableHeader>
+              <TableBody>
+                {pageRows.map((r, i) => (
+                  <TableRow key={`${r.timestamp}-${i}`}>
+                    <TableCell className="text-xs">
+                      {fmtDateTime(r.timestamp)}
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      <div>{r.actor_email || "—"}</div>
+                      {r.target_email && r.target_email !== r.actor_email && (
+                        <div className="text-[10px] text-muted-foreground">
+                          → {r.target_email}
+                        </div>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-xs">{r.action}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground max-w-[360px] truncate">
+                      {r.metadata
+                        ? JSON.stringify(r.metadata)
+                        : "—"}
+                    </TableCell>
+                    <TableCell className="text-xs font-mono">
+                      {r.ip_address || "—"}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </ScrollableCard>
 
         {rows.length > PAGE_SIZE && (
           <div className="flex items-center justify-between text-sm">
@@ -1590,109 +1586,91 @@ function TeamTab() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardContent className="p-5 space-y-3">
-          <h3 className="text-sm font-semibold">Pending Invites</h3>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Email</TableHead>
-                <TableHead>Sent</TableHead>
-                <TableHead>Expires</TableHead>
+      <ScrollableCard
+        title="Pending Invites"
+        count={invites.length}
+        height="320px"
+        loading={invitesLoading}
+        isEmpty={!invitesLoading && invites.length === 0}
+        emptyState="No active invites."
+        testId="settings-pending-invites-card"
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Email</TableHead>
+              <TableHead>Sent</TableHead>
+              <TableHead>Expires</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {invites.map((iv) => (
+              <TableRow key={iv.id}>
+                <TableCell className="text-sm">{iv.email}</TableCell>
+                <TableCell className="text-xs text-muted-foreground">
+                  {fmtDateTime(iv.created_at)}
+                </TableCell>
+                <TableCell className="text-xs">
+                  {fmtDateTime(iv.expires_at)}
+                </TableCell>
               </TableRow>
-            </TableHeader>
-            <TableBody>
-              {invitesLoading && (
-                <TableRow>
-                  <TableCell colSpan={3} className="text-center text-muted-foreground py-4">
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              )}
-              {!invitesLoading && invites.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={3} className="text-center text-muted-foreground py-4">
-                    No active invites.
-                  </TableCell>
-                </TableRow>
-              )}
-              {invites.map((iv) => (
-                <TableRow key={iv.id}>
-                  <TableCell className="text-sm">{iv.email}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {fmtDateTime(iv.created_at)}
-                  </TableCell>
-                  <TableCell className="text-xs">
-                    {fmtDateTime(iv.expires_at)}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+            ))}
+          </TableBody>
+        </Table>
+      </ScrollableCard>
 
-      <Card>
-        <CardContent className="p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold">Active Team</h3>
-            <Button asChild variant="outline" size="sm">
-              <Link to="/audit">
-                Manage agents
-                <ExternalLink className="w-3.5 h-3.5 ml-1.5" />
-              </Link>
-            </Button>
-          </div>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Email</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Status</TableHead>
+      <ScrollableCard
+        title="Active Team"
+        count={team.length}
+        height="400px"
+        loading={teamLoading}
+        isEmpty={!teamLoading && team.length === 0}
+        emptyState="No team members yet."
+        testId="settings-active-team-card"
+        headerAction={
+          <Button asChild variant="outline" size="sm">
+            <Link to="/audit">
+              Manage agents
+              <ExternalLink className="w-3.5 h-3.5 ml-1.5" />
+            </Link>
+          </Button>
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Email</TableHead>
+              <TableHead>Role</TableHead>
+              <TableHead>Status</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {team.map((u) => (
+              <TableRow key={u.id}>
+                <TableCell className="font-medium text-sm">
+                  {u.full_name || "—"}
+                </TableCell>
+                <TableCell className="text-sm">{u.email}</TableCell>
+                <TableCell className="text-xs capitalize">
+                  {u.role}
+                </TableCell>
+                <TableCell>
+                  {u.is_active ? (
+                    <Badge className="rounded-full bg-emerald-100 text-emerald-900 border-0">
+                      <CheckCircle2 className="w-3 h-3 mr-1" /> Active
+                    </Badge>
+                  ) : (
+                    <Badge className="rounded-full bg-gray-200 text-gray-800 border-0">
+                      Disabled
+                    </Badge>
+                  )}
+                </TableCell>
               </TableRow>
-            </TableHeader>
-            <TableBody>
-              {teamLoading && (
-                <TableRow>
-                  <TableCell colSpan={4} className="text-center text-muted-foreground py-4">
-                    Loading…
-                  </TableCell>
-                </TableRow>
-              )}
-              {!teamLoading && team.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={4} className="text-center text-muted-foreground py-4">
-                    No team members yet.
-                  </TableCell>
-                </TableRow>
-              )}
-              {team.map((u) => (
-                <TableRow key={u.id}>
-                  <TableCell className="font-medium text-sm">
-                    {u.full_name || "—"}
-                  </TableCell>
-                  <TableCell className="text-sm">{u.email}</TableCell>
-                  <TableCell className="text-xs capitalize">
-                    {u.role}
-                  </TableCell>
-                  <TableCell>
-                    {u.is_active ? (
-                      <Badge className="rounded-full bg-emerald-100 text-emerald-900 border-0">
-                        <CheckCircle2 className="w-3 h-3 mr-1" /> Active
-                      </Badge>
-                    ) : (
-                      <Badge className="rounded-full bg-gray-200 text-gray-800 border-0">
-                        Disabled
-                      </Badge>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+            ))}
+          </TableBody>
+        </Table>
+      </ScrollableCard>
     </div>
   );
 }
