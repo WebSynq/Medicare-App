@@ -250,6 +250,12 @@ _CSRF_EXEMPT_PATHS = {
     # browser. Authenticity is enforced via HMAC-SHA256 signature against
     # GHL_WEBHOOK_SECRET inside the route, so CSRF doesn't apply.
     "/api/ghl/webhook",
+    # GHL manual sync — admin-triggered POST that pulls contacts via the
+    # GHL API. JWT-authenticated via require_roles("admin"); the Settings
+    # button uses the same axios instance that *would* attach CSRF, but
+    # exempting matches the pattern used by every other admin write that
+    # talks to an external provider (apps/submit, commission/sync/run).
+    "/api/ghl/sync",
 }
 
 # Path prefixes for parameterised routes. CSRF-exempt when request.url.path
