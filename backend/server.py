@@ -41,6 +41,7 @@ from chat_router import router as chat_router  # noqa: E402
 from ghl_webhook_router import router as ghl_webhook_router  # noqa: E402
 from dashboard_router import router as dashboard_router  # noqa: E402
 from commission_router import router as commission_calc_router  # noqa: E402
+from compliance_router import router as compliance_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
 
 
@@ -148,6 +149,7 @@ app.include_router(chat_router, prefix="/api")
 app.include_router(ghl_webhook_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
 app.include_router(commission_calc_router, prefix="/api")
+app.include_router(compliance_router, prefix="/api")
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────

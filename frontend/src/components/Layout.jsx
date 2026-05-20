@@ -347,8 +347,9 @@ function SidebarContent({ user, role, onNavigate, onSignOut }) {
           <>
             <SectionLabel>Admin</SectionLabel>
             <div className="space-y-0.5">
-              <NavItem to="/audit" icon={ClipboardList} label="Audit Log" onClick={onNavigate} testId="nav-audit" />
-              <NavItem to="/admin/compliance" icon={Shield} label="Compliance" onClick={onNavigate} testId="nav-compliance" />
+              {/* Audit Log and Compliance moved into Settings tabs to
+                  consolidate admin surfaces — sidebar stays focused on
+                  workflow destinations rather than reporting screens. */}
               <NavItem to="/admin/commissions" icon={UserCheck} label="Agent Commissions" onClick={onNavigate} testId="nav-admin-commissions" />
               {isAdmin && (
                 <NavItem to="/admin/accounting" icon={Calculator} label="Accounting" onClick={onNavigate} testId="nav-accounting" />

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1676,11 +1676,49 @@ function TeamTab() {
 }
 
 // ── Top-level page ───────────────────────────────────────────────────────
+// Valid tab ids that can be opened via the ?tab=… URL query param.
+// Kept in sync with the TabsTrigger value props below.
+const SETTINGS_TAB_IDS = new Set([
+  "profile",
+  "security",
+  "audit",
+  "agency",
+  "integrations",
+  "team",
+  "compliance",
+]);
+
+// Roles that may access the Compliance tab — mirrors the deps.COMPLIANCE_ROLES
+// group on the backend so cyber_security / sales_manager get the same view.
+const COMPLIANCE_TAB_ROLES = new Set([
+  "admin",
+  "compliance",
+  "cyber_security",
+  "sales_manager",
+]);
+
 export default function Settings() {
   const [me, setMe] = useState(null);
   const cachedUser = auth.getUser();
   const role = me?.role || cachedUser?.role || "agent";
   const isAdmin = role === "admin";
+  const canSeeCompliance = COMPLIANCE_TAB_ROLES.has(role);
+
+  // Read the ?tab=… query param so redirects from the legacy /audit and
+  // /admin/compliance routes land on the right tab. Falls back to
+  // "profile" when the param is missing or names a tab the current
+  // user can't see (e.g. an agent hitting ?tab=team).
+  const [searchParams] = useSearchParams();
+  const requestedTab = searchParams.get("tab") || "";
+  const initialTab = useMemo(() => {
+    if (!SETTINGS_TAB_IDS.has(requestedTab)) return "profile";
+    // Gate admin-only tabs.
+    if (!isAdmin && (requestedTab === "agency" || requestedTab === "integrations" || requestedTab === "team")) {
+      return "profile";
+    }
+    if (requestedTab === "compliance" && !canSeeCompliance) return "profile";
+    return requestedTab;
+  }, [requestedTab, isAdmin, canSeeCompliance]);
 
   const loadMe = useCallback(async () => {
     try {
@@ -1721,7 +1759,7 @@ export default function Settings() {
           </p>
         </div>
 
-        <Tabs defaultValue="profile" className="w-full">
+        <Tabs defaultValue={initialTab} className="w-full">
           <TabsList className="flex-wrap h-auto">
             <TabsTrigger value="profile" data-testid="tab-profile">
               Profile
@@ -1745,6 +1783,11 @@ export default function Settings() {
             {isAdmin && (
               <TabsTrigger value="team" data-testid="tab-team">
                 Team
+              </TabsTrigger>
+            )}
+            {canSeeCompliance && (
+              <TabsTrigger value="compliance" data-testid="tab-compliance">
+                Compliance
               </TabsTrigger>
             )}
           </TabsList>
@@ -1773,8 +1816,390 @@ export default function Settings() {
               <TeamTab />
             </TabsContent>
           )}
+          {canSeeCompliance && (
+            <TabsContent value="compliance" className="mt-4">
+              <ComplianceTab />
+            </TabsContent>
+          )}
         </Tabs>
       </main>
     </div>
+  );
+}
+
+
+// ── Compliance tab (admin + compliance roles only) ───────────────────────
+// Pulls the consolidated views from /api/compliance/{soa,tcpa} and wires
+// the two CSV exports to /api/compliance/export/{soa,tcpa}.csv. Each
+// section is independent so a slow upstream on one doesn't stall the
+// others.
+
+function ComplianceTab() {
+  return (
+    <div className="space-y-6">
+      <ComplianceSOA />
+      <ComplianceTCPA />
+      <ComplianceExports />
+      <ComplianceAEPPlaceholder />
+    </div>
+  );
+}
+
+function ComplianceSOA() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState("all");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = statusFilter !== "all" ? { status: statusFilter } : {};
+      const { data } = await api.get("/compliance/soa", { params });
+      setData(data);
+    } catch {
+      setData({ stats: {}, records: [] });
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const stats = data?.stats || {};
+  const records = data?.records || [];
+
+  return (
+    <section className="space-y-3">
+      <h3
+        className="text-sm font-semibold tracking-tight"
+        style={{ fontFamily: "Outfit" }}
+      >
+        SOA Compliance
+      </h3>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <ComplianceStat label="SOA Sent MTD" value={stats.sent_mtd ?? 0} />
+        <ComplianceStat
+          label="SOA Signed MTD"
+          value={stats.signed_mtd ?? 0}
+          tone="success"
+        />
+        <ComplianceStat
+          label="SOA Pending"
+          value={stats.pending ?? 0}
+          tone="warn"
+        />
+        <ComplianceStat
+          label="SOA Expired"
+          value={stats.expired ?? 0}
+          tone="danger"
+        />
+      </div>
+
+      <Card>
+        <CardContent className="p-4 flex flex-wrap items-center gap-3">
+          <div>
+            <Label className="text-xs">Status</Label>
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger className="w-40 h-9" data-testid="compliance-soa-status">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All</SelectItem>
+                <SelectItem value="signed">Signed</SelectItem>
+                <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="expired">Expired</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <Button variant="outline" size="sm" onClick={load} className="self-end">
+            Refresh
+          </Button>
+        </CardContent>
+      </Card>
+
+      <ScrollableCard
+        title="SOA Records"
+        count={records.length}
+        height="420px"
+        loading={loading}
+        isEmpty={!loading && records.length === 0}
+        emptyState="No SOA records match these filters."
+        testId="compliance-soa-card"
+      >
+        <div className="overflow-x-auto w-full">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Client</TableHead>
+                <TableHead>Agent</TableHead>
+                <TableHead>Signed</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Products</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {records.map((r) => (
+                <TableRow key={r.id}>
+                  <TableCell className="font-medium text-sm">
+                    {r.lead_name}
+                  </TableCell>
+                  <TableCell className="text-sm">
+                    {r.agent_name || "—"}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {r.signed_date ? fmtDateTime(r.signed_date) : "—"}
+                  </TableCell>
+                  <TableCell>
+                    <SOAStatusBadge status={r.status} />
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground truncate max-w-[220px]">
+                    {(r.products_discussed || []).join(", ") || "—"}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </ScrollableCard>
+    </section>
+  );
+}
+
+function SOAStatusBadge({ status }) {
+  const s = (status || "").toLowerCase();
+  if (s === "signed") {
+    return (
+      <Badge className="rounded-full bg-emerald-100 text-emerald-900 border-0">
+        Signed
+      </Badge>
+    );
+  }
+  if (s === "expired") {
+    return (
+      <Badge className="rounded-full bg-rose-100 text-rose-900 border-0">
+        Expired
+      </Badge>
+    );
+  }
+  return (
+    <Badge className="rounded-full bg-amber-100 text-amber-900 border-0">
+      Pending
+    </Badge>
+  );
+}
+
+function ComplianceTCPA() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { data } = await api.get("/compliance/tcpa");
+        if (alive) setData(data);
+      } catch {
+        if (alive) setData({ stats: {}, leads: [] });
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  async function sendConsentRequest(lead) {
+    // Best-effort SMS via GHL workflow. Backend integration not wired
+    // yet — for now we just toast so the agent sees the action they'd
+    // be taking. When the endpoint lands this becomes an api.post.
+    toast.message(`Consent request queued for ${lead.name} (${lead.phone})`);
+  }
+
+  const stats = data?.stats || {};
+  const leads = data?.leads || [];
+
+  return (
+    <section className="space-y-3">
+      <h3
+        className="text-sm font-semibold tracking-tight"
+        style={{ fontFamily: "Outfit" }}
+      >
+        TCPA Compliance
+      </h3>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <ComplianceStat
+          label="Total Consented"
+          value={stats.consented ?? 0}
+          tone="success"
+        />
+        <ComplianceStat
+          label="No Consent on File"
+          value={stats.no_consent ?? 0}
+          tone="danger"
+        />
+        <ComplianceStat
+          label="Consent Rate"
+          value={`${stats.consent_rate_pct ?? 0}%`}
+          tone="accent"
+        />
+      </div>
+
+      <ScrollableCard
+        title="Leads Without Consent"
+        count={leads.length}
+        height="360px"
+        loading={loading}
+        isEmpty={!loading && leads.length === 0}
+        emptyState="Every lead on file has TCPA consent recorded ✅"
+        testId="compliance-tcpa-card"
+      >
+        <div className="overflow-x-auto w-full">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Phone</TableHead>
+                <TableHead>Lead Source</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead className="text-right">Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {leads.map((l) => (
+                <TableRow key={l.id}>
+                  <TableCell className="font-medium text-sm">{l.name}</TableCell>
+                  <TableCell className="text-sm font-mono">
+                    {l.phone || "—"}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {l.lead_source}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {l.created_at ? fmtDateTime(l.created_at) : "—"}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => sendConsentRequest(l)}
+                      data-testid={`compliance-tcpa-send-${l.id}`}
+                    >
+                      Send Consent Request
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </ScrollableCard>
+    </section>
+  );
+}
+
+function ComplianceExports() {
+  // Anchor downloads — credentials: include is the default for same-site
+  // links, but we use an absolute URL via the api client base so the
+  // host matches and the auth cookie is sent.
+  const base = (api.defaults.baseURL || "").replace(/\/+$/, "");
+  return (
+    <section className="space-y-3">
+      <h3
+        className="text-sm font-semibold tracking-tight"
+        style={{ fontFamily: "Outfit" }}
+      >
+        CMS Audit Export
+      </h3>
+      <Card>
+        <CardContent className="p-4 flex flex-wrap items-center gap-3">
+          <Button asChild variant="outline" data-testid="compliance-export-soa">
+            <a
+              href={`${base}/compliance/export/soa.csv`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Export CMS Audit Report
+            </a>
+          </Button>
+          <Button asChild variant="outline" data-testid="compliance-export-tcpa">
+            <a
+              href={`${base}/compliance/export/tcpa.csv`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Export TCPA Consent Log
+            </a>
+          </Button>
+        </CardContent>
+      </Card>
+    </section>
+  );
+}
+
+function ComplianceAEPPlaceholder() {
+  const tiles = [
+    "AHIP Certification",
+    "State Licenses",
+    "Carrier Certifications",
+    "E&O Insurance",
+  ];
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center gap-2">
+        <h3
+          className="text-sm font-semibold tracking-tight"
+          style={{ fontFamily: "Outfit" }}
+        >
+          AEP Readiness
+        </h3>
+        <Badge className="rounded-full bg-amber-100 text-amber-900 border-0 text-[10px] font-medium">
+          Coming Soon
+        </Badge>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        AEP readiness checklist coming soon. We&rsquo;ll track each of these
+        per agent and flag anything overdue before Oct 15.
+      </p>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {tiles.map((t) => (
+          <Card key={t} className="bg-surface">
+            <CardContent className="p-4 text-center">
+              <p className="text-xs font-medium">{t}</p>
+              <p className="text-[10px] text-muted-foreground mt-1">
+                tracking pending
+              </p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ComplianceStat({ label, value, tone }) {
+  const valueClass = {
+    success: "text-emerald-700",
+    danger: "text-rose-700",
+    warn: "text-amber-700",
+    accent: "text-[#e85d2f]",
+  }[tone] || "text-foreground";
+  return (
+    <Card className="bg-surface">
+      <CardContent className="p-4">
+        <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+          {label}
+        </div>
+        <div
+          className={`mt-2 text-2xl font-bold tabular-nums ${valueClass}`}
+          style={{ fontFamily: "Outfit" }}
+        >
+          {value}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

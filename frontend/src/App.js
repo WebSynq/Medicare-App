@@ -9,8 +9,6 @@ import Register from "@/pages/Register";
 import MfaSetup from "@/pages/MfaSetup";
 import AgentDashboard from "@/pages/AgentDashboard";
 import LeadDetail from "@/pages/LeadDetail";
-import AuditLog from "@/pages/AuditLog";
-import CompliancePanel from "@/pages/CompliancePanel";
 import CommissionsDashboard from "@/pages/CommissionsDashboard";
 import AdminCommissions from "@/pages/AdminCommissions";
 import AccountingDashboard from "@/pages/AccountingDashboard";
@@ -78,8 +76,10 @@ export default function App() {
         <Route path="/clients/:leadId" element={<Protected><ClientProfile /></Protected>} />
         <Route path="/leaderboard" element={<Protected><Leaderboard /></Protected>} />
         <Route path="/applications" element={<Protected><ApplicationSubmission /></Protected>} />
-        <Route path="/audit" element={<Protected roles={["admin","compliance"]}><AuditLog /></Protected>} />
-        <Route path="/admin/compliance" element={<Protected roles={["admin","compliance"]}><CompliancePanel /></Protected>} />
+        {/* Audit Log + Compliance now live inside Settings. Old URLs
+            redirect so existing bookmarks land on the right tab. */}
+        <Route path="/audit" element={<Navigate to="/settings?tab=audit" replace />} />
+        <Route path="/admin/compliance" element={<Navigate to="/settings?tab=compliance" replace />} />
         <Route
           path="/admin/commissions"
           element={
