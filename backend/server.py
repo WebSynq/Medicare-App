@@ -39,6 +39,7 @@ from integrations_router import router as integrations_router  # noqa: E402
 from agent_management_router import router as agent_management_router  # noqa: E402
 from chat_router import router as chat_router  # noqa: E402
 from ghl_webhook_router import router as ghl_webhook_router  # noqa: E402
+from dashboard_router import router as dashboard_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
 
 
@@ -144,6 +145,7 @@ app.include_router(integrations_router, prefix="/api")
 app.include_router(agent_management_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
 app.include_router(ghl_webhook_router, prefix="/api")
+app.include_router(dashboard_router, prefix="/api")
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
@@ -298,6 +300,10 @@ _CSRF_EXEMPT_PREFIXES = (
     "/api/applications/",
     "/api/documents/",
     "/api/ghl/",
+    # Dashboard aggregator — all GET today, but exempting the prefix
+    # future-proofs us when we add the "refresh stats" POST and keeps
+    # parity with the other admin/agent surfaces.
+    "/api/dashboard/",
 )
 
 

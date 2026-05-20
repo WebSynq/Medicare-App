@@ -1202,3 +1202,39 @@ async def test_webhook_older_skipped_portal_wins(client, db, admin_headers):
     # Row is untouched.
     doc = await db.leads.find_one({"id": "lead-older"})
     assert doc["first_name"] == "Portal"
+
+
+# ── Dashboard stats endpoint ────────────────────────────────────────────────
+def test_dashboard_stats_admin_returns_quote_and_agency_view(client, db, admin_headers):
+    """Admin (no impersonation) sees agency-wide view, daily quote, and
+    the per-agent breakdown block."""
+    r = client.get("/api/dashboard/stats", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Daily quote is present and shaped correctly
+    assert "daily_quote" in body
+    assert body["daily_quote"]["text"]
+    assert body["daily_quote"]["author"]
+    assert body["daily_quote"]["category"] in {"mindset", "sales", "discipline", "winning"}
+    # Agency view contains admin-only extras
+    assert body["scope"] == "agency"
+    assert body["impersonating"] is False
+    assert "agents_active" in body
+    assert "agent_breakdown" in body
+    # Standard sections are present
+    assert "leads_total" in body
+    assert "revenue_by_month" in body and len(body["revenue_by_month"]) == 6
+    assert "pipeline_funnel" in body
+    assert "alerts" in body
+    assert "recent_activity" in body
+
+
+def test_dashboard_quote_stable_within_day():
+    """The quote selector is a pure function of UTC day-of-year — two
+    calls back-to-back must yield the same line. Regression guard for
+    accidental randomisation."""
+    from dashboard_router import _quote_for_today
+    q1 = _quote_for_today()
+    q2 = _quote_for_today()
+    assert q1 == q2
+    assert q1["text"]
