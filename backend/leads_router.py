@@ -318,9 +318,90 @@ async def create_lead(
         db, fresh, effective, request,
     )
 
+    # Speed-to-lead SMS. Only fires when:
+    #   - TCPA consent is on file (federal requirement),
+    #   - the lead has a phone number,
+    #   - GHL gave us a contact id back from the sync above.
+    # Any other case audit-logs a "skipped" event with the reason so
+    # the compliance team can demonstrate due diligence.
+    await _fire_speed_to_lead_sms(db, fresh, effective, request)
+
     lead_out = Lead(**fresh).model_dump()
     lead_out["soa_link"] = soa_link
     return lead_out
+
+
+async def _fire_speed_to_lead_sms(
+    db: AsyncIOMotorDatabase,
+    lead: dict,
+    effective: dict,
+    request: Request,
+) -> None:
+    """Best-effort speed-to-lead SMS via GHL Conversations API.
+
+    Hard preconditions (any miss → audit + return):
+      1. lead.tcpa_consent must be True.
+      2. lead.phone must be a non-empty string.
+      3. lead.ghl_contact_id must be set (the SMS targets the GHL
+         contact, not a raw phone).
+    """
+    reasons = []
+    if not lead.get("tcpa_consent"):
+        reasons.append("no_tcpa_consent")
+    if not (lead.get("phone") or "").strip():
+        reasons.append("no_phone")
+    if not lead.get("ghl_contact_id"):
+        reasons.append("no_ghl_contact_id")
+
+    if reasons:
+        await write_audit(
+            db, "speed_to_lead_sms_skipped",
+            actor_email=effective.get("email"),
+            actor_id=effective.get("id"),
+            target_type="lead", target_id=lead.get("id"),
+            request=request,
+            metadata={"reason": ",".join(reasons)},
+        )
+        return
+
+    first_name = (lead.get("first_name") or "there").strip() or "there"
+    agent_name = (
+        effective.get("agent_name")
+        or effective.get("full_name")
+        or "your GHW agent"
+    )
+    msg = (
+        f"Hi {first_name}, this is {agent_name} with Gruening Health & "
+        "Wealth. I'd love to help you with your Medicare options. When "
+        "is a good time to chat? Reply STOP to opt out."
+    )
+
+    try:
+        client = GHLClient()
+        if client.mock_mode:
+            await write_audit(
+                db, "speed_to_lead_sms_skipped",
+                actor_email=effective.get("email"),
+                actor_id=effective.get("id"),
+                target_type="lead", target_id=lead.get("id"),
+                request=request,
+                metadata={"reason": "ghl_mock_mode"},
+            )
+            return
+        result = await client.send_sms(lead["ghl_contact_id"], msg)
+        ok = result is not None
+        await write_audit(
+            db,
+            "speed_to_lead_sms_sent" if ok else "speed_to_lead_sms_failed",
+            actor_email=effective.get("email"),
+            actor_id=effective.get("id"),
+            target_type="lead", target_id=lead.get("id"),
+            request=request,
+            metadata={"ghl_contact_id": lead.get("ghl_contact_id")},
+        )
+    except Exception as e:
+        logger.warning("speed-to-lead SMS failed for %s: %s",
+                       lead.get("id"), e)
 
 
 @router.get("", response_model=List[Lead])

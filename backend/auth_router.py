@@ -333,7 +333,17 @@ async def login(payload: LoginRequest, request: Request, response: Response,
         await write_audit(db, "login_failed", actor_email=payload.email,
                           actor_id=user.get("id"), request=request,
                           metadata={"reason": "inactive"})
-        raise HTTPException(status_code=403, detail="Account disabled")
+        # 401 (not 403) + user-readable copy that the SPA can surface
+        # on the redirect to /login. Matches the message returned by
+        # deps.get_current_user when the user becomes deactivated
+        # mid-session.
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Your account has been deactivated. "
+                "Contact your administrator."
+            ),
+        )
 
     mfa_verified = False
     if user.get("mfa_enabled"):

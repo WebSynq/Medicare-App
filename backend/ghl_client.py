@@ -99,6 +99,37 @@ class GHLClient:
             h["Content-Type"] = content_type
         return h
 
+    async def send_sms(
+        self,
+        contact_id: str,
+        message: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Send a text via GHL's Conversations API. Never throws —
+        returns None on any failure so the calling lead-create flow
+        can swallow the failure cleanly and continue.
+
+        Used by the speed-to-lead path. The caller is responsible for
+        TCPA gating; this method only enforces the wire-level rules
+        (mock mode, contact id present, message body present)."""
+        if self.mock_mode:
+            return {"mock": True, "sent": False, "reason": "mock_mode"}
+        if not contact_id or not (message or "").strip():
+            return None
+        payload = {
+            "type": "SMS",
+            "contactId": contact_id,
+            "message": message[:1500],
+        }
+
+        async def _do():
+            async with httpx.AsyncClient(timeout=_SAFE_TIMEOUT) as client:
+                return await client.post(
+                    f"{self.base_url}/conversations/messages",
+                    headers=self._headers(),
+                    json=payload,
+                )
+        return await _call_ghl("send_sms", _do, contact_id=contact_id)
+
     async def upsert_contact(self, lead: Dict[str, Any]) -> Dict[str, Any]:
         if self.mock_mode:
             return {"mock": True, "contact": {"id": f"mock_{lead.get('id', 'unknown')}"}}

@@ -3,6 +3,7 @@ import {
   Lock,
   ShieldCheck,
   LayoutDashboard,
+  Building2,
   Users,
   Users2,
   Trophy,
@@ -161,8 +162,10 @@ function AgentSwitcher({ role, onNavigate }) {
       try {
         const res = await api.get("/agents");
         if (!alive) return;
+        // Show every active team member — admin can "view as" anyone,
+        // including other admins, not just agents.
         const list = (res?.data?.agents || []).filter(
-          (a) => a.role === "agent" && a.is_active !== false,
+          (a) => a.is_active !== false,
         );
         setAgents(list);
       } catch {
@@ -177,13 +180,35 @@ function AgentSwitcher({ role, onNavigate }) {
     };
   }, [canSee]);
 
+  // Role-aware sort: admins first, then everyone else; alphabetical
+  // within each group. Keeps the "view as" workflow predictable as
+  // the team grows past a few rows.
   const sortedAgents = useMemo(() => {
+    const roleWeight = (r) => (r === "admin" ? 0 : 1);
     return [...agents].sort((a, b) => {
+      const rw = roleWeight(a.role) - roleWeight(b.role);
+      if (rw !== 0) return rw;
       const an = (a.full_name || a.email || "").toLowerCase();
       const bn = (b.full_name || b.email || "").toLowerCase();
       return an.localeCompare(bn);
     });
   }, [agents]);
+
+  const roleLabel = (r) => {
+    if (!r) return "";
+    const m = {
+      admin: "Admin",
+      agent: "Agent",
+      compliance: "Compliance",
+      sales_manager: "Sales Manager",
+      cyber_security: "Cyber Security",
+      va: "Virtual Assistant",
+      support: "Customer Support",
+      crm_specialist: "CRM Specialist",
+      onboarding: "Onboarding",
+    };
+    return m[r] || r.replace(/_/g, " ");
+  };
 
   if (!canSee) return null;
 
@@ -278,6 +303,11 @@ function AgentSwitcher({ role, onNavigate }) {
               data-testid={`agent-switcher-pick-${a.id}`}
             >
               {a.full_name || a.email}
+              {a.role && (
+                <span className="ml-1 text-white/45">
+                  ({roleLabel(a.role)})
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -347,6 +377,9 @@ function SidebarContent({ user, role, onNavigate, onSignOut }) {
           <>
             <SectionLabel>Admin</SectionLabel>
             <div className="space-y-0.5">
+              {isAdmin && (
+                <NavItem to="/agency" icon={Building2} label="Agency" onClick={onNavigate} testId="nav-agency" />
+              )}
               {/* Audit Log and Compliance moved into Settings tabs to
                   consolidate admin surfaces — sidebar stays focused on
                   workflow destinations rather than reporting screens. */}
@@ -354,7 +387,7 @@ function SidebarContent({ user, role, onNavigate, onSignOut }) {
               {isAdmin && (
                 <NavItem to="/admin/accounting" icon={Calculator} label="Accounting" onClick={onNavigate} testId="nav-accounting" />
               )}
-              <NavItem to="/agents" icon={Users} label="Agents" onClick={onNavigate} testId="nav-agents" />
+              <NavItem to="/agents" icon={Users} label="Team" onClick={onNavigate} testId="nav-agents" />
               {isAdmin && (
                 <NavItem to="/admin/import" icon={Upload} label="Data Import" onClick={onNavigate} testId="nav-data-import" />
               )}

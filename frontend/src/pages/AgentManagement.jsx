@@ -26,7 +26,7 @@ import { api, auth } from "@/lib/api";
 import { useAgent } from "@/context/AgentContext";
 import ScrollableCard from "@/components/ScrollableCard";
 
-// Maps raw role strings to human labels for the agent table.
+// Maps raw role strings to human labels for the team table.
 const ROLE_LABELS = {
   admin: "Administrator",
   agent: "Agent",
@@ -37,11 +37,36 @@ const ROLE_LABELS = {
   cyber_security: "Cyber Security",
   sales_manager: "Sales Manager",
   onboarding: "Onboarding Specialist",
+  coach: "Coach",
+  director: "Director",
+};
+
+// Role badge palette — one tone per role so the team table is easier
+// to scan at a glance.
+const ROLE_BADGE = {
+  admin: "bg-[#e85d2f] text-white",
+  agent: "bg-blue-100 text-blue-900",
+  compliance: "bg-purple-100 text-purple-900",
+  sales_manager: "bg-teal-100 text-teal-900",
+  coach: "bg-emerald-100 text-emerald-900",
+  director: "bg-amber-100 text-amber-900",
 };
 
 function roleLabel(raw) {
   if (!raw) return "—";
   return ROLE_LABELS[raw] || raw;
+}
+
+function RoleBadge({ role }) {
+  const cls = ROLE_BADGE[role] || "bg-secondary text-foreground/80";
+  return (
+    <Badge
+      className={`rounded-full border-0 ${cls}`}
+      data-testid={`role-badge-${role || "unknown"}`}
+    >
+      {roleLabel(role)}
+    </Badge>
+  );
 }
 
 function StatCard({ label, value, icon: Icon, tone = "default" }) {
@@ -141,20 +166,28 @@ export default function AgentManagement() {
       return;
     }
     const next = !agent.is_active;
+    const name = agent.full_name || agent.email;
+    // Deactivation is destructive in the audit-log sense (the user
+    // loses portal access until a second admin reactivates). Confirm
+    // explicitly; reactivation has no such side effect so it's a
+    // one-click action.
+    if (!next) {
+      const ok = window.confirm(
+        `Deactivate ${name}? They will lose portal access immediately. ` +
+        "Their data will be preserved.",
+      );
+      if (!ok) return;
+    }
     setPendingId(agent.id);
     try {
       await api.patch(`/agents/${agent.id}/status`, { is_active: next });
       setAgents((prev) =>
         prev.map((a) => (a.id === agent.id ? { ...a, is_active: next } : a)),
       );
-      toast.success(
-        next
-          ? `${agent.full_name || agent.email} activated`
-          : `${agent.full_name || agent.email} deactivated`,
-      );
+      toast.success(next ? `${name} reactivated` : `${name} deactivated`);
     } catch (e) {
       toast.error(
-        e?.response?.data?.detail || "Failed to update agent status",
+        e?.response?.data?.detail || "Failed to update status",
       );
     } finally {
       setPendingId(null);
@@ -175,15 +208,16 @@ export default function AgentManagement() {
             className="text-2xl font-bold tracking-tight"
             style={{ fontFamily: "Outfit" }}
           >
-            Agents
+            Team Management
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Roster, production roll-up, and access management.
+            Roster, production roll-up, and access management for every
+            team member — agents, admins, compliance, coaches.
           </p>
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-          <StatCard label="Total Agents" value={stats.total} icon={Users} />
+          <StatCard label="Team Members" value={stats.total} icon={Users} />
           <StatCard
             label="Active"
             value={stats.active}
@@ -245,8 +279,8 @@ export default function AgentManagement() {
                           <div className="text-xs text-muted-foreground">
                             {a.email}
                           </div>
-                          <div className="text-[11px] mt-0.5 inline-block px-1.5 py-0.5 rounded bg-secondary text-foreground/70">
-                            {roleLabel(a.role)}
+                          <div className="mt-1">
+                            <RoleBadge role={a.role} />
                           </div>
                         </TableCell>
                         <TableCell>
@@ -288,25 +322,39 @@ export default function AgentManagement() {
                               <Eye className="w-3.5 h-3.5 mr-1.5" />
                               View Workspace
                             </Button>
-                            {isAdmin && (
+                            {isAdmin && isActive && (
                               <Button
-                                variant={isActive ? "outline" : "default"}
+                                variant="ghost"
                                 size="sm"
                                 onClick={() => handleToggleStatus(a)}
                                 disabled={isSelf || isBusy}
+                                title={
+                                  isSelf
+                                    ? "Cannot modify your own account"
+                                    : undefined
+                                }
+                                className="text-rose-700 hover:text-rose-800 hover:bg-rose-50"
                                 data-testid={`agent-toggle-${a.id}`}
                               >
-                                {isActive ? (
-                                  <>
-                                    <PowerOff className="w-3.5 h-3.5 mr-1.5" />
-                                    Deactivate
-                                  </>
-                                ) : (
-                                  <>
-                                    <Power className="w-3.5 h-3.5 mr-1.5" />
-                                    Activate
-                                  </>
-                                )}
+                                <PowerOff className="w-3.5 h-3.5 mr-1.5" />
+                                Deactivate
+                              </Button>
+                            )}
+                            {isAdmin && !isActive && (
+                              <Button
+                                size="sm"
+                                onClick={() => handleToggleStatus(a)}
+                                disabled={isSelf || isBusy}
+                                title={
+                                  isSelf
+                                    ? "Cannot modify your own account"
+                                    : undefined
+                                }
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                                data-testid={`agent-toggle-${a.id}`}
+                              >
+                                <Power className="w-3.5 h-3.5 mr-1.5" />
+                                Reactivate
                               </Button>
                             )}
                           </div>

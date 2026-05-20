@@ -495,25 +495,44 @@ async def _alerts(db, scope: dict) -> List[Dict[str, Any]]:
             "urgency": "high",
         })
 
-    # commission_gap — production_records app_date > 60d ago, no revenue_received.
-    cutoff_60d = (now - timedelta(days=60))
+    # commission_gap — production_records where effective_date falls
+    # inside the 60-120-days-ago window (carriers typically pay within
+    # 60 days, so anything older than 60d but younger than 120d is a
+    # real gap; rows older than 120d are stale and likely never paid).
+    # Capped at 10 most-recent.
+    cutoff_120d = now - timedelta(days=120)
+    cutoff_60d = now - timedelta(days=60)
+    commission_gap_alerts: List[Dict[str, Any]] = []
     async for r in db["production_records"].find(
         {**scope, "$or": [
             {"revenue_received": None},
             {"revenue_received": {"$exists": False}},
         ]},
-        {"_id": 0, "app_date": 1, "client_name": 1, "carrier": 1, "product_type": 1},
+        {"_id": 0, "app_date": 1, "effective_date": 1, "client_name": 1,
+         "carrier": 1, "product_type": 1, "revenue_expected": 1},
     ):
-        app_dt = _parse_iso(r.get("app_date"))
-        if not app_dt or app_dt > cutoff_60d:
+        # effective_date is the carrier's policy effective date — the
+        # right clock for commission timing. Fall back to app_date for
+        # rows that haven't had it filled in yet.
+        eff_dt = _parse_iso(r.get("effective_date")) or _parse_iso(r.get("app_date"))
+        if not eff_dt:
             continue
-        alerts.append({
+        if not (cutoff_120d <= eff_dt < cutoff_60d):
+            continue
+        if _safe_float(r.get("revenue_expected")) <= 0:
+            continue
+        commission_gap_alerts.append({
             "type": "commission_gap",
             "message": f"Commission missing — {r.get('carrier') or 'carrier'} {r.get('product_type') or ''}".strip(),
             "lead_id": "",
             "lead_name": r.get("client_name") or "Unknown client",
             "urgency": "medium",
+            "_sort_dt": eff_dt,
         })
+    commission_gap_alerts.sort(key=lambda a: a["_sort_dt"], reverse=True)
+    for a in commission_gap_alerts[:10]:
+        a.pop("_sort_dt", None)
+        alerts.append(a)
 
     # Stable urgency ordering for the UI.
     urgency_order = {"high": 0, "medium": 1, "low": 2}
@@ -676,60 +695,96 @@ async def dashboard_stats(
     if period not in VALID_PERIODS:
         period = "mtd"
 
+    # Daily quote is computed first and lives outside the try/except
+    # below so a transient Mongo outage never blanks the inspirational
+    # banner — date arithmetic only, no DB calls.
+    quote = _quote_for_today()
+
     role = current_user.get("role", "agent")
     impersonating = bool(effective.get("_impersonated_by"))
-    # When impersonating, scope to the effective agent's id.
     if impersonating:
         scope = {"agent_id": effective["id"]}
     else:
         scope = agent_filter(current_user)
 
-    # Run the per-section aggregators in parallel-friendly fashion. Motor
-    # is async but the section helpers are sequential — keep it simple
-    # here; under expected dataset sizes (<10k leads) the whole call
-    # stays under 500ms.
-    lead_stats = await _lead_stats(db, scope)
-    appt_week = await _appointments_this_week(db, scope)
-    soa_stats = await _soa_stats(db, scope)
-    policy_stats = await _policy_stats(db, scope)
-    revenue_stats = await _revenue_stats(db, scope)
-    alerts = await _alerts(db, scope)
-    activity = await _recent_activity(db, scope, current_user)
+    try:
+        lead_stats = await _lead_stats(db, scope)
+        appt_week = await _appointments_this_week(db, scope)
+        soa_stats = await _soa_stats(db, scope)
+        policy_stats = await _policy_stats(db, scope)
+        revenue_stats = await _revenue_stats(db, scope)
+        alerts = await _alerts(db, scope)
+        activity = await _recent_activity(db, scope, current_user)
 
-    # Admin extras — only computed for the agency-wide view (not when
-    # impersonating).
-    admin_extras: Dict[str, Any] = {}
-    if role in ("admin", "compliance") and not impersonating:
-        active_agents = await db.users.count_documents({"role": "agent", "is_active": True})
-        admin_extras = {
-            "agents_active": active_agents,
-            "agent_breakdown": await _admin_agent_breakdown(db),
-            "top_carriers": await _top_carriers(db, {}),
+        # Admin extras — only computed for the agency-wide view (not when
+        # impersonating).
+        admin_extras: Dict[str, Any] = {}
+        if role in ("admin", "compliance") and not impersonating:
+            admin_extras = {
+                "agents_active": await _active_team_today(db),
+                "agent_breakdown": await _admin_agent_breakdown(db),
+                "top_carriers": await _top_carriers(db, {}),
+            }
+
+        pipeline_funnel = {
+            "new": lead_stats.get("leads_new", 0),
+            "contacted": lead_stats.get("leads_contacted", 0),
+            "qualified": lead_stats.get("leads_qualified", 0),
+            "appointment_set": lead_stats.get("appointments_set", 0),
+            "enrolled": lead_stats.get("leads_enrolled", 0),
         }
 
-    # Pipeline funnel as a nested object (also expose flat lead_* keys
-    # above for the existing KPI cards — both shapes live side-by-side).
-    pipeline_funnel = {
-        "new": lead_stats.get("leads_new", 0),
-        "contacted": lead_stats.get("leads_contacted", 0),
-        "qualified": lead_stats.get("leads_qualified", 0),
-        "appointment_set": lead_stats.get("appointments_set", 0),
-        "enrolled": lead_stats.get("leads_enrolled", 0),
-    }
+        return {
+            "period": period,
+            "scope": "agent" if scope else "agency",
+            "impersonating": impersonating,
+            "impersonated_agent": effective.get("full_name") if impersonating else None,
+            "daily_quote": quote,
+            **lead_stats,
+            "appointments_this_week": appt_week,
+            **soa_stats,
+            **policy_stats,
+            **revenue_stats,
+            "pipeline_funnel": pipeline_funnel,
+            "alerts": alerts,
+            "recent_activity": activity,
+            **admin_extras,
+        }
+    except Exception as e:
+        # Mongo or aggregation hiccup — never let it black out the
+        # whole dashboard. The frontend still gets the quote (which
+        # we computed before any DB work) and a partial-data flag.
+        logger.exception("dashboard_stats partial failure: %s", e)
+        return {
+            "daily_quote": quote,
+            "error": "partial data",
+        }
 
-    return {
-        "period": period,
-        "scope": "agent" if scope else "agency",
-        "impersonating": impersonating,
-        "impersonated_agent": effective.get("full_name") if impersonating else None,
-        "daily_quote": _quote_for_today(),
-        **lead_stats,
-        "appointments_this_week": appt_week,
-        **soa_stats,
-        **policy_stats,
-        **revenue_stats,
-        "pipeline_funnel": pipeline_funnel,
-        "alerts": alerts,
-        "recent_activity": activity,
-        **admin_extras,
-    }
+
+async def _active_team_today(db) -> int:
+    """Count team members with any audit_log activity today, regardless
+    of role. Falls back to total active users when nobody has touched
+    the system yet today — better than reporting "0 agents active" on
+    a fresh morning."""
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        actor_ids = set()
+        async for ev in db.audit_logs.find(
+            {"timestamp": {"$gte": today_start.isoformat()}},
+            {"_id": 0, "actor_id": 1},
+        ):
+            aid = ev.get("actor_id")
+            if aid:
+                actor_ids.add(aid)
+        if actor_ids:
+            return await db.users.count_documents(
+                {"id": {"$in": list(actor_ids)}, "is_active": True},
+            )
+    except Exception as e:
+        logger.warning("_active_team_today aggregation failed: %s", e)
+    # Fallback: total active users.
+    try:
+        return await db.users.count_documents({"is_active": True})
+    except Exception:
+        return 0

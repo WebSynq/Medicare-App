@@ -21,6 +21,7 @@ import ClientsList from "@/pages/ClientsList";
 import ClientProfile from "@/pages/ClientProfile";
 import DataImport from "@/pages/DataImport";
 import AgentManagement from "@/pages/AgentManagement";
+import AgencyAdmin from "@/pages/AgencyAdmin";
 import Settings from "@/pages/Settings";
 import PrivacyPolicy from "@/pages/PrivacyPolicy";
 import SecurityPage from "@/pages/SecurityPage";
@@ -115,6 +116,14 @@ export default function App() {
           element={
             <Protected roles={["admin", "compliance"]}>
               <AgentManagement />
+            </Protected>
+          }
+        />
+        <Route
+          path="/agency"
+          element={
+            <Protected roles={["admin"]}>
+              <AgencyAdmin />
             </Protected>
           }
         />

@@ -57,6 +57,8 @@ async def list_agents(
             "status": 1,
             "agency_name": 1,
             "created_at": 1,
+            "agent_id": 1,
+            "ghl_location_id": 1,
         },
     )
     users = await users_cursor.to_list(length=None)
@@ -107,10 +109,12 @@ async def list_agents(
             "email": u.get("email"),
             "agent_name": u.get("agent_name"),
             "agent_npn": u.get("agent_npn"),
+            "agent_id": u.get("agent_id") or uid,
             "role": u.get("role"),
             "is_active": u.get("is_active", True),
             "status": u.get("status"),
             "agency_name": u.get("agency_name"),
+            "ghl_location_id": u.get("ghl_location_id"),
             "created_at": u.get("created_at"),
             "lead_count": lead_counts.get(uid, 0),
             "policy_count": policy_counts.get(uid, 0),
@@ -129,36 +133,55 @@ async def update_agent_status(
     current_user: dict = Depends(require_roles("admin")),
     db=Depends(get_db),
 ):
-    """Activate / deactivate an agent.
+    """Activate / deactivate any team member.
 
-    Self-deactivation is refused — locking out the only admin is
-    irrecoverable without DB access, so we require a second admin to
-    perform the toggle if you ever need to disable your own account.
+    Works for ALL roles (admin / agent / compliance / sales_manager
+    / coach / ...) — the soft-deactivation contract is identical
+    regardless. Self-deactivation is refused — locking out the only
+    admin is irrecoverable without DB access, so we require a second
+    admin to perform the toggle if you ever need to disable your own
+    account.
+
+    No hard delete ever happens here. The user row stays in Mongo so
+    the HIPAA audit trail stays intact; `is_active=false` is what
+    `deps.get_current_user` keys off to refuse subsequent requests.
     """
     if agent_id == current_user.get("id"):
         raise HTTPException(400, "Cannot change your own active status")
 
     target = await db["users"].find_one(
-        {"id": agent_id}, {"_id": 0, "id": 1, "email": 1, "is_active": 1},
+        {"id": agent_id},
+        {"_id": 0, "id": 1, "email": 1, "is_active": 1, "role": 1,
+         "full_name": 1, "token_version": 1},
     )
     if not target:
-        raise HTTPException(404, "Agent not found")
+        raise HTTPException(404, "User not found")
 
     new_state = bool(payload.is_active)
     prev_state = bool(target.get("is_active", True))
 
-    await db["users"].update_one(
-        {"id": agent_id}, {"$set": {"is_active": new_state}},
-    )
+    updates: dict = {"is_active": new_state}
+    # Bump token_version on deactivation so any active JWT for the
+    # target user fails the deps.get_current_user check on next
+    # request — they're booted from every device immediately.
+    if not new_state:
+        updates["token_version"] = int(target.get("token_version", 0) or 0) + 1
+    await db["users"].update_one({"id": agent_id}, {"$set": updates})
 
+    event = (
+        "user_reactivated" if new_state and not prev_state
+        else "user_deactivated" if prev_state and not new_state
+        else "agent_status_changed"
+    )
     await write_audit(
-        db, "agent_status_changed",
+        db, event,
         actor_email=current_user.get("email"),
         actor_id=current_user.get("id"),
         target_type="user", target_id=agent_id,
         request=request,
         metadata={
             "target_email": target.get("email"),
+            "target_role": target.get("role"),
             "previous_is_active": prev_state,
             "new_is_active": new_state,
         },

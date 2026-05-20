@@ -89,8 +89,19 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
     user = await db.users.find_one({"id": user_id}, {"_id": 0})
-    if not user or not user.get("is_active", True):
-        raise HTTPException(status_code=401, detail="User not found or inactive")
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    if not user.get("is_active", True):
+        # Deactivated accounts get a specific, user-readable message so
+        # the SPA can show it on the login redirect rather than the
+        # generic "not authenticated" copy.
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Your account has been deactivated. "
+                "Contact your administrator."
+            ),
+        )
 
     # token_version invalidation — when an admin resets credentials or
     # the user changes their own password we bump user.token_version,

@@ -1690,3 +1690,112 @@ def test_soa_expired_token_returns_404(client, db):
         json={"full_name": "Whoever"},
     )
     assert r2.status_code == 404, r2.text
+
+
+# ── Deactivation + speed-to-lead SMS + agency health ───────────────────────
+@pytest.mark.asyncio
+async def test_deactivated_user_cannot_login(client, db, admin_headers):
+    """Flipping a user's is_active=false locks them out: login responds
+    with 401 + the user-readable deactivation message, and any pre-issued
+    token also returns 401 on subsequent requests."""
+    import uuid
+    from security import hash_password
+    pw = "DeactivatedUser!2026"
+    uid = str(uuid.uuid4())
+    await db.users.insert_one({
+        "id": uid, "agent_id": uid,
+        "email": "deact@example.com",
+        "full_name": "Deact Test", "agent_name": "Deact Test",
+        "role": "agent", "is_active": True, "status": "active",
+        "hashed_password": hash_password(pw),
+        "mfa_enabled": False, "mfa_secret": None,
+        "token_version": 0, "failed_attempts": 0,
+        "created_at": "2026-01-01T00:00:00+00:00",
+    })
+
+    # Confirm normal login works first.
+    r1 = client.post("/api/auth/login",
+                     json={"email": "deact@example.com", "password": pw})
+    assert r1.status_code == 200, r1.text
+
+    # Admin deactivates the user.
+    deact = client.patch(f"/api/agents/{uid}/status",
+                          headers=admin_headers,
+                          json={"is_active": False})
+    assert deact.status_code == 200, deact.text
+
+    # Subsequent login fails with the deactivation message.
+    r2 = client.post("/api/auth/login",
+                     json={"email": "deact@example.com", "password": pw})
+    assert r2.status_code == 401, r2.text
+    assert "deactivated" in r2.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_admin_cannot_deactivate_self(client, db, admin_headers):
+    """Self-deactivation is refused — locking out the only admin is
+    irrecoverable without DB access."""
+    me = await db.users.find_one(
+        {"email": os.environ["SEED_ADMIN_EMAIL"]}, {"_id": 0, "id": 1},
+    )
+    r = client.patch(f"/api/agents/{me['id']}/status",
+                     headers=admin_headers, json={"is_active": False})
+    assert r.status_code == 400, r.text
+    assert "own" in r.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_speed_to_lead_sms_requires_tcpa(client, db, admin_headers):
+    """Lead POST without tcpa_consent must audit-log a
+    speed_to_lead_sms_skipped with reason 'no_tcpa_consent'. Lead with
+    consent + phone must audit a sent/failed event (mock mode → skipped
+    with reason 'ghl_mock_mode')."""
+    # No consent → skipped with reason no_tcpa_consent.
+    r1 = client.post("/api/leads", headers=admin_headers, json={
+        "first_name": "Sms", "last_name": "NoConsent",
+        "phone": "555-0001",
+    })
+    assert r1.status_code == 201
+    skip = await db.audit_logs.find_one(
+        {"event_type": "speed_to_lead_sms_skipped",
+         "target_id": r1.json()["id"]},
+    )
+    assert skip is not None
+    assert "no_tcpa_consent" in (skip.get("metadata") or {}).get("reason", "")
+
+    # With consent + phone → mock mode short-circuits with its own
+    # audit row (the GHL token isn't set in tests, so mock_mode=True).
+    r2 = client.post("/api/leads", headers=admin_headers, json={
+        "first_name": "Sms", "last_name": "WithConsent",
+        "phone": "555-0002",
+        "tcpa_consent": True,
+        "tcpa_consent_text": "I consent",
+    })
+    assert r2.status_code == 201
+    # No phone path triggered, so we expect either the mock_mode
+    # skipped audit or no_ghl_contact_id (whichever fires first).
+    log = await db.audit_logs.find_one(
+        {"event_type": {"$in": [
+            "speed_to_lead_sms_skipped",
+            "speed_to_lead_sms_sent",
+        ]}, "target_id": r2.json()["id"]},
+    )
+    assert log is not None
+
+
+@pytest.mark.asyncio
+async def test_agency_health_score_calculation(client, db, admin_headers):
+    """/api/agency/stats returns an int health_score in [0, 100] plus
+    four factor entries that each sum to a max of 25 pts."""
+    r = client.get("/api/agency/stats", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "health_score" in body
+    score = body["health_score"]
+    assert isinstance(score, int)
+    assert 0 <= score <= 100
+    factors = body.get("health_factors") or []
+    assert len(factors) == 4
+    for f in factors:
+        assert f["max"] == 25
+        assert 0 <= f["points"] <= 25

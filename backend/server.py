@@ -43,6 +43,7 @@ from dashboard_router import router as dashboard_router  # noqa: E402
 from commission_router import router as commission_calc_router  # noqa: E402
 from compliance_router import router as compliance_router  # noqa: E402
 from policies_router import router as policies_router  # noqa: E402
+from agency_router import router as agency_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
 
 
@@ -152,6 +153,7 @@ app.include_router(dashboard_router, prefix="/api")
 app.include_router(commission_calc_router, prefix="/api")
 app.include_router(compliance_router, prefix="/api")
 app.include_router(policies_router, prefix="/api")
+app.include_router(agency_router, prefix="/api")
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
@@ -337,6 +339,9 @@ _CSRF_EXEMPT_PREFIXES = (
     # Public SOA e-sign — single-use token in the URL is the auth
     # substitute; no browser session involved.
     "/api/soa/public/",
+    # Agency command center — admin-only GETs, but cover the prefix in
+    # case we add stat-export POSTs later.
+    "/api/agency/",
     # Dashboard aggregator — all GET today, but exempting the prefix
     # future-proofs us when we add the "refresh stats" POST and keeps
     # parity with the other admin/agent surfaces.
