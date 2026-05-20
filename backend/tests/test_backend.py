@@ -149,17 +149,18 @@ def test_npn_must_be_digits(client, db, admin_headers):
 # ── Account lockout ─────────────────────────────────────────────────────────
 def test_account_lockout_after_repeated_failures(client, db):
     """The deps layer locks out after 5 attempts. Hit that ceiling and verify
-    the next attempt comes back 423 with a lockout message."""
+    the next attempt comes back 429 with a lockout message. (Was 423 prior
+    to the post-pentest hardening sprint.)"""
     email = os.environ["SEED_ADMIN_EMAIL"]
     for _ in range(5):
         r = client.post("/api/auth/login", json={
             "email": email, "password": "definitely-wrong",
         })
-        assert r.status_code in (401, 423)
+        assert r.status_code in (401, 429)
     locked = client.post("/api/auth/login", json={
         "email": email, "password": "definitely-wrong",
     })
-    assert locked.status_code == 423
+    assert locked.status_code == 429
     assert "locked" in locked.json()["detail"].lower()
 
 
@@ -1518,3 +1519,95 @@ async def test_forgot_then_reset_password_flow(client, db, admin_headers):
         "email": email, "password": new_pw,
     })
     assert login.status_code == 200, login.text
+
+
+# ── Post-pentest security sprint ────────────────────────────────────────────
+def test_login_lockout_after_5_failures(client, db):
+    """Five wrong-password attempts in the 15-min window must trigger
+    the 429 lockout response. Distinct from the prior coverage in that
+    we explicitly check the status code on the 6th try."""
+    email = os.environ["SEED_ADMIN_EMAIL"]
+    for _ in range(5):
+        client.post("/api/auth/login", json={
+            "email": email, "password": "wrong-attempt",
+        })
+    sixth = client.post("/api/auth/login", json={
+        "email": email, "password": "wrong-attempt",
+    })
+    assert sixth.status_code == 429, sixth.text
+
+
+def test_locked_account_returns_429(client, db):
+    """Even a correct password on a locked account is rejected with 429
+    (lockout check happens BEFORE password verification)."""
+    email = os.environ["SEED_ADMIN_EMAIL"]
+    for _ in range(5):
+        client.post("/api/auth/login", json={
+            "email": email, "password": "wrong-attempt",
+        })
+    # Subsequent attempt with the *correct* password should still 429.
+    r = client.post("/api/auth/login", json={
+        "email": email, "password": os.environ["SEED_ADMIN_PASSWORD"],
+    })
+    assert r.status_code == 429, r.text
+
+
+def test_token_invalidated_after_password_change(client, db):
+    """Changing the password bumps token_version. The previously issued
+    JWT should then fail the deps.get_current_user check with 401."""
+    # Log in to get a Bearer token tied to the old token_version.
+    login = client.post("/api/auth/login", json={
+        "email": os.environ["SEED_ADMIN_EMAIL"],
+        "password": os.environ["SEED_ADMIN_PASSWORD"],
+    })
+    assert login.status_code == 200, login.text
+    token = login.json()["access_token"]
+    h = {"Authorization": f"Bearer {token}"}
+
+    # Confirm the token is initially valid.
+    me1 = client.get("/api/profile/me", headers=h)
+    assert me1.status_code == 200, me1.text
+
+    # Change the password — bumps token_version on the user row.
+    new_pw = "BrandNewSafe!2026LongerPassword"
+    patch = client.patch("/api/profile/me", headers=h, json={
+        "current_password": os.environ["SEED_ADMIN_PASSWORD"],
+        "new_password": new_pw,
+    })
+    assert patch.status_code == 200, patch.text
+
+    # Same JWT now mismatches the user's new token_version → 401.
+    me2 = client.get("/api/profile/me", headers=h)
+    assert me2.status_code == 401, me2.text
+    assert "session" in me2.json()["detail"].lower()
+
+
+def test_file_upload_rejects_non_pdf(client, db, admin_headers):
+    """A file claiming application/pdf whose body is JPEG bytes must
+    be rejected at /documents/upload with 415 — magic-byte mismatch.
+    Also verifies the lead_id path itself works."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    # Seed a lead the admin can upload to (Phase-2 IDOR doesn't 403
+    # admins, but we still need a real lead row).
+    async def _seed():
+        await db.leads.insert_one({
+            "id": "lead-magic", "first_name": "Magic", "last_name": "Test",
+            "agent_id": "admin-1", "status": "new",
+            "soa_signed": False, "document_ids": [],
+            "ghl_sync_status": "synced",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+    asyncio.get_event_loop().run_until_complete(_seed())
+
+    # JPEG magic bytes (not %PDF) with claimed type application/pdf.
+    fake = b"\xff\xd8\xff\xe0not-actually-a-pdf-payload-bytes-x" * 4
+    r = client.post(
+        "/api/documents/upload/lead-magic",
+        headers=admin_headers,
+        files={"file": ("evil.pdf", fake, "application/pdf")},
+    )
+    assert r.status_code == 415, r.text
+    assert "match" in r.json()["detail"].lower()

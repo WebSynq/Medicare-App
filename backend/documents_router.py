@@ -25,11 +25,37 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 STORAGE = Path(os.environ.get("DOC_STORAGE_PATH", "/app/backend/secure_storage"))
 STORAGE.mkdir(parents=True, exist_ok=True)
 
-MAX_BYTES = 15 * 1024 * 1024  # 15 MB cap
+MAX_BYTES = 10 * 1024 * 1024  # 10 MB hard cap (was 15MB — tightened post pen-test)
 ALLOWED_TYPES = {
     "image/png", "image/jpeg", "image/jpg", "image/webp",
     "application/pdf",
 }
+
+# Magic-byte signatures used to validate that the uploaded bytes match
+# the declared content-type. A polymorphic file (e.g. a PDF renamed to
+# image.jpg) is rejected here even though the previous content-type
+# allowlist would have passed it.
+_MAGIC_BYTES = {
+    "application/pdf": (b"%PDF",),
+    "image/png": (b"\x89PNG\r\n\x1a\n",),
+    "image/jpeg": (b"\xff\xd8\xff",),
+    "image/jpg": (b"\xff\xd8\xff",),
+    # WEBP files start with "RIFF????WEBP". We require RIFF at byte 0
+    # and don't enforce the WEBP magic at offset 8 here — the size
+    # cap + content-type allowlist is the practical bound.
+    "image/webp": (b"RIFF",),
+}
+
+
+def _validate_magic_bytes(content_type: str, body: bytes) -> bool:
+    """Return True when ``body`` starts with one of the known magic
+    sequences for ``content_type``. Defaults open (True) for any type
+    not present in the table — but the route's allowlist already
+    constrains content_type to entries we've encoded above."""
+    sigs = _MAGIC_BYTES.get((content_type or "").lower())
+    if not sigs:
+        return True
+    return any(body.startswith(sig) for sig in sigs)
 
 
 def _idor_or_403(doc: Optional[dict], current_user: dict, kind: str) -> dict:
@@ -71,9 +97,22 @@ async def upload_document(
 
     contents = await file.read()
     if len(contents) > MAX_BYTES:
-        raise HTTPException(status_code=413, detail="File too large (max 15MB)")
+        raise HTTPException(status_code=413, detail="File too large (max 10MB)")
     if len(contents) == 0:
         raise HTTPException(status_code=400, detail="Empty file")
+
+    # Reject files whose magic bytes don't match the declared
+    # content-type — a fake .pdf with a JPEG payload (or vice versa)
+    # is a classic file-upload pivot. Caps + allowlist alone don't
+    # catch this.
+    if not _validate_magic_bytes(file.content_type, contents):
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"File contents do not match the declared type "
+                f"({file.content_type})."
+            ),
+        )
 
     doc_id = str(uuid.uuid4())
     encrypted = encrypt_bytes(contents)

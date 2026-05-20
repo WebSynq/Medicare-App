@@ -195,6 +195,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         h = response.headers
         h.setdefault("X-Content-Type-Options", "nosniff")
         h.setdefault("X-Frame-Options", "DENY")
+        # X-XSS-Protection is deprecated in modern browsers but pen-tests
+        # still flag its absence; "1; mode=block" is the historically
+        # recommended value and harmless on browsers that ignore it.
+        h.setdefault("X-XSS-Protection", "1; mode=block")
         h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
         h.setdefault("Permissions-Policy",
                      "accelerometer=(), camera=(), geolocation=(), gyroscope=(), "

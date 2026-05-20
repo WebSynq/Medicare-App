@@ -113,6 +113,11 @@ def _jwt_claims(user: dict, mfa_verified: bool, pre_auth: bool = False) -> dict:
         "email": user["email"],
         "role": user["role"],
         "mfa_verified": mfa_verified,
+        # token_version is compared in deps.get_current_user against
+        # the live user row — bump it on the user (e.g. on password
+        # change) and every JWT minted before the bump becomes invalid
+        # on the next request.
+        "tv": int(user.get("token_version", 0)),
     }
     if user.get("agent_name"):
         claims["agent_name"] = user["agent_name"]
@@ -168,7 +173,11 @@ async def register(
         )
 
     # Validate password strength
-    pw_errors = validate_password_strength(body.password)
+    pw_errors = validate_password_strength(
+        body.password,
+        email=body.email,
+        full_name=body.full_name,
+    )
     if pw_errors:
         raise HTTPException(
             status_code=422,
@@ -269,8 +278,8 @@ async def login(payload: LoginRequest, request: Request, response: Response,
                           request=request,
                           metadata={"reason": "locked", "unlock_at": lock_state["unlock_at"].isoformat()})
         raise HTTPException(
-            status_code=423,
-            detail=_format_unlock_message(lock_state["unlock_at"]),
+            status_code=429,
+            detail="Account temporarily locked. Try again in 15 minutes.",
         )
 
     user = await db.users.find_one({"email": email}, {"_id": 0})
@@ -299,8 +308,8 @@ async def login(payload: LoginRequest, request: Request, response: Response,
             await write_audit(db, "login_failed", actor_email=payload.email, request=request,
                               metadata={"reason": "locked_now"})
             raise HTTPException(
-                status_code=423,
-                detail=_format_unlock_message(attempt_result["unlock_at"]),
+                status_code=429,
+                detail="Account temporarily locked. Try again in 15 minutes.",
             )
         await write_audit(db, "login_failed", actor_email=payload.email, request=request,
                           metadata={"reason": "invalid_credentials",

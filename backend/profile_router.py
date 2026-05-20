@@ -142,7 +142,11 @@ async def update_my_profile(
         fields_changed.append("agent_npn")
 
     if payload.new_password:
-        errors = validate_password_strength(payload.new_password)
+        errors = validate_password_strength(
+            payload.new_password,
+            email=fresh.get("email"),
+            full_name=fresh.get("full_name"),
+        )
         if errors:
             raise HTTPException(
                 status_code=422,
@@ -152,6 +156,9 @@ async def update_my_profile(
                 },
             )
         updates["hashed_password"] = hash_password(payload.new_password)
+        # Bump token_version so every previously-issued JWT for this
+        # user fails the deps.get_current_user check on next request.
+        updates["token_version"] = int(fresh.get("token_version", 0) or 0) + 1
         fields_changed.append("password")
 
     if not updates:
@@ -542,7 +549,11 @@ async def admin_credential_change(
         fields_changed.append("is_active")
 
     if payload.new_password:
-        errors = validate_password_strength(payload.new_password)
+        errors = validate_password_strength(
+            payload.new_password,
+            email=target.get("email"),
+            full_name=target.get("full_name"),
+        )
         if errors:
             raise HTTPException(
                 status_code=422,
@@ -552,6 +563,9 @@ async def admin_credential_change(
                 },
             )
         updates["hashed_password"] = hash_password(payload.new_password)
+        # Admin force-reset must invalidate every existing session on
+        # the target user — bump token_version.
+        updates["token_version"] = int(target.get("token_version", 0) or 0) + 1
         fields_changed.append("password")
 
     if not updates:
@@ -690,6 +704,21 @@ async def reset_password(
     user = await db.users.find_one({"id": rec["user_id"]}, {"_id": 0})
     if not user:
         raise HTTPException(400, "This link is invalid or has already been used.")
+    # Enforce the full password policy on reset too — pen-test finding:
+    # the reset path was accepting weaker passwords than registration.
+    pw_errors = validate_password_strength(
+        payload.new_password,
+        email=user.get("email"),
+        full_name=user.get("full_name"),
+    )
+    if pw_errors:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Password does not meet security requirements.",
+                "requirements": pw_errors,
+            },
+        )
     new_hash = hash_password(payload.new_password)
     new_token_version = int(user.get("token_version", 0)) + 1
     await db.users.update_one(

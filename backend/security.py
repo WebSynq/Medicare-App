@@ -14,13 +14,21 @@ JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRES_MINUTES = int(os.environ.get("JWT_EXPIRES_MINUTES", "60"))
 
 
-def validate_password_strength(password: str) -> List[str]:
+def validate_password_strength(
+    password: str,
+    email: Optional[str] = None,
+    full_name: Optional[str] = None,
+) -> List[str]:
     """
     Returns a list of unmet requirements.
     Empty list = password is strong enough.
 
     HIPAA NOTE: Strong passwords are a technical safeguard requirement
     under the HIPAA Security Rule (§164.312(d)).
+
+    Beyond character-class rules we also refuse passwords that match
+    the user's own email or full name (case-insensitive) — pen-test
+    finding: agents were setting "first.last" as their password.
     """
     errors: List[str] = []
 
@@ -34,6 +42,12 @@ def validate_password_strength(password: str) -> List[str]:
         errors.append("Password must contain at least one number.")
     if not re.search(r"[!@#$%^&*(),.?\":{}|<>_\-+=\[\]\\;'/`~]", password):
         errors.append("Password must contain at least one special character (!@#$%^&* etc.).")
+
+    lowered = (password or "").strip().lower()
+    if email and lowered and lowered == (email or "").strip().lower():
+        errors.append("Password cannot be the same as your email.")
+    if full_name and lowered and lowered == (full_name or "").strip().lower():
+        errors.append("Password cannot be the same as your full name.")
 
     return errors
 

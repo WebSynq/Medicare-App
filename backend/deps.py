@@ -92,6 +92,17 @@ async def get_current_user(
     if not user or not user.get("is_active", True):
         raise HTTPException(status_code=401, detail="User not found or inactive")
 
+    # token_version invalidation — when an admin resets credentials or
+    # the user changes their own password we bump user.token_version,
+    # which makes every previously-issued JWT mismatch and 401 here.
+    jwt_tv = int(payload.get("tv", 0) or 0)
+    user_tv = int(user.get("token_version", 0) or 0)
+    if jwt_tv != user_tv:
+        raise HTTPException(
+            status_code=401,
+            detail="Session expired — please sign in again",
+        )
+
     if not payload.get("mfa_verified", False) and user.get("mfa_enabled"):
         raise HTTPException(status_code=401, detail="MFA verification required")
 
@@ -235,7 +246,7 @@ async def check_and_record_login_attempt(
     now = datetime.now(timezone.utc)
     window_start = now - timedelta(minutes=15)
     MAX_ATTEMPTS = 5
-    LOCKOUT_MINUTES = 30
+    LOCKOUT_MINUTES = 15  # post-pentest: was 30, tightened to match spec
 
     coll = db.login_attempts
 

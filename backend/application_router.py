@@ -361,8 +361,15 @@ async def extract_application(
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files accepted.")
     contents = await file.read()
-    if len(contents) > 20 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="PDF exceeds 20MB.")
+    # Hard cap 10 MB (post pen-test — was 20 MB) plus magic-byte check
+    # so a renamed JPG can't pivot through the Bedrock extraction path.
+    if len(contents) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="PDF exceeds 10MB.")
+    if not contents.startswith(b"%PDF"):
+        raise HTTPException(
+            status_code=415,
+            detail="File contents are not a valid PDF.",
+        )
     pdf_b64 = base64.standard_b64encode(contents).decode("utf-8")
 
     auto = product_type is None

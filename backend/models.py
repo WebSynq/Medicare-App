@@ -75,6 +75,15 @@ class UserBase(BaseModel):
     # the new lead correctly. None means "no GHL mapping yet" — webhook
     # leads fall back to the first admin.
     ghl_location_id: Optional[str] = None
+    # Brute-force lockout mirror — `db.login_attempts` is the
+    # authoritative tracker, but we surface counters on the user record
+    # too so admin/compliance can see "X failed attempts in the last
+    # window" without joining collections. token_version is bumped on
+    # password change to invalidate every JWT issued before the change.
+    failed_attempts: int = 0
+    last_failed_at: Optional[str] = None
+    locked_until: Optional[str] = None
+    token_version: int = 0
 
     @field_validator("agent_name")
     @classmethod
