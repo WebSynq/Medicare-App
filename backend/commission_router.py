@@ -8,12 +8,14 @@ roll-ups, and ``commission_audit_router`` handles the audit + chat
 panels. This file owns the rate-quoting surface — kept separate so
 each router stays focused.
 """
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
-from deps import get_current_user, get_db, write_audit
+from deps import agent_filter, get_current_user, get_db, write_audit
 from commission_calculator import (
     CARRIERS_BY_PRODUCT,
     PLAN_OPTIONS_BY_PRODUCT,
@@ -105,4 +107,106 @@ async def carriers(
         "product_types": PRODUCT_TYPES,
         "carriers_by_product": CARRIERS_BY_PRODUCT,
         "plan_options_by_product": PLAN_OPTIONS_BY_PRODUCT,
+    }
+
+
+# ── Earnings rollup ──────────────────────────────────────────────────────
+VALID_EARNINGS_PERIODS = ("mtd", "ytd", "last30", "last90", "all")
+
+
+def _earnings_period_start(period: str) -> Optional[datetime]:
+    now = datetime.now(timezone.utc)
+    if period == "mtd":
+        return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if period == "ytd":
+        return now.replace(month=1, day=1, hour=0, minute=0, second=0,
+                            microsecond=0)
+    if period == "last30":
+        return now - timedelta(days=30)
+    if period == "last90":
+        return now - timedelta(days=90)
+    return None  # "all"
+
+
+def _parse_iso_safe(s: Optional[str]) -> Optional[datetime]:
+    if not s or not isinstance(s, str):
+        return None
+    try:
+        cleaned = s.replace("Z", "+00:00") if s.endswith("Z") else s
+        dt = datetime.fromisoformat(cleaned)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _safe_float(v: Any) -> float:
+    try:
+        return float(v) if v not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+@router.get("/earnings")
+async def earnings(
+    period: str = Query("mtd", description="mtd|ytd|last30|last90|all"),
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+) -> Dict[str, Any]:
+    """Per-agent earnings rollup powering the 'My Earnings' tab.
+
+    Sums ``revenue_expected`` / ``revenue_received`` from
+    ``production_records`` for the active period. Always scoped by
+    ``agent_filter`` — agents see their own numbers, admin/compliance
+    see agency-wide totals. ``monthly`` always returns 6 dense buckets
+    so the bar chart isn't sparse on a fresh agent.
+    """
+    if period not in VALID_EARNINGS_PERIODS:
+        period = "mtd"
+    scope = agent_filter(current_user)
+    start = _earnings_period_start(period)
+    six_months_ago = datetime.now(timezone.utc) - timedelta(days=180)
+
+    expected_total = 0.0
+    received_total = 0.0
+    monthly_buckets: Dict[str, float] = defaultdict(float)
+
+    cursor = db["production_records"].find(
+        scope,
+        {"_id": 0, "app_date": 1, "revenue_expected": 1,
+         "revenue_received": 1},
+    )
+    async for r in cursor:
+        amt_exp = _safe_float(r.get("revenue_expected"))
+        amt_rec = _safe_float(r.get("revenue_received"))
+        app_dt = _parse_iso_safe(r.get("app_date"))
+        if not app_dt:
+            continue
+        in_period = (start is None) or (app_dt >= start)
+        if in_period:
+            expected_total += amt_exp
+            received_total += amt_rec
+        if app_dt >= six_months_ago:
+            monthly_buckets[app_dt.strftime("%Y-%m")] += amt_exp
+
+    # 6-month dense series for the bar chart.
+    now = datetime.now(timezone.utc)
+    monthly = []
+    for i in range(5, -1, -1):
+        month_dt = now.replace(day=15) - timedelta(days=30 * i)
+        key = month_dt.strftime("%Y-%m")
+        monthly.append({
+            "month": key,
+            "expected": round(monthly_buckets.get(key, 0.0), 2),
+        })
+
+    gap = round(expected_total - received_total, 2)
+    return {
+        "period": period,
+        "scope": "agency" if not scope else "agent",
+        "expected": round(expected_total, 2),
+        "received": round(received_total, 2),
+        "gap": gap,
+        "monthly": monthly,
     }

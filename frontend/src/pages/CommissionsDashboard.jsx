@@ -22,6 +22,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
+import {
+  Bar,
+  BarChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { api, auth } from "@/lib/api";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import ScrollableCard from "@/components/ScrollableCard";
@@ -335,6 +343,7 @@ export default function CommissionsDashboard() {
         <Tabs defaultValue="calculator" className="space-y-6">
           <TabsList className="h-10">
             <TabsTrigger value="calculator" className="px-4">Calculator</TabsTrigger>
+            <TabsTrigger value="earnings" className="px-4">My Earnings</TabsTrigger>
             <TabsTrigger value="statements" className="px-4">Statements</TabsTrigger>
             <TabsTrigger value="history" className="px-4">History</TabsTrigger>
           </TabsList>
@@ -344,9 +353,23 @@ export default function CommissionsDashboard() {
             <CalculatorPanel />
           </TabsContent>
 
-          {/* ── Statements tab (placeholder) ── */}
+          {/* ── My Earnings tab ── */}
+          <TabsContent value="earnings" className="space-y-6 mt-0">
+            <EarningsPanel />
+          </TabsContent>
+
+          {/* ── Statements tab — upload UI + uploaded history ── */}
           <TabsContent value="statements" className="space-y-6 mt-0">
-            <StatementsPanel />
+            <StatementsPanel
+              fileRef={fileRef}
+              uploading={uploading}
+              dragOver={dragOver}
+              setDragOver={setDragOver}
+              onFileChange={onFileChange}
+              onDrop={onDrop}
+              history={history}
+              loadingHistory={loadingHistory}
+            />
           </TabsContent>
 
           {/* ── History tab ── */}
@@ -372,128 +395,9 @@ export default function CommissionsDashboard() {
           ))}
         </div>
 
-        {/* ── Upload ── */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base text-[#1e2d3d]">
-              Upload Commission Statement
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div
-              className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer ${
-                dragOver
-                  ? "border-[#e85d2f] bg-orange-50"
-                  : "border-muted-foreground/30 hover:border-[#e85d2f]/60"
-              }`}
-              onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-              onDragLeave={() => setDragOver(false)}
-              onDrop={onDrop}
-              onClick={() => fileRef.current?.click()}
-            >
-              <input
-                ref={fileRef}
-                type="file"
-                accept={ACCEPT}
-                className="hidden"
-                onChange={onFileChange}
-              />
-              {uploading ? (
-                <div className="space-y-2">
-                  <div className="text-[#e85d2f] font-medium animate-pulse">
-                    Uploading…
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Sending to Comtrack for parsing
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <p className="text-sm font-medium text-[#1e2d3d]">
-                    Drop your statement here or click to browse
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    PDF, CSV, XLSX, TXT · Max 15 MB
-                  </p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="mt-2 border-[#e85d2f] text-[#e85d2f] hover:bg-orange-50"
-                    onClick={(e) => { e.stopPropagation(); fileRef.current?.click(); }}
-                  >
-                    Choose File
-                  </Button>
-                </div>
-              )}
-            </div>
-
-            <div className="mt-4 text-xs text-muted-foreground space-y-1">
-              <p>
-                <span className="font-medium text-green-700">✓ Digested</span> — parsed and added to your commission records.
-              </p>
-              <p>
-                <span className="font-medium text-amber-600">⚠ Not Recognized</span> — carrier format not yet supported. Contact support.
-              </p>
-              <p>
-                <span className="font-medium text-red-600">✗ Rejected</span> — file unreadable or password-protected. Re-download from carrier portal.
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* ── Upload history ── */}
-        <ScrollableCard
-          title="Upload History"
-          count={history.length}
-          height="400px"
-          loading={loadingHistory}
-          isEmpty={!loadingHistory && history.length === 0}
-          emptyState="No statements uploaded yet. Upload your first one above."
-          testId="upload-history-card"
-        >
-          <div className="overflow-x-auto w-full">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>File</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Uploaded</TableHead>
-                  <TableHead>Comtrack ID</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {history.map((row) => (
-                  <TableRow key={row.id}>
-                    <TableCell className="font-medium max-w-[220px] truncate">
-                      {row.filename}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={statusVariant(row.status)}>
-                        {statusLabel(row.status)}
-                      </Badge>
-                      {row.mock && (
-                        <span className="ml-2 text-xs text-muted-foreground">
-                          mock
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground text-sm">
-                      {fmtDate(row.uploaded_at)}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground font-mono truncate max-w-[160px]">
-                      {row.comtrack_file_id || "—"}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        </ScrollableCard>
-
-        {/* Audit panel + chat live inside History too — they're the
-            agent-facing reconciliation surface for previously
-            uploaded statements. Kept here so we don't lose the
-            workflow when condensing to 3 tabs. */}
+        {/* Upload UI + uploaded-file table now live on the Statements
+            tab. History focuses on the reconciliation view (stats cards
+            above, audit panel + chat below). */}
         <AuditPanel />
         <ChatPanel />
               </>
@@ -968,7 +872,6 @@ function CalculatorPanel() {
 
   const [result, setResult] = useState(null);
   const [calcLoading, setCalcLoading] = useState(false);
-  const debounceRef = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -995,50 +898,54 @@ function CalculatorPanel() {
       // Ancillary products don't carry a plan dimension.
       setPlanType("");
     }
+    // When any input changes the previous estimate is stale — clear so
+    // the result card disappears until the agent presses Calculate.
+    setResult(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productType, meta]);
 
-  // Debounced recalculation on every input change.
+  // Clear stale result when any other input changes (the calculate
+  // button is the only way to populate it now — no debounced auto-calc).
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(async () => {
-      setCalcLoading(true);
-      try {
-        const { data } = await api.post("/commission/calculate", {
-          product_type: productType,
-          carrier,
-          state,
-          plan_type: planType || null,
-          monthly_premium: Number(monthlyPremium || 0),
-          client_age: Number(clientAge || 65),
-          scope_completed: scopeCompleted,
-        });
-        setResult(data);
-      } catch (err) {
-        // Quiet on transport errors. Surface in console for devs.
-        // eslint-disable-next-line no-console
-        console.error("Commission calc failed", err);
-      } finally {
-        setCalcLoading(false);
-      }
-    }, 300);
-    return () => debounceRef.current && clearTimeout(debounceRef.current);
-  }, [productType, carrier, state, planType, monthlyPremium, clientAge, scopeCompleted]);
+    setResult(null);
+  }, [carrier, state, planType, monthlyPremium, clientAge, scopeCompleted]);
 
   const carrierList = meta?.carriers_by_product?.[productType] || [];
   const planList = meta?.plan_options_by_product?.[productType];
 
+  async function handleCalculate() {
+    setCalcLoading(true);
+    try {
+      const { data } = await api.post("/commission/calculate", {
+        product_type: productType,
+        carrier,
+        state,
+        plan_type: planType || null,
+        monthly_premium: Number(monthlyPremium || 0),
+        client_age: Number(clientAge || 65),
+        scope_completed: scopeCompleted,
+      });
+      setResult(data);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("Commission calc failed", err);
+      toast.error(err?.response?.data?.detail || "Calculation failed");
+    } finally {
+      setCalcLoading(false);
+    }
+  }
+
   return (
-    <div className="grid lg:grid-cols-2 gap-4">
-      {/* Inputs */}
+    <div className="max-w-2xl mx-auto space-y-4">
+      {/* Inputs — single column stack, mobile-friendly */}
       <Card className="bg-surface">
         <CardContent className="p-5 space-y-4">
           <h3 className="text-sm font-semibold tracking-tight" style={{ fontFamily: "Outfit" }}>
             Quote Inputs
           </h3>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2">
+          <div className="space-y-3">
+            <div>
               <Label className="text-xs">Product Type</Label>
               <Select value={productType} onValueChange={setProductType}>
                 <SelectTrigger data-testid="calc-product"><SelectValue /></SelectTrigger>
@@ -1050,7 +957,7 @@ function CalculatorPanel() {
               </Select>
             </div>
 
-            <div className="col-span-2 sm:col-span-1">
+            <div>
               <Label className="text-xs">Carrier</Label>
               <Select value={carrier} onValueChange={setCarrier}>
                 <SelectTrigger data-testid="calc-carrier"><SelectValue placeholder="—" /></SelectTrigger>
@@ -1062,7 +969,7 @@ function CalculatorPanel() {
               </Select>
             </div>
 
-            <div className="col-span-2 sm:col-span-1">
+            <div>
               <Label className="text-xs">Plan Type</Label>
               {planList ? (
                 <Select value={planType} onValueChange={setPlanType}>
@@ -1102,7 +1009,7 @@ function CalculatorPanel() {
               />
             </div>
 
-            <div className="col-span-2">
+            <div>
               <Label className="text-xs">Monthly Premium</Label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
@@ -1119,7 +1026,7 @@ function CalculatorPanel() {
             </div>
 
             {productType === "ma" && (
-              <div className="col-span-2 flex items-center justify-between bg-secondary/40 rounded-md px-3 py-2">
+              <div className="flex items-center justify-between bg-secondary/40 rounded-md px-3 py-2">
                 <span className="text-xs">Scope of Appointment completed?</span>
                 <button
                   type="button"
@@ -1140,83 +1047,82 @@ function CalculatorPanel() {
               </div>
             )}
           </div>
+
+          {/* Large GHW-orange Calculate button — primary CTA. */}
+          <Button
+            type="button"
+            onClick={handleCalculate}
+            disabled={calcLoading}
+            className="w-full h-12 text-base font-semibold text-white shadow-sm"
+            style={{ background: "linear-gradient(135deg, #e85d2f 0%, #c84416 100%)" }}
+            data-testid="calc-submit"
+          >
+            {calcLoading ? "Calculating…" : "Calculate Commission"}
+          </Button>
         </CardContent>
       </Card>
 
-      {/* Result */}
-      <Card className="bg-surface">
-        <CardContent className="p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold tracking-tight" style={{ fontFamily: "Outfit" }}>
+      {/* Result — full-width below inputs, only shown after Calculate */}
+      {result && (
+        <Card className="bg-surface">
+          <CardContent className="p-5 space-y-3">
+            <h3
+              className="text-sm font-semibold tracking-tight"
+              style={{ fontFamily: "Outfit" }}
+            >
               Commission Estimate
             </h3>
-            {calcLoading && (
-              <span className="text-[10px] text-muted-foreground animate-pulse">
-                Calculating…
-              </span>
+
+            <CalcRow
+              label="Carrier Rate"
+              value={
+                result.carrier_rate == null
+                  ? "—"
+                  : result.rate_type === "flat_dollar"
+                    ? fmt(result.carrier_rate) + "/yr"
+                    : `${(result.carrier_rate * 100).toFixed(1)}%`
+              }
+            />
+            <CalcRow label="Annual Premium" value={fmt(result.annual_premium)} />
+            <hr className="my-2 border-border" />
+            <CalcRow
+              label="Agency Revenue"
+              value={fmt(result.agency_revenue)}
+              strong
+            />
+            <CalcRow
+              label={`Agent Split (${Math.round((result.agent_split_pct || 0.30) * 100)}%)`}
+              value={fmt(result.agent_commission)}
+              accent
+              strong
+            />
+            <hr className="my-2 border-border" />
+            <CalcRow
+              label="Monthly to Agent"
+              value={fmt(result.monthly_agent_commission)}
+            />
+            <CalcRow
+              label="Annual to Agent"
+              value={fmt(result.agent_commission)}
+            />
+
+            {result.notes && (
+              <p className="text-[11px] text-muted-foreground bg-secondary/40 rounded-md px-3 py-2 mt-2">
+                {result.notes}
+              </p>
             )}
-          </div>
 
-          {!result ? (
-            <p className="text-xs text-muted-foreground py-6 text-center">
-              Adjust the inputs to see a live estimate.
-            </p>
-          ) : (
-            <>
-              <CalcRow
-                label="Carrier Rate"
-                value={
-                  result.carrier_rate == null
-                    ? "—"
-                    : result.rate_type === "flat_dollar"
-                      ? fmt(result.carrier_rate) + "/yr"
-                      : `${(result.carrier_rate * 100).toFixed(1)}%`
-                }
-              />
-              <CalcRow
-                label="Annual Premium"
-                value={fmt(result.annual_premium)}
-              />
-              <hr className="my-2 border-border" />
-              <CalcRow
-                label="Agency Revenue"
-                value={fmt(result.agency_revenue)}
-                strong
-              />
-              <CalcRow
-                label={`Agent Split (${Math.round((result.agent_split_pct || 0.30) * 100)}%)`}
-                value={fmt(result.agent_commission)}
-                accent
-                strong
-              />
-              <hr className="my-2 border-border" />
-              <CalcRow
-                label="Monthly to Agent"
-                value={fmt(result.monthly_agent_commission)}
-              />
-              <CalcRow
-                label="Annual to Agent"
-                value={fmt(result.agent_commission)}
-              />
-
-              {result.notes && (
-                <p className="text-[11px] text-muted-foreground bg-secondary/40 rounded-md px-3 py-2 mt-2">
-                  {result.notes}
-                </p>
-              )}
-
-              <div className="flex items-center gap-2 pt-2">
-                <Button variant="outline" size="sm" disabled data-testid="calc-save-lead">
-                  Save to Lead (soon)
-                </Button>
-                <Button variant="outline" size="sm" disabled data-testid="calc-print-pdf">
-                  Print / Export PDF (soon)
-                </Button>
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
+            <div className="flex flex-wrap items-center gap-2 pt-2">
+              <Button variant="outline" size="sm" disabled data-testid="calc-save-lead">
+                Save to Client (soon)
+              </Button>
+              <Button variant="outline" size="sm" disabled data-testid="calc-print-pdf">
+                Print Estimate (soon)
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
@@ -1238,28 +1144,407 @@ function CalcRow({ label, value, strong, accent }) {
   );
 }
 
-// ── Statements tab (placeholder) ────────────────────────────────────────
-function StatementsPanel() {
+// ── Statements tab ──────────────────────────────────────────────────────
+// Owns the upload UI (moved off the History tab) plus the table of
+// previously uploaded statements. Drag-and-drop OR click-to-browse;
+// the AI reconciliation that would automatically match payments to
+// policies is still pending — flagged as "Coming Soon".
+function StatementsPanel({
+  fileRef,
+  uploading,
+  dragOver,
+  setDragOver,
+  onFileChange,
+  onDrop,
+  history,
+  loadingHistory,
+}) {
+  return (
+    <div className="max-w-3xl mx-auto space-y-4">
+      <Card className="bg-surface">
+        <CardContent className="p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-base font-semibold" style={{ fontFamily: "Outfit" }}>
+              Commission Statements
+            </h3>
+            <Badge className="rounded-full bg-amber-100 text-amber-900 border-0 text-[10px] font-medium">
+              AI Reconciliation · Coming Soon
+            </Badge>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Upload a carrier commission statement (PDF or CSV). Once AI
+            reconciliation ships, we&rsquo;ll automatically match every
+            payment to a policy on your book and flag any gaps.
+          </p>
+
+          <div
+            className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer ${
+              dragOver
+                ? "border-[#e85d2f] bg-orange-50"
+                : "border-muted-foreground/30 hover:border-[#e85d2f]/60"
+            }`}
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={onDrop}
+            onClick={() => fileRef.current?.click()}
+            data-testid="statements-upload-zone"
+          >
+            <input
+              ref={fileRef}
+              type="file"
+              accept={ACCEPT}
+              className="hidden"
+              onChange={onFileChange}
+            />
+            {uploading ? (
+              <div className="space-y-2">
+                <div className="text-[#e85d2f] font-medium animate-pulse">
+                  Uploading…
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Sending to Comtrack for parsing
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-[#1e2d3d]">
+                  Drop a PDF or CSV here, or click to browse
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  PDF, CSV, XLSX, TXT · Max 15 MB
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2 border-[#e85d2f] text-[#e85d2f] hover:bg-orange-50"
+                  onClick={(e) => { e.stopPropagation(); fileRef.current?.click(); }}
+                >
+                  Choose File
+                </Button>
+              </div>
+            )}
+          </div>
+
+          <div className="text-[11px] text-muted-foreground space-y-1">
+            <p>
+              <span className="font-medium text-green-700">✓ Digested</span> — parsed and added to your commission records.
+            </p>
+            <p>
+              <span className="font-medium text-amber-600">⚠ Not Recognized</span> — carrier format not yet supported. Contact support.
+            </p>
+            <p>
+              <span className="font-medium text-red-600">✗ Rejected</span> — file unreadable or password-protected. Re-download from carrier portal.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <ScrollableCard
+        title="Uploaded Statements"
+        count={history.length}
+        height="400px"
+        loading={loadingHistory}
+        isEmpty={!loadingHistory && history.length === 0}
+        emptyState="No statements uploaded yet."
+        testId="statements-history-card"
+      >
+        <div className="overflow-x-auto w-full">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>File</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Uploaded</TableHead>
+                <TableHead>Comtrack ID</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {history.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell className="font-medium max-w-[220px] truncate">
+                    {row.filename}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={statusVariant(row.status)}>
+                      {statusLabel(row.status)}
+                    </Badge>
+                    {row.mock && (
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        mock
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground text-sm">
+                    {fmtDate(row.uploaded_at)}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground font-mono truncate max-w-[160px]">
+                    {row.comtrack_file_id || "—"}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </ScrollableCard>
+    </div>
+  );
+}
+
+
+// ── My Earnings tab ─────────────────────────────────────────────────────
+// Pulls /api/commission/earnings for the period rollup + 6-month chart,
+// and /api/commission/audit for the per-policy breakdown table. Both
+// endpoints are agent-scoped server-side, so the data the agent sees
+// here is theirs alone.
+const EARNINGS_PERIODS = [
+  { value: "mtd", label: "MTD" },
+  { value: "ytd", label: "YTD" },
+  { value: "last30", label: "Last 30" },
+  { value: "all", label: "All" },
+];
+
+function monthLabelShort(yyyymm) {
+  if (!yyyymm || yyyymm.length < 7) return yyyymm || "";
+  const [y, m] = yyyymm.split("-");
+  const d = new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1);
+  return d.toLocaleString("en-US", { month: "short" });
+}
+
+function EarningsPanel() {
+  const [period, setPeriod] = useState("mtd");
+  const [earnings, setEarnings] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [policies, setPolicies] = useState([]);
+  const [policiesLoading, setPoliciesLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      try {
+        const { data } = await api.get(`/commission/earnings?period=${period}`);
+        if (!alive) return;
+        setEarnings(data);
+      } catch (err) {
+        if (alive) setEarnings(null);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [period]);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setPoliciesLoading(true);
+      try {
+        // The audit endpoint already returns agent-scoped production
+        // records with carrier / policy / expected / received / status —
+        // a perfect fit for the policy table on this tab.
+        const { data } = await api.get("/commission/audit", {
+          params: { period: "all", status: "all" },
+        });
+        if (!alive) return;
+        setPolicies(data.records || data.rows || []);
+      } catch (err) {
+        if (alive) setPolicies([]);
+      } finally {
+        if (alive) setPoliciesLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const chartData = (earnings?.monthly || []).map((m) => ({
+    label: monthLabelShort(m.month),
+    expected: Number(m.expected || 0),
+  }));
+  const chartEmpty = chartData.every((d) => d.expected === 0);
+
+  return (
+    <div className="space-y-4">
+      {/* Period selector */}
+      <div className="flex justify-end">
+        <div
+          role="tablist"
+          aria-label="Earnings period"
+          className="inline-flex rounded-md border border-border bg-background overflow-hidden text-xs"
+          data-testid="earnings-period-tabs"
+        >
+          {EARNINGS_PERIODS.map((p) => (
+            <button
+              key={p.value}
+              role="tab"
+              aria-selected={period === p.value}
+              type="button"
+              onClick={() => setPeriod(p.value)}
+              className={`px-3 h-8 transition-colors ${
+                period === p.value
+                  ? "bg-[#e85d2f] text-white"
+                  : "text-foreground/70 hover:bg-secondary"
+              }`}
+              data-testid={`earnings-period-${p.value}`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* KPI cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <EarningsCard
+          label={`Expected ${period.toUpperCase()}`}
+          value={loading ? "—" : fmt(earnings?.expected || 0)}
+          accent
+        />
+        <EarningsCard
+          label={`Received ${period.toUpperCase()}`}
+          value={loading ? "—" : fmt(earnings?.received || 0)}
+        />
+        <EarningsCard
+          label={`Gap ${period.toUpperCase()}`}
+          value={loading ? "—" : fmt(earnings?.gap || 0)}
+          danger={(earnings?.gap || 0) > 0}
+        />
+      </div>
+
+      {/* Monthly bar chart */}
+      <Card className="bg-surface">
+        <CardContent className="p-5">
+          <h3
+            className="text-sm font-semibold tracking-tight mb-2"
+            style={{ fontFamily: "Outfit" }}
+          >
+            Monthly Expected Commissions
+          </h3>
+          {loading ? (
+            <div className="h-56 rounded-md bg-secondary/40 animate-pulse" />
+          ) : chartEmpty ? (
+            <div className="h-56 grid place-items-center text-xs text-muted-foreground">
+              No commissions recorded in the last 6 months.
+            </div>
+          ) : (
+            <div className="h-56">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                  <YAxis
+                    tick={{ fontSize: 11 }}
+                    tickFormatter={(v) => (v >= 1000 ? `$${Math.round(v / 1000)}k` : `$${v}`)}
+                  />
+                  <Tooltip
+                    formatter={(v) => fmt(v)}
+                    cursor={{ fill: "rgba(232,93,47,0.08)" }}
+                    contentStyle={{ fontSize: 12 }}
+                  />
+                  <Bar dataKey="expected" fill="#e85d2f" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Policy-level breakdown */}
+      <ScrollableCard
+        title="Policies"
+        count={policies.length}
+        height="calc(100vh - 540px)"
+        loading={policiesLoading}
+        isEmpty={!policiesLoading && policies.length === 0}
+        emptyState="No production records yet. Submit applications to start your book."
+        testId="earnings-policies-card"
+      >
+        <div className="overflow-x-auto w-full">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Client</TableHead>
+                <TableHead>Carrier</TableHead>
+                <TableHead>Product</TableHead>
+                <TableHead className="text-right">Premium</TableHead>
+                <TableHead className="text-right">Expected</TableHead>
+                <TableHead>Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {policies.map((p, i) => (
+                <TableRow key={p.natural_key || p.policy_number || i}>
+                  <TableCell className="font-medium text-sm">
+                    {p.client_name || "—"}
+                  </TableCell>
+                  <TableCell className="text-sm">{p.carrier || "—"}</TableCell>
+                  <TableCell className="text-xs">{p.product_type || "—"}</TableCell>
+                  <TableCell className="text-right tabular-nums text-sm">
+                    {fmt(p.monthly_premium)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums font-medium">
+                    {fmt(p.revenue_expected)}
+                  </TableCell>
+                  <TableCell>
+                    <EarningsStatusBadge status={p.status} />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </ScrollableCard>
+    </div>
+  );
+}
+
+function EarningsCard({ label, value, accent, danger }) {
+  const valueClass = danger
+    ? "text-rose-700"
+    : accent
+      ? "text-[#e85d2f]"
+      : "text-foreground";
   return (
     <Card className="bg-surface">
-      <CardContent className="p-8 text-center space-y-3">
-        <h3 className="text-base font-semibold" style={{ fontFamily: "Outfit" }}>
-          Commission Statements
-        </h3>
+      <CardContent className="p-4">
+        <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+          {label}
+        </div>
         <div
-          className="mx-auto max-w-md border-2 border-dashed border-muted-foreground/30 rounded-lg p-8"
-          data-testid="statements-coming-soon"
+          className={`mt-2 text-2xl font-bold tabular-nums ${valueClass}`}
+          style={{ fontFamily: "Outfit" }}
         >
-          <p className="text-sm font-medium text-foreground/80 mb-2">
-            Upload carrier statement (PDF / CSV)
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Coming soon. Upload your carrier commission statements to
-            automatically reconcile against expected commissions. AI
-            will match payments to policies and flag any gaps.
-          </p>
+          {value}
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function EarningsStatusBadge({ status }) {
+  const s = (status || "pending").toLowerCase();
+  if (s === "matched" || s === "paid" || s === "received") {
+    return (
+      <Badge className="rounded-full bg-emerald-100 text-emerald-900 border-0">
+        Paid
+      </Badge>
+    );
+  }
+  if (s === "missing" || s === "underpaid") {
+    return (
+      <Badge className="rounded-full bg-rose-100 text-rose-900 border-0">
+        Gap
+      </Badge>
+    );
+  }
+  if (s === "resolved") {
+    return (
+      <Badge className="rounded-full bg-slate-200 text-slate-700 border-0">
+        Resolved
+      </Badge>
+    );
+  }
+  return (
+    <Badge className="rounded-full bg-amber-100 text-amber-900 border-0">
+      Pending
+    </Badge>
   );
 }
