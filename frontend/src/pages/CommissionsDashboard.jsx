@@ -311,12 +311,6 @@ export default function CommissionsDashboard() {
     },
   ];
 
-  // Admin/compliance see the agency-wide rollup; personal commission view
-  // (ComTrack, audit, stats) is agent-only.
-  if (isAdminOrCompliance) {
-    return <AgencyProductionSummary />;
-  }
-
   return (
     <div className="p-6 md:p-8">
       <main className="max-w-6xl mx-auto w-full space-y-6">
@@ -326,7 +320,7 @@ export default function CommissionsDashboard() {
           <div>
             <h1 className="text-2xl font-bold text-[#1e2d3d]">Commissions</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Upload carrier statements and track your earnings.
+              Calculate quotes, upload carrier statements, track your earnings.
               {summary?.mock && (
                 <span className="ml-2 text-amber-600 font-medium">
                   (Mock mode — connect Comtrack API key to see live data)
@@ -337,15 +331,30 @@ export default function CommissionsDashboard() {
           </div>
         </div>
 
-        <Tabs defaultValue="comtrack" className="space-y-6">
+        <Tabs defaultValue="calculator" className="space-y-6">
           <TabsList className="h-10">
-            <TabsTrigger value="comtrack" className="px-4">ComTrack</TabsTrigger>
-            <TabsTrigger value="audit" className="px-4">Audit</TabsTrigger>
+            <TabsTrigger value="calculator" className="px-4">Calculator</TabsTrigger>
+            <TabsTrigger value="statements" className="px-4">Statements</TabsTrigger>
+            <TabsTrigger value="history" className="px-4">History</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="comtrack" className="space-y-6 mt-0">
+          {/* ── Calculator tab ── */}
+          <TabsContent value="calculator" className="space-y-6 mt-0">
+            <CalculatorPanel />
+          </TabsContent>
 
-        {/* ── Stat cards ── */}
+          {/* ── Statements tab (placeholder) ── */}
+          <TabsContent value="statements" className="space-y-6 mt-0">
+            <StatementsPanel />
+          </TabsContent>
+
+          {/* ── History tab ── */}
+          <TabsContent value="history" className="space-y-6 mt-0">
+            {isAdminOrCompliance ? (
+              <AgencyProductionSummary />
+            ) : (
+              <>
+                {/* ── Stat cards ── */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 w-full overflow-hidden">
           {statCards.map((c) => (
             <Card key={c.label} className="min-w-0 overflow-hidden">
@@ -480,12 +489,14 @@ export default function CommissionsDashboard() {
           </div>
         </ScrollableCard>
 
-          </TabsContent>
-
-          {/* ── Audit tab ── */}
-          <TabsContent value="audit" className="space-y-6 mt-0">
-            <AuditPanel />
-            <ChatPanel />
+        {/* Audit panel + chat live inside History too — they're the
+            agent-facing reconciliation surface for previously
+            uploaded statements. Kept here so we don't lose the
+            workflow when condensing to 3 tabs. */}
+        <AuditPanel />
+        <ChatPanel />
+              </>
+            )}
           </TabsContent>
 
         </Tabs>
@@ -902,6 +913,351 @@ function ChatPanel() {
             Send
           </Button>
         </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+
+// ── Calculator tab ──────────────────────────────────────────────────────
+// Two-column form on the left, live result card on the right. Calls
+// POST /api/commission/calculate with a 300ms debounce on every input
+// change so the agent gets immediate feedback as they tweak premium
+// or carrier without an explicit submit.
+
+const US_STATES = [
+  "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DC", "DE", "FL",
+  "GA", "HI", "IA", "ID", "IL", "IN", "KS", "KY", "LA", "MA",
+  "MD", "ME", "MI", "MN", "MO", "MS", "MT", "NC", "ND", "NE",
+  "NH", "NJ", "NM", "NV", "NY", "OH", "OK", "OR", "PA", "RI",
+  "SC", "SD", "TN", "TX", "UT", "VA", "VT", "WA", "WI", "WV", "WY",
+];
+
+const PRODUCT_LABELS = {
+  med_supp: "Medicare Supplement",
+  ma: "Medicare Advantage",
+  pdp: "PDP",
+  cancer: "Cancer",
+  heart_stroke: "Heart & Stroke",
+  cancer_heart_stroke: "Cancer / Heart & Stroke",
+  hip: "Hospital Indemnity (HIP)",
+  rc: "Recovery Care",
+  dvh: "Dental / Vision / Hearing",
+  dvh_plus: "DVH+",
+  stc: "Short-Term Care",
+  hhc: "Home Health Care",
+  final_expense: "Final Expense",
+  dental: "Dental",
+  annuity: "Annuity",
+  life: "Life Insurance",
+};
+
+function CalculatorPanel() {
+  // Carrier / plan lists come from the backend so the UI never lists a
+  // carrier we have no rate table for. Loaded once on mount.
+  const [meta, setMeta] = useState(null);
+
+  const [productType, setProductType] = useState("med_supp");
+  const [carrier, setCarrier] = useState("Aetna");
+  const [planType, setPlanType] = useState("G");
+  const [state, setState] = useState("IL");
+  const [clientAge, setClientAge] = useState(70);
+  const [monthlyPremium, setMonthlyPremium] = useState(150);
+  const [scopeCompleted, setScopeCompleted] = useState(false);
+
+  const [result, setResult] = useState(null);
+  const [calcLoading, setCalcLoading] = useState(false);
+  const debounceRef = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await api.get("/commission/carriers");
+        setMeta(data);
+      } catch (err) {
+        toast.error("Could not load carrier list");
+      }
+    })();
+  }, []);
+
+  // Reset carrier + plan to sensible defaults when product changes.
+  useEffect(() => {
+    if (!meta) return;
+    const carriers = meta.carriers_by_product[productType] || [];
+    if (carriers.length && !carriers.includes(carrier)) {
+      setCarrier(carriers[0]);
+    }
+    const plans = meta.plan_options_by_product[productType];
+    if (plans && plans.length && !plans.includes(planType)) {
+      setPlanType(plans[0]);
+    } else if (!plans) {
+      // Ancillary products don't carry a plan dimension.
+      setPlanType("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productType, meta]);
+
+  // Debounced recalculation on every input change.
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      setCalcLoading(true);
+      try {
+        const { data } = await api.post("/commission/calculate", {
+          product_type: productType,
+          carrier,
+          state,
+          plan_type: planType || null,
+          monthly_premium: Number(monthlyPremium || 0),
+          client_age: Number(clientAge || 65),
+          scope_completed: scopeCompleted,
+        });
+        setResult(data);
+      } catch (err) {
+        // Quiet on transport errors. Surface in console for devs.
+        // eslint-disable-next-line no-console
+        console.error("Commission calc failed", err);
+      } finally {
+        setCalcLoading(false);
+      }
+    }, 300);
+    return () => debounceRef.current && clearTimeout(debounceRef.current);
+  }, [productType, carrier, state, planType, monthlyPremium, clientAge, scopeCompleted]);
+
+  const carrierList = meta?.carriers_by_product?.[productType] || [];
+  const planList = meta?.plan_options_by_product?.[productType];
+
+  return (
+    <div className="grid lg:grid-cols-2 gap-4">
+      {/* Inputs */}
+      <Card className="bg-surface">
+        <CardContent className="p-5 space-y-4">
+          <h3 className="text-sm font-semibold tracking-tight" style={{ fontFamily: "Outfit" }}>
+            Quote Inputs
+          </h3>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="col-span-2">
+              <Label className="text-xs">Product Type</Label>
+              <Select value={productType} onValueChange={setProductType}>
+                <SelectTrigger data-testid="calc-product"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {Object.keys(PRODUCT_LABELS).map((k) => (
+                    <SelectItem key={k} value={k}>{PRODUCT_LABELS[k]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="col-span-2 sm:col-span-1">
+              <Label className="text-xs">Carrier</Label>
+              <Select value={carrier} onValueChange={setCarrier}>
+                <SelectTrigger data-testid="calc-carrier"><SelectValue placeholder="—" /></SelectTrigger>
+                <SelectContent>
+                  {carrierList.map((c) => (
+                    <SelectItem key={c} value={c}>{c}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="col-span-2 sm:col-span-1">
+              <Label className="text-xs">Plan Type</Label>
+              {planList ? (
+                <Select value={planType} onValueChange={setPlanType}>
+                  <SelectTrigger data-testid="calc-plan"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {planList.map((p) => (
+                      <SelectItem key={p} value={p}>{p}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input value="N/A" disabled />
+              )}
+            </div>
+
+            <div>
+              <Label className="text-xs">State</Label>
+              <Select value={state} onValueChange={setState}>
+                <SelectTrigger data-testid="calc-state"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {US_STATES.map((s) => (
+                    <SelectItem key={s} value={s}>{s}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <Label className="text-xs">Client Age</Label>
+              <Input
+                type="number"
+                min={0}
+                max={120}
+                value={clientAge}
+                onChange={(e) => setClientAge(e.target.value)}
+                data-testid="calc-age"
+              />
+            </div>
+
+            <div className="col-span-2">
+              <Label className="text-xs">Monthly Premium</Label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
+                <Input
+                  className="pl-7"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={monthlyPremium}
+                  onChange={(e) => setMonthlyPremium(e.target.value)}
+                  data-testid="calc-premium"
+                />
+              </div>
+            </div>
+
+            {productType === "ma" && (
+              <div className="col-span-2 flex items-center justify-between bg-secondary/40 rounded-md px-3 py-2">
+                <span className="text-xs">Scope of Appointment completed?</span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={scopeCompleted}
+                  onClick={() => setScopeCompleted((v) => !v)}
+                  data-testid="calc-scope"
+                  className={`relative h-5 w-9 rounded-full transition-colors ${
+                    scopeCompleted ? "bg-[#e85d2f]" : "bg-muted"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                      scopeCompleted ? "translate-x-4" : ""
+                    }`}
+                  />
+                </button>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Result */}
+      <Card className="bg-surface">
+        <CardContent className="p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold tracking-tight" style={{ fontFamily: "Outfit" }}>
+              Commission Estimate
+            </h3>
+            {calcLoading && (
+              <span className="text-[10px] text-muted-foreground animate-pulse">
+                Calculating…
+              </span>
+            )}
+          </div>
+
+          {!result ? (
+            <p className="text-xs text-muted-foreground py-6 text-center">
+              Adjust the inputs to see a live estimate.
+            </p>
+          ) : (
+            <>
+              <CalcRow
+                label="Carrier Rate"
+                value={
+                  result.carrier_rate == null
+                    ? "—"
+                    : result.rate_type === "flat_dollar"
+                      ? fmt(result.carrier_rate) + "/yr"
+                      : `${(result.carrier_rate * 100).toFixed(1)}%`
+                }
+              />
+              <CalcRow
+                label="Annual Premium"
+                value={fmt(result.annual_premium)}
+              />
+              <hr className="my-2 border-border" />
+              <CalcRow
+                label="Agency Revenue"
+                value={fmt(result.agency_revenue)}
+                strong
+              />
+              <CalcRow
+                label={`Agent Split (${Math.round((result.agent_split_pct || 0.30) * 100)}%)`}
+                value={fmt(result.agent_commission)}
+                accent
+                strong
+              />
+              <hr className="my-2 border-border" />
+              <CalcRow
+                label="Monthly to Agent"
+                value={fmt(result.monthly_agent_commission)}
+              />
+              <CalcRow
+                label="Annual to Agent"
+                value={fmt(result.agent_commission)}
+              />
+
+              {result.notes && (
+                <p className="text-[11px] text-muted-foreground bg-secondary/40 rounded-md px-3 py-2 mt-2">
+                  {result.notes}
+                </p>
+              )}
+
+              <div className="flex items-center gap-2 pt-2">
+                <Button variant="outline" size="sm" disabled data-testid="calc-save-lead">
+                  Save to Lead (soon)
+                </Button>
+                <Button variant="outline" size="sm" disabled data-testid="calc-print-pdf">
+                  Print / Export PDF (soon)
+                </Button>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function CalcRow({ label, value, strong, accent }) {
+  return (
+    <div className="flex items-center justify-between text-sm">
+      <span className={accent ? "text-[#e85d2f]" : "text-muted-foreground"}>
+        {label}
+      </span>
+      <span
+        className={`tabular-nums ${strong ? "font-semibold" : ""} ${
+          accent ? "text-[#e85d2f]" : ""
+        }`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+// ── Statements tab (placeholder) ────────────────────────────────────────
+function StatementsPanel() {
+  return (
+    <Card className="bg-surface">
+      <CardContent className="p-8 text-center space-y-3">
+        <h3 className="text-base font-semibold" style={{ fontFamily: "Outfit" }}>
+          Commission Statements
+        </h3>
+        <div
+          className="mx-auto max-w-md border-2 border-dashed border-muted-foreground/30 rounded-lg p-8"
+          data-testid="statements-coming-soon"
+        >
+          <p className="text-sm font-medium text-foreground/80 mb-2">
+            Upload carrier statement (PDF / CSV)
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Coming soon. Upload your carrier commission statements to
+            automatically reconcile against expected commissions. AI
+            will match payments to policies and flag any gaps.
+          </p>
+        </div>
       </CardContent>
     </Card>
   );

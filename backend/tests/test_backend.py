@@ -1336,3 +1336,94 @@ async def test_search_contacts_auto_imports_portal_lead(client, db, admin_header
         assert lead is not None
         assert lead["created_via"] == "ghl_search_import"
         assert lead["ghl_contact_id"] == c["id"]
+
+
+# ── Commission calculator (unit tests) ──────────────────────────────────────
+def test_commission_med_supp_aetna_il_plan_g():
+    """Aetna IL Plan G at age 70, $150/mo → 27% (low age band, fg)."""
+    from commission_calculator import calculate_commission, AGENT_SPLIT_PCT
+    r = calculate_commission(
+        product_type="med_supp",
+        carrier="Aetna",
+        state="IL",
+        plan_type="G",
+        monthly_premium=150,
+        client_age=70,
+    )
+    assert r["rate_type"] == "percentage"
+    assert r["carrier_rate"] == 0.27
+    assert r["annual_premium"] == 1800.00
+    assert r["agency_revenue"] == round(1800 * 0.27, 2)         # 486.00
+    assert r["agent_commission"] == round(486 * AGENT_SPLIT_PCT, 2)  # 145.80
+    assert r["agent_split_pct"] == 0.30
+
+
+def test_commission_ma_with_scope_completed():
+    """MA with scope completed → flat $626 agency, $187.80 agent."""
+    from commission_calculator import calculate_commission
+    r = calculate_commission(
+        product_type="ma",
+        carrier="Aetna",
+        state="IL",
+        plan_type="PPO",
+        monthly_premium=0,        # MA carriers pay a flat per-policy fee.
+        client_age=68,
+        scope_completed=True,
+    )
+    assert r["rate_type"] == "flat_dollar"
+    assert r["carrier_rate"] == 626.0
+    assert r["agency_revenue"] == 626.0
+    assert r["agent_commission"] == 187.80
+    # Without scope, should drop back to $313.
+    r2 = calculate_commission(
+        product_type="ma", carrier="Aetna", state="IL",
+        plan_type="PPO", monthly_premium=0, client_age=68,
+        scope_completed=False,
+    )
+    assert r2["carrier_rate"] == 313.0
+    assert r2["agent_commission"] == 93.90
+
+
+def test_commission_ancillary_aetna_hip_tx():
+    """Aetna HIP in TX → 67.5% of annual premium."""
+    from commission_calculator import calculate_commission
+    r = calculate_commission(
+        product_type="hip",
+        carrier="Aetna",
+        state="TX",
+        plan_type=None,
+        monthly_premium=50,
+        client_age=72,
+    )
+    assert r["rate_type"] == "percentage"
+    assert r["carrier_rate"] == 0.675
+    assert r["annual_premium"] == 600.00
+    assert r["agency_revenue"] == round(600 * 0.675, 2)             # 405.00
+    assert r["agent_commission"] == round(405 * 0.30, 2)            # 121.50
+
+
+def test_commission_uhc_flat_dollar():
+    """UHC IL Plan G is a flat $330/yr — not a percentage."""
+    from commission_calculator import calculate_commission
+    r = calculate_commission(
+        product_type="med_supp", carrier="UHC", state="IL",
+        plan_type="G", monthly_premium=160, client_age=70,
+    )
+    assert r["rate_type"] == "flat_dollar"
+    assert r["carrier_rate"] == 330.0
+    assert r["agency_revenue"] == 330.0
+    assert r["agent_commission"] == 99.00
+
+
+def test_commission_unknown_combo_returns_zero_with_note():
+    """Bogus state for Aetna MS shouldn't crash — None rate, $0 revenue,
+    explanatory note."""
+    from commission_calculator import calculate_commission
+    r = calculate_commission(
+        product_type="med_supp", carrier="Aetna", state="ZZ",
+        plan_type="G", monthly_premium=100, client_age=70,
+    )
+    assert r["carrier_rate"] is None
+    assert r["agency_revenue"] == 0.0
+    assert r["agent_commission"] == 0.0
+    assert "No Aetna" in r["notes"]
