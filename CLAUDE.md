@@ -11,12 +11,13 @@
   production accounts use the longer domain.)
 
 ## Team Accounts
-| Name           | Email                                  | Role   |
-|----------------|----------------------------------------|--------|
-| Tim Arnold     | tim@websynqdesign.com                  | admin  |
-| Matt Monacelli | matt@grueninghealthwealth.com          | admin  |
-| Cesar          | cesar@grueninghealthwealth.com         | admin  |
-| Michael        | michael@grueninghealthwealth.com       | admin  |
+| Name                    | Email                            | Role   |
+|-------------------------|----------------------------------|--------|
+| Tim Arnold              | tim@websynqdesign.com            | admin  |
+| Matt Monacelli          | matt@grueninghealthwealth.com    | admin  |
+| Cesar                   | cesar@grueninghealthwealth.com   | admin  |
+| Michael                 | michael@grueninghealthwealth.com | admin  |
+| Matt Monacelli (legacy) | admin@grueninghw.com             | admin  |
 
 ## What's Built
 - Auth: login, MFA, invite-only register, lockout, profile PATCH
