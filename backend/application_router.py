@@ -964,3 +964,8 @@ async def search_contacts(
         enriched.append({**c, "lead_id": lead_id})
 
     return {"contacts": enriched}
+
+
+# The policy-PDF presign endpoint moved to backend/policies_router.py
+# so it lives at /api/policies/{id}/pdf (matching the spec) rather than
+# under the /api/applications prefix.

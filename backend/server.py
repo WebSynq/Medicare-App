@@ -42,6 +42,7 @@ from ghl_webhook_router import router as ghl_webhook_router  # noqa: E402
 from dashboard_router import router as dashboard_router  # noqa: E402
 from commission_router import router as commission_calc_router  # noqa: E402
 from compliance_router import router as compliance_router  # noqa: E402
+from policies_router import router as policies_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
 
 
@@ -150,6 +151,7 @@ app.include_router(ghl_webhook_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
 app.include_router(commission_calc_router, prefix="/api")
 app.include_router(compliance_router, prefix="/api")
+app.include_router(policies_router, prefix="/api")
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
@@ -296,6 +298,11 @@ _CSRF_EXEMPT_PATHS = {
     "/api/profile/reset-password",
 }
 
+# Public SOA e-sign endpoints take the single-use token in the URL as
+# their auth substitute. Added as a prefix because the token segment
+# varies per request.
+_CSRF_EXEMPT_PREFIXES_PUBLIC_SOA = ("/api/soa/public/",)
+
 # Path prefixes for parameterised routes. CSRF-exempt when request.url.path
 # starts with any of these. Use sparingly — broader than exact match.
 _CSRF_EXEMPT_PREFIXES = (
@@ -327,6 +334,9 @@ _CSRF_EXEMPT_PREFIXES = (
     "/api/applications/",
     "/api/documents/",
     "/api/ghl/",
+    # Public SOA e-sign — single-use token in the URL is the auth
+    # substitute; no browser session involved.
+    "/api/soa/public/",
     # Dashboard aggregator — all GET today, but exempting the prefix
     # future-proofs us when we add the "refresh stats" POST and keeps
     # parity with the other admin/agent surfaces.

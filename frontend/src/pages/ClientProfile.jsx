@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -94,6 +94,27 @@ function GhlSyncPill({ lead }) {
       <span className={`w-2 h-2 rounded-full ${dot}`} />
       {label}
     </span>
+  );
+}
+
+// Header SOA badge — green when signed, amber when one or more pending
+// SOAs exist, red otherwise. Reads off the parent ``lead.soa_signed``
+// flag for the signed/none distinction; pending detection is done at
+// the call-site via ``soaRecords`` (passed in by the parent).
+function SOAStatusBadge({ lead }) {
+  if (lead?.soa_signed) {
+    // The dedicated "SOA Signed · <date>" badge already renders next
+    // to this component; nothing more to add here.
+    return null;
+  }
+  // Default: client has no SOA on file yet.
+  return (
+    <Badge
+      className="rounded-full bg-rose-100 text-rose-900 border-0"
+      data-testid="client-soa-badge-none"
+    >
+      No SOA
+    </Badge>
   );
 }
 
@@ -196,6 +217,57 @@ export default function ClientProfile() {
   const [policiesLoading, setPoliciesLoading] = useState(false);
   const [policySummary, setPolicySummary] = useState(null);
 
+  // SOA records for this lead — drives the SOA tab and the header
+  // badge. Each row carries token + public_link (built server-side).
+  const [soaRecords, setSoaRecords] = useState([]);
+  const [soaLoading, setSoaLoading] = useState(false);
+
+  const loadSoaRecords = useCallback(async () => {
+    if (!leadId) return;
+    setSoaLoading(true);
+    try {
+      const { data } = await api.get(`/soa/by-lead-list/${leadId}`);
+      setSoaRecords(data?.records || []);
+    } catch {
+      setSoaRecords([]);
+    } finally {
+      setSoaLoading(false);
+    }
+  }, [leadId]);
+
+  useEffect(() => {
+    loadSoaRecords();
+  }, [loadSoaRecords]);
+
+  async function sendNewSoa() {
+    try {
+      const products = lead?.product_interest ? [lead.product_interest] : [];
+      const { data } = await api.post(`/soa/send/${leadId}`, { products });
+      toast.success("New SOA link created");
+      if (data?.public_link && navigator?.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(data.public_link);
+          toast.message("Link copied to clipboard");
+        } catch {
+          // clipboard failure is fine — the link is in the table row.
+        }
+      }
+      loadSoaRecords();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't send SOA");
+    }
+  }
+
+  async function copyExistingSoaLink(link) {
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link);
+      toast.success("SOA link copied");
+    } catch {
+      toast.error("Couldn't copy — select the link manually.");
+    }
+  }
+
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -244,28 +316,36 @@ export default function ClientProfile() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [leadId]);
 
-  // Server-persisted policies live keyed by GHL contact_id. We fetch as soon
-  // as the lead document has a contact ID; before that there are no policies
-  // to show (the lead was never pushed to GHL → no apps could have been
-  // submitted against it either).
+  // Policies endpoint now accepts the portal lead id directly (it
+  // unions lead_id-keyed + ghl_contact_id-keyed rows server-side), so
+  // we no longer have to wait for the lead to round-trip through GHL.
+  // Summary endpoint still keys by ghl_contact_id, so we only fetch
+  // it when that id is available.
   useEffect(() => {
-    const cid = lead?.ghl_contact_id;
-    if (!cid) {
-      setServerPolicies([]);
-      setPolicySummary(null);
-      return;
-    }
+    if (!leadId) return;
     let alive = true;
     (async () => {
       setPoliciesLoading(true);
       try {
-        const [polRes, sumRes] = await Promise.all([
-          api.get(`/clients/${encodeURIComponent(cid)}/policies`),
-          api.get(`/clients/${encodeURIComponent(cid)}/summary`),
-        ]);
+        const polRes = await api.get(
+          `/clients/${encodeURIComponent(leadId)}/policies`,
+        );
         if (!alive) return;
         setServerPolicies(polRes.data?.policies || []);
-        setPolicySummary(sumRes.data || null);
+
+        const cid = lead?.ghl_contact_id;
+        if (cid) {
+          try {
+            const sumRes = await api.get(
+              `/clients/${encodeURIComponent(cid)}/summary`,
+            );
+            if (alive) setPolicySummary(sumRes.data || null);
+          } catch {
+            if (alive) setPolicySummary(null);
+          }
+        } else {
+          if (alive) setPolicySummary(null);
+        }
       } catch (err) {
         if (!alive) return;
         setServerPolicies([]);
@@ -277,7 +357,7 @@ export default function ClientProfile() {
     return () => {
       alive = false;
     };
-  }, [lead?.ghl_contact_id]);
+  }, [leadId, lead?.ghl_contact_id]);
 
   async function saveEdits() {
     setSaving(true);
@@ -484,9 +564,15 @@ export default function ClientProfile() {
                   >
                     {lead.status === "lost" ? "inactive" : lead.status}
                   </Badge>
+                  <SOAStatusBadge lead={lead} />
                   {lead.soa_signed && (
                     <Badge className="rounded-full bg-emerald-100 text-emerald-900 border-0">
                       <FileSignature className="w-3 h-3 mr-1" /> SOA Signed
+                      {lead.soa_signed_at && (
+                        <span className="ml-1 opacity-80">
+                          · {new Date(lead.soa_signed_at).toLocaleDateString()}
+                        </span>
+                      )}
                     </Badge>
                   )}
                   {lead.tcpa_consent ? (
@@ -643,6 +729,9 @@ export default function ClientProfile() {
             </TabsTrigger>
             <TabsTrigger value="policies" data-testid="tab-policies">
               Policies
+            </TabsTrigger>
+            <TabsTrigger value="soa" data-testid="tab-soa">
+              SOA
             </TabsTrigger>
             <TabsTrigger value="documents" data-testid="tab-documents">
               Documents
@@ -938,16 +1027,30 @@ export default function ClientProfile() {
                           {p.submitted_by ? `By ${p.submitted_by} · ` : ""}
                           {fmtDateTime(p.submitted_at)}
                         </div>
-                        {p.pdf_url && (
-                          <a
-                            href={p.pdf_url}
-                            target="_blank"
-                            rel="noreferrer noopener"
+                        {(p.s3_key || p.s3_url || p.pdf_url) && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                const { data } = await api.get(
+                                  `/policies/${encodeURIComponent(p.policy_id || p.id || "")}/pdf`,
+                                );
+                                if (data?.url) {
+                                  window.open(data.url, "_blank", "noopener,noreferrer");
+                                } else {
+                                  toast.error("PDF link unavailable");
+                                }
+                              } catch (err) {
+                                toast.error(
+                                  err?.response?.data?.detail || "Could not open PDF",
+                                );
+                              }
+                            }}
                             className="inline-flex items-center gap-1 text-xs font-medium text-[#e85d2f] hover:underline"
                             data-testid={`policy-view-pdf-${p.product_type}`}
                           >
                             <FileText className="w-3.5 h-3.5" /> View PDF
-                          </a>
+                          </button>
                         )}
                       </div>
                     </CardContent>
@@ -955,6 +1058,99 @@ export default function ClientProfile() {
                 ))}
               </div>
             )}
+          </TabsContent>
+
+          {/* Tab 2.5: SOA — pending + signed records. Send New mints a
+              fresh token and pushes the SOA-Pending tag to GHL. */}
+          <TabsContent value="soa" className="mt-4">
+            <Card>
+              <CardContent className="p-5 space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <h3 className="text-sm font-semibold">
+                    Scope of Appointment ({soaRecords.length})
+                  </h3>
+                  <Button
+                    size="sm"
+                    onClick={sendNewSoa}
+                    data-testid="soa-send-new"
+                  >
+                    Send New SOA
+                  </Button>
+                </div>
+                {soaLoading && (
+                  <p className="text-xs text-muted-foreground py-4 text-center">
+                    Loading…
+                  </p>
+                )}
+                {!soaLoading && soaRecords.length === 0 && (
+                  <p className="text-xs text-muted-foreground py-6 text-center">
+                    No SOA records yet. Send the client a link to start.
+                  </p>
+                )}
+                {!soaLoading && soaRecords.length > 0 && (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-xs text-muted-foreground border-b border-border">
+                          <th className="text-left py-2 font-medium">Status</th>
+                          <th className="text-left py-2 font-medium">Products</th>
+                          <th className="text-left py-2 font-medium">Sent</th>
+                          <th className="text-left py-2 font-medium">Signed</th>
+                          <th className="text-right py-2 font-medium">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {soaRecords.map((r) => {
+                          const status = (r.status || "").toLowerCase();
+                          const statusClass =
+                            status === "signed"
+                              ? "bg-emerald-100 text-emerald-900"
+                              : status === "expired"
+                                ? "bg-rose-100 text-rose-900"
+                                : "bg-amber-100 text-amber-900";
+                          return (
+                            <tr
+                              key={r.id}
+                              className="border-b border-border last:border-0"
+                              data-testid={`soa-row-${r.id}`}
+                            >
+                              <td className="py-2">
+                                <Badge
+                                  className={`rounded-full capitalize ${statusClass} border-0`}
+                                >
+                                  {status || "pending"}
+                                </Badge>
+                              </td>
+                              <td className="py-2 text-xs text-foreground/70 max-w-[220px] truncate">
+                                {(r.products_to_discuss || []).join(", ") || "—"}
+                              </td>
+                              <td className="py-2 text-xs text-muted-foreground">
+                                {fmtDateTime(r.created_at)}
+                              </td>
+                              <td className="py-2 text-xs text-muted-foreground">
+                                {r.signed_at ? fmtDateTime(r.signed_at) : "—"}
+                              </td>
+                              <td className="py-2 text-right">
+                                {status === "pending" && r.public_link && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => copyExistingSoaLink(r.public_link)}
+                                    data-testid={`soa-copy-${r.id}`}
+                                  >
+                                    Resend Link
+                                  </Button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {/* Tab 3: Documents */}

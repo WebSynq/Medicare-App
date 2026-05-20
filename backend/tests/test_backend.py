@@ -1611,3 +1611,82 @@ def test_file_upload_rejects_non_pdf(client, db, admin_headers):
     )
     assert r.status_code == 415, r.text
     assert "match" in r.json()["detail"].lower()
+
+
+# ── SOA automation ──────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_new_medicare_lead_creates_soa(client, db, admin_headers):
+    """Creating a lead with a Medicare product_interest must mint a
+    pending SOA record + return a public sign URL on the response."""
+    r = client.post("/api/leads", headers=admin_headers, json={
+        "first_name": "Soa",
+        "last_name": "Auto",
+        "phone": "555-1010",
+        "product_interest": "Medicare Supplement",
+    })
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body.get("soa_link"), "soa_link should be returned for Medicare leads"
+    soa = await db.soa_records.find_one({"lead_id": body["id"]})
+    assert soa is not None
+    assert soa.get("status") == "pending"
+    assert (soa.get("token") or "") != ""
+    assert "Medicare Supplement" in (soa.get("products_to_discuss") or [])
+
+
+@pytest.mark.asyncio
+async def test_new_non_medicare_lead_no_soa(client, db, admin_headers):
+    """Ancillary / life / annuity / FE products must NOT trigger an SOA."""
+    r = client.post("/api/leads", headers=admin_headers, json={
+        "first_name": "Anc",
+        "last_name": "Only",
+        "phone": "555-2020",
+        "product_interest": "Cancer",
+    })
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body.get("soa_link") in (None, "")
+    soa = await db.soa_records.find_one({"lead_id": body["id"]})
+    assert soa is None
+
+
+@pytest.mark.asyncio
+async def test_soa_sign_marks_signed(client, db, admin_headers):
+    """Signing via /api/soa/public/{token}/sign flips the record to
+    status=signed, stamps signed_name/signed_at, and updates the
+    parent lead's soa_signed flag."""
+    # Create a Medicare lead to mint a pending SOA.
+    r = client.post("/api/leads", headers=admin_headers, json={
+        "first_name": "Sign", "last_name": "Now",
+        "phone": "555-3030",
+        "product_interest": "Medicare Advantage",
+    })
+    assert r.status_code == 201
+    lead_id = r.json()["id"]
+    soa = await db.soa_records.find_one({"lead_id": lead_id})
+    assert soa and soa.get("token")
+
+    # Sign via the public endpoint. No auth required.
+    r2 = client.post(
+        f"/api/soa/public/{soa['token']}/sign",
+        json={"full_name": "Sign Now",
+              "products_confirmed": ["Medicare Advantage"]},
+    )
+    assert r2.status_code == 200, r2.text
+    fresh = await db.soa_records.find_one({"id": soa["id"]})
+    assert fresh["status"] == "signed"
+    assert fresh["signed_name"] == "Sign Now"
+    assert fresh.get("signed_at")
+    lead = await db.leads.find_one({"id": lead_id})
+    assert lead.get("soa_signed") is True
+
+
+def test_soa_expired_token_returns_404(client, db):
+    """An unknown / used / fake token must 404 on both GET and POST."""
+    r = client.get("/api/soa/public/totally-bogus-token")
+    assert r.status_code == 404, r.text
+    r2 = client.post(
+        "/api/soa/public/totally-bogus-token/sign",
+        json={"full_name": "Whoever"},
+    )
+    assert r2.status_code == 404, r2.text

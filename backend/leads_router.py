@@ -1,8 +1,10 @@
 """Lead CRUD + GHL sync."""
 import io
 import logging
+import os
 import re
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
@@ -42,6 +44,95 @@ def _short_hash(s: Optional[str]) -> Optional[str]:
         return None
     import hashlib
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
+
+
+# ── Auto-SOA on Medicare leads ───────────────────────────────────────────
+# CMS rules require an SOA before discussing Medicare products. Ancillary
+# / life / annuity / final-expense products don't trigger one. The
+# product_interest string can arrive in many shapes (lowercase code,
+# title-case label, short abbreviation) — we normalise here and match a
+# fixed set of Medicare keywords.
+_MEDICARE_PRODUCT_KEYWORDS = (
+    "medicare supplement", "med supp", "medsupp",
+    "medicare advantage", "ma", "ma_",
+    "pdp", "prescription drug",
+    "medicare",
+)
+
+
+def _is_medicare_product(product_interest: Optional[str]) -> bool:
+    if not product_interest:
+        return False
+    norm = product_interest.strip().lower()
+    return any(kw in norm for kw in _MEDICARE_PRODUCT_KEYWORDS)
+
+
+async def _auto_create_soa_for_medicare_lead(
+    db, lead: dict, effective: dict, request: Request,
+) -> Optional[str]:
+    """If the lead's product_interest is Medicare-related, mint a single-
+    use SOA token, store the pending record, push tags to GHL, and
+    return the public e-sign URL. Never raises — caller logs and moves on.
+
+    The CSRF-exempt ``/api/soa/public/{token}`` route consumes the token.
+    """
+    if not _is_medicare_product(lead.get("product_interest")):
+        return None
+    try:
+        token = uuid.uuid4().hex
+        now = datetime.now(timezone.utc)
+        soa_doc = {
+            "id": str(uuid.uuid4()),
+            "lead_id": lead["id"],
+            "agent_id": effective["id"],
+            "agent_name": effective.get("agent_name") or effective.get("full_name"),
+            "token": token,
+            "status": "pending",
+            "products_to_discuss": [lead.get("product_interest")],
+            "created_at": now.isoformat(),
+            "expires_at": (now + timedelta(days=30)).isoformat(),
+            "signed_at": None,
+            "signed_name": None,
+            "signed_ip": None,
+            "plan_types_discussed": [],
+        }
+        await db.soa_records.insert_one(soa_doc.copy())
+
+        frontend = (
+            os.environ.get("FRONTEND_URL")
+            or "https://medicare-app-sandy-tau.vercel.app"
+        ).rstrip("/")
+        soa_link = f"{frontend}/soa/{token}"
+
+        # Best-effort GHL push — tag + custom note so the workflow can
+        # fire SMS / email outside the portal. Field-id mapping for
+        # native "SOA Status" custom field is per-location; tag is the
+        # universal signal that works without custom-field setup.
+        if lead.get("ghl_contact_id"):
+            try:
+                ghl = GHLClient()
+                if not ghl.mock_mode:
+                    await ghl.add_tags(lead["ghl_contact_id"], ["SOA-Pending"])
+            except Exception as e:
+                logger.warning("SOA tag push to GHL failed: %s", e)
+
+        await write_audit(
+            db, "soa_auto_generated",
+            actor_email=effective.get("email"),
+            actor_id=effective.get("id"),
+            target_type="soa", target_id=soa_doc["id"],
+            request=request,
+            metadata={
+                "lead_id": lead["id"],
+                "product": lead.get("product_interest"),
+                "expires_at": soa_doc["expires_at"],
+            },
+        )
+        return soa_link
+    except Exception as e:
+        logger.warning("auto-SOA generation failed for lead %s: %s",
+                       lead.get("id"), e)
+        return None
 
 
 def _idor_or_403(doc: Optional[dict], current_user: dict) -> dict:
@@ -143,7 +234,7 @@ async def _sync_lead_to_ghl(
         raise
 
 
-@router.post("", response_model=Lead, status_code=201)
+@router.post("", status_code=201)
 @limiter.limit("30/hour")
 async def create_lead(
     payload: LeadCreate,
@@ -220,8 +311,16 @@ async def create_lead(
     except Exception as e:
         logger.warning("Auto GHL sync failed for lead %s: %s", lead.id, e)
 
+    # Auto-create SOA for Medicare-product leads. Never blocks — returns
+    # None on non-Medicare leads or any internal failure.
     fresh = await db.leads.find_one({"id": lead.id}, {"_id": 0})
-    return Lead(**fresh)
+    soa_link = await _auto_create_soa_for_medicare_lead(
+        db, fresh, effective, request,
+    )
+
+    lead_out = Lead(**fresh).model_dump()
+    lead_out["soa_link"] = soa_link
+    return lead_out
 
 
 @router.get("", response_model=List[Lead])

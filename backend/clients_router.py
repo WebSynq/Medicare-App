@@ -54,20 +54,40 @@ async def get_client_policies(
     db=Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """All policies on file for a GHL contact, newest first.
+    """All policies on file, newest first.
+
+    Accepts either a GHL contact id (legacy callers) or a portal lead
+    id in the URL — we look up the lead by id first, then union-query
+    policies by `lead_id == X` OR `ghl_contact_id == lead.ghl_contact_id`
+    so older policies (which only have ghl_contact_id) still surface
+    when the frontend hits this endpoint with a portal lead id.
 
     Phase 2 scoping: agents see only policies they submitted; admin /
     compliance see everything. The agent_filter helper returns an empty
-    dict for privileged roles so the existing contact-scoped query is
-    unaffected for them.
+    dict for privileged roles so the existing query is unaffected for
+    them.
     """
-    query = {"ghl_contact_id": contact_id, **agent_filter(current_user)}
+    scope = agent_filter(current_user)
+
+    # Try the URL segment as a portal lead id first. If it matches a
+    # lead row, also union in the contact id stored on that lead so
+    # pre-Phase-2 policies (with only ghl_contact_id stamped) surface.
+    lead = await db.leads.find_one({"id": contact_id}, {"_id": 0, "id": 1, "ghl_contact_id": 1})
+    if lead:
+        or_terms = [{"lead_id": lead["id"]}]
+        if lead.get("ghl_contact_id"):
+            or_terms.append({"ghl_contact_id": lead["ghl_contact_id"]})
+        match: dict = {"$or": or_terms, **scope}
+    else:
+        # Treat the URL segment as a GHL contact id (legacy path).
+        match = {"ghl_contact_id": contact_id, **scope}
+
     cursor = (
         db["policies"]
-        .find(query, {"_id": 0})
+        .find(match, {"_id": 0})
         .sort("submitted_at", -1)
     )
-    policies = await cursor.to_list(length=100)
+    policies = await cursor.to_list(length=200)
     return {
         "contact_id": contact_id,
         "policies": policies,

@@ -249,6 +249,9 @@ class LeadBase(BaseModel):
     underwriting_approved: Optional[Literal["Yes", "No", "Pending"]] = None
     cancel_old_plan: Optional[Literal["Yes", "No", "N/A"]] = None
     admin_requests: Optional[str] = None
+    # Free-text product the client is interested in. Drives auto-SOA
+    # generation in leads_router for Medicare-flavoured products.
+    product_interest: Optional[str] = None
     # TCPA consent — the boolean and the verbatim consent text the user
     # saw at checkbox-click time are accepted from the client. Timestamp
     # and IP are stamped server-side only (see Lead below) so a forged
@@ -308,13 +311,29 @@ class SOASignRequest(BaseModel):
 class SOARecord(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     lead_id: str
-    signature_data_url: str
-    beneficiary_name: str
+    # Legacy in-app signature flow stamps these. The new auto-SOA
+    # workflow leaves them blank — the public e-sign page records
+    # signed_name + signed_ip below instead.
+    signature_data_url: Optional[str] = None
+    beneficiary_name: Optional[str] = None
     agent_name: Optional[str] = None
     plan_types_discussed: List[str] = []
     ip_address: Optional[str] = None
     user_agent: Optional[str] = None
-    signed_at: str = Field(default_factory=utcnow_iso)
+    signed_at: Optional[str] = None
+
+    # Auto-SOA fields (new workflow). ``token`` is the single-use URL
+    # segment, ``status`` is one of pending/signed/expired/revoked,
+    # ``products_to_discuss`` is what the client is consenting to, and
+    # signed_name/signed_ip carry the public-page signature provenance.
+    token: Optional[str] = None
+    agent_id: Optional[str] = None
+    status: str = "signed"  # back-compat: in-app signed records default to "signed"
+    products_to_discuss: List[str] = []
+    expires_at: Optional[str] = None
+    signed_name: Optional[str] = None
+    signed_ip: Optional[str] = None
+    created_at: str = Field(default_factory=utcnow_iso)
 
 
 # ----- Documents -----
