@@ -228,7 +228,19 @@ async def register(
     await write_audit(db, "invite_used", actor_email=email,
                       target_type="invite", target_id=invite["id"],
                       metadata={"invited_email": invite["email"]})
-    # Notification hook — replace with email/Slack later. Logging only for now.
+
+    # Fire the welcome email. Never-throw — if Resend chokes the user
+    # is still registered and can sign in.
+    from email_service import send_welcome_email
+    await send_welcome_email(
+        db,
+        to_email=email,
+        full_name=user_doc.get("full_name"),
+        role=user_doc.get("role"),
+    )
+
+    # Notification hook — keep the logger line so ops can grep for new
+    # registrations even when the email path is in mock mode.
     logger.info(
         "[notification] Agent registered via invite: %s (%s) — agency=%s. "
         "Approve at /api/auth/users/%s/approve",
@@ -552,11 +564,29 @@ async def create_invite(
     frontend_url = os.getenv("FRONTEND_URL", "https://medicare-app-sandy-tau.vercel.app")
     invite_url = f"{frontend_url}/register?token={raw_token}"
 
+    # Fire the invite email. Email send is wrapped never-throw inside
+    # the service — a delivery failure must not roll back the invite
+    # row we just inserted (admin can still copy the URL by hand).
+    from email_service import send_invite_email
+    email_res = await send_invite_email(
+        db,
+        to_email=invite.email,
+        invite_url=invite_url,
+        invited_by=current_user.get("full_name") or current_user.get("email"),
+        role=invite_role,
+        expires_at=expires.isoformat(),
+    )
+
     return {
-        "message": f"Invite created for {invite.email}",
+        "message": (
+            f"Invite sent to {invite.email}"
+            if email_res.get("ok")
+            else f"Invite created for {invite.email} (email not sent — copy the link below)"
+        ),
         "invite_url": invite_url,
         "expires_at": expires.isoformat(),
         "token": raw_token,  # Raw token returned once for the admin to copy/send
+        "email_sent": bool(email_res.get("ok")),
     }
 
 

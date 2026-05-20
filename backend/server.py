@@ -284,6 +284,12 @@ _CSRF_EXEMPT_PATHS = {
     "/api/compliance/tcpa",
     "/api/compliance/export/soa.csv",
     "/api/compliance/export/tcpa.csv",
+    # Password-reset flow — called from the public /forgot-password and
+    # /reset-password screens, neither of which has a session yet so
+    # the CSRF cookie isn't planted. Token entropy in the body is the
+    # auth substitute.
+    "/api/profile/forgot-password",
+    "/api/profile/reset-password",
 }
 
 # Path prefixes for parameterised routes. CSRF-exempt when request.url.path

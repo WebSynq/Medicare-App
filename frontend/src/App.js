@@ -6,6 +6,8 @@ import HomePortal from "@/pages/HomePortal";
 import IntakeWizard from "@/pages/IntakeWizard";
 import Login from "@/pages/Login";
 import Register from "@/pages/Register";
+import ForgotPassword from "@/pages/ForgotPassword";
+import ResetPassword from "@/pages/ResetPassword";
 import MfaSetup from "@/pages/MfaSetup";
 import AgentDashboard from "@/pages/AgentDashboard";
 import LeadDetail from "@/pages/LeadDetail";
@@ -59,6 +61,8 @@ export default function App() {
         <Route path="/intake" element={<Protected noLayout><IntakeWizard /></Protected>} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/privacy" element={<PrivacyPolicy />} />
         <Route path="/security" element={<SecurityPage />} />
         <Route path="/mfa-setup" element={<Protected noLayout><MfaSetup /></Protected>} />

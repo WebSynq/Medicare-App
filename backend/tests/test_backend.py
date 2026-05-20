@@ -1472,3 +1472,49 @@ async def test_lead_post_without_tcpa_leaves_fields_unset(client, db, admin_head
         {"event_type": "tcpa_consent_recorded", "target_id": body["id"]},
     )
     assert audit is None
+
+
+# ── Password reset flow ─────────────────────────────────────────────────────
+def test_forgot_password_returns_200_for_unknown_email(client, db):
+    """No-enumeration guarantee: hitting forgot-password for an email
+    that has no account must still return 200, with the same generic
+    message a valid user would see."""
+    r = client.post("/api/profile/forgot-password",
+                    json={"email": "ghost@nobody.example"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "reset link" in body["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_forgot_then_reset_password_flow(client, db, admin_headers):
+    """Happy path: forgot-password mints a token, reset-password
+    consumes it, the new password works on /auth/login."""
+    import os
+    email = os.environ["SEED_ADMIN_EMAIL"]
+
+    r = client.post("/api/profile/forgot-password", json={"email": email})
+    assert r.status_code == 200
+    rec = await db.password_resets.find_one({"email": email, "used": False})
+    assert rec, "reset token should have been written"
+
+    new_pw = "BrandNewPassword!2026"
+    r2 = client.post("/api/profile/reset-password", json={
+        "token": rec["token"],
+        "new_password": new_pw,
+    })
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["message"] == "Password updated"
+
+    # Token can't be reused.
+    r3 = client.post("/api/profile/reset-password", json={
+        "token": rec["token"],
+        "new_password": "Whatever!2026",
+    })
+    assert r3.status_code == 400
+
+    # Login with the new password succeeds.
+    login = client.post("/api/auth/login", json={
+        "email": email, "password": new_pw,
+    })
+    assert login.status_code == 200, login.text

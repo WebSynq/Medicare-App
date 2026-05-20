@@ -575,3 +575,142 @@ async def admin_credential_change(
 
     fresh = await db.users.find_one({"id": user_id}, {"_id": 0})
     return _profile_dict(fresh)
+
+
+# ── Forgot / reset password ──────────────────────────────────────────────
+# Two-step flow:
+#   1. POST /api/profile/forgot-password { email }
+#      Always 200 (no user enumeration). When the email matches a user,
+#      we mint a single-use token, store it in db.password_resets, and
+#      ship a reset email via Resend.
+#   2. POST /api/profile/reset-password { token, new_password }
+#      Verifies the token (exists, not expired, not used). Re-hashes the
+#      password, marks the token used, bumps the user's token_version
+#      so existing sessions die.
+
+import uuid as _uuid
+from datetime import timedelta as _timedelta
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(..., min_length=8, max_length=200)
+
+
+_FORGOT_RATE = "20/hour"  # Per-IP via slowapi global limiter.
+
+
+@router.post("/profile/forgot-password")
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Email-anonymous: always 200 regardless of whether the email
+    matches a user. Never reveals account existence."""
+    email = (payload.email or "").lower().strip()
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    now = datetime.now(timezone.utc)
+
+    if user:
+        token = _uuid.uuid4().hex
+        expires_at = now + _timedelta(hours=1)
+        await db.password_resets.insert_one({
+            "token": token,
+            "user_id": user["id"],
+            "email": email,
+            "created_at": now.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "used": False,
+        })
+        # Build the reset URL pointing at the SPA.
+        import os
+        frontend = (os.environ.get("FRONTEND_URL")
+                     or "https://medicare-app-sandy-tau.vercel.app").rstrip("/")
+        reset_url = f"{frontend}/reset-password?token={token}"
+
+        # Fire the email — never-throw inside the service.
+        from email_service import send_password_reset_email
+        await send_password_reset_email(
+            db,
+            to_email=email,
+            reset_url=reset_url,
+            full_name=user.get("full_name"),
+        )
+        await write_audit(
+            db, "password_reset_requested",
+            actor_email=email, request=request,
+            target_type="user", target_id=user["id"],
+        )
+    else:
+        # Audit failed lookups too — useful when triaging abuse.
+        await write_audit(
+            db, "password_reset_unknown_email",
+            actor_email=email, request=request,
+        )
+
+    return {
+        "message": "If an account exists for that email, a reset link "
+                   "has been sent.",
+    }
+
+
+@router.post("/profile/reset-password")
+async def reset_password(
+    payload: ResetPasswordRequest,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Verify token → set new password → invalidate token + sessions."""
+    now = datetime.now(timezone.utc)
+    rec = await db.password_resets.find_one({"token": payload.token},
+                                             {"_id": 0})
+    if not rec:
+        raise HTTPException(400, "This link is invalid or has already been used.")
+    if rec.get("used"):
+        raise HTTPException(400, "This link has already been used.")
+    expires_at = rec.get("expires_at")
+    try:
+        exp_dt = datetime.fromisoformat(
+            expires_at.replace("Z", "+00:00") if expires_at and expires_at.endswith("Z") else expires_at
+        )
+        if exp_dt.tzinfo is None:
+            exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        exp_dt = now - _timedelta(seconds=1)
+    if exp_dt < now:
+        raise HTTPException(400, "This link has expired.")
+
+    # Update the user's password + bump token_version so any active
+    # sessions are immediately invalidated.
+    user = await db.users.find_one({"id": rec["user_id"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(400, "This link is invalid or has already been used.")
+    new_hash = hash_password(payload.new_password)
+    new_token_version = int(user.get("token_version", 0)) + 1
+    await db.users.update_one(
+        {"id": rec["user_id"]},
+        {"$set": {
+            "hashed_password": new_hash,
+            "token_version": new_token_version,
+            "updated_at": now.isoformat(),
+        }},
+    )
+    await db.password_resets.update_one(
+        {"token": payload.token},
+        {"$set": {"used": True, "used_at": now.isoformat()}},
+    )
+    await write_audit(
+        db, "password_reset",
+        actor_email=user.get("email"),
+        actor_id=user.get("id"),
+        target_type="user",
+        target_id=user.get("id"),
+        request=request,
+        metadata={"via": "reset_link"},
+    )
+    return {"message": "Password updated"}
