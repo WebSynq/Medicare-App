@@ -434,9 +434,22 @@ export default function ClientProfile() {
     );
   }
 
+  // White-label GHL is served from app.coachscrm.com. Both the host and
+  // the location segment are env-configurable so this URL stays correct
+  // when we add sub-accounts (per-lead ghl_location_id overrides the
+  // env-wide default — multi-tenant ready).
+  const ghlBaseUrl = (
+    process.env.REACT_APP_GHL_BASE_URL || "https://app.coachscrm.com"
+  ).replace(/\/+$/, "");
+  const ghlLocationId =
+    lead.ghl_location_id ||
+    process.env.REACT_APP_GHL_LOCATION_ID ||
+    "";
   const ghlUrl =
-    lead.ghl_contact_id && !lead.ghl_contact_id.startsWith("mock_")
-      ? `https://app.gohighlevel.com/v2/location/contacts/${lead.ghl_contact_id}`
+    lead.ghl_contact_id &&
+    !lead.ghl_contact_id.startsWith("mock_") &&
+    ghlLocationId
+      ? `${ghlBaseUrl}/v2/location/${ghlLocationId}/contacts/${lead.ghl_contact_id}`
       : null;
 
   return (
