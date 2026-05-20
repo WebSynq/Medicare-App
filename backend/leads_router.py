@@ -17,6 +17,7 @@ from deps import (
     get_current_user,
     get_effective_agent,
     agent_filter,
+    get_client_ip,
     write_audit,
 )
 from ghl_client import GHLClient
@@ -27,6 +28,20 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 limiter = Limiter(key_func=get_remote_address)
+
+
+def _short_hash(s: Optional[str]) -> Optional[str]:
+    """Short SHA-256 fingerprint of a string, for audit metadata.
+
+    We don't want to log the verbatim TCPA consent text on every audit
+    row (it's the same paragraph for every lead — pure noise) but we do
+    want a deterministic identifier so compliance can prove the text
+    hasn't drifted between rows.
+    """
+    if not s:
+        return None
+    import hashlib
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:12]
 
 
 def _idor_or_403(doc: Optional[dict], current_user: dict) -> dict:
@@ -77,6 +92,10 @@ async def _sync_lead_to_ghl(
             tags_to_add.append("SOA-Signed")
         if doc.get("document_ids"):
             tags_to_add.append("Docs-Uploaded")
+        if doc.get("tcpa_consent"):
+            # Tag-based signal until we wire location-specific custom
+            # field IDs for tcpa_consent_timestamp / tcpa_consent_ip.
+            tags_to_add.append("TCPA-Consented")
         if contact_id and tags_to_add and not client.mock_mode:
             try:
                 await client.add_tags(contact_id, tags_to_add)
@@ -155,6 +174,16 @@ async def create_lead(
     )
     if current_user.get("role") == "agent":
         lead_data["agent_assigned_id"] = current_user["id"]
+
+    # TCPA consent — stamp timestamp + IP server-side ONLY when the
+    # client supplied the boolean. The verbatim consent text comes in
+    # the payload (LeadBase.tcpa_consent_text) so we store exactly what
+    # the user agreed to; timestamp/IP are non-negotiable server-stamped
+    # provenance for CMS / TCPA audits.
+    if lead_data.get("tcpa_consent"):
+        lead_data["tcpa_consent_timestamp"] = datetime.now(timezone.utc).isoformat()
+        lead_data["tcpa_consent_ip"] = get_client_ip(request)
+
     lead = Lead(**lead_data)
     doc = lead.model_dump()
     await db.leads.insert_one(doc.copy())
@@ -165,6 +194,21 @@ async def create_lead(
                                 "actor_role": current_user.get("role"),
                                 "agent_id": effective_id,
                                 "impersonated_by": effective.get("_impersonated_by")})
+
+    # Separate audit row for the consent itself so the compliance
+    # export can pull a clean record per consent event.
+    if doc.get("tcpa_consent"):
+        await write_audit(
+            db, "tcpa_consent_recorded",
+            actor_email=current_user.get("email"),
+            actor_id=current_user.get("id"),
+            target_type="lead", target_id=lead.id, request=request,
+            metadata={
+                "tcpa_consent_timestamp": doc.get("tcpa_consent_timestamp"),
+                "tcpa_consent_ip": doc.get("tcpa_consent_ip"),
+                "tcpa_consent_text_hash": _short_hash(doc.get("tcpa_consent_text")),
+            },
+        )
 
     # Auto-sync to GHL. Failures must not block the intake response — the helper
     # has already persisted ghl_sync_status="error" + the audit event by the time

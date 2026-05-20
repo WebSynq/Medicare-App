@@ -271,6 +271,19 @@ _CSRF_EXEMPT_PATHS = {
     "/api/applications",
     "/api/documents",
     "/api/ghl",
+    # Dashboard + calculator + compliance read/write endpoints added
+    # in recent commits. CSRF only fires on state-changing verbs (POST /
+    # PATCH / DELETE / PUT), so the GETs in this group are a no-op
+    # against the middleware — listed anyway so the security profile
+    # of these surfaces is documented in one place.
+    "/api/dashboard/stats",
+    "/api/commission/calculate",
+    "/api/commission/carriers",
+    "/api/commission/earnings",
+    "/api/compliance/soa",
+    "/api/compliance/tcpa",
+    "/api/compliance/export/soa.csv",
+    "/api/compliance/export/tcpa.csv",
 }
 
 # Path prefixes for parameterised routes. CSRF-exempt when request.url.path

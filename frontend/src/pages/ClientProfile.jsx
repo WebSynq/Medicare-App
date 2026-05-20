@@ -18,6 +18,7 @@ import {
   Cake,
   MapPin,
   ShieldCheck,
+  ShieldAlert,
   ExternalLink,
   RefreshCw,
   ArrowLeft,
@@ -475,7 +476,7 @@ export default function ClientProfile() {
                 >
                   {lead.first_name} {lead.last_name}
                 </h1>
-                <div className="flex items-center gap-2 mt-2">
+                <div className="flex flex-wrap items-center gap-2 mt-2">
                   <Badge
                     className={`rounded-full capitalize ${
                       STATUS_BADGE[lead.status] || "bg-secondary"
@@ -488,8 +489,45 @@ export default function ClientProfile() {
                       <FileSignature className="w-3 h-3 mr-1" /> SOA Signed
                     </Badge>
                   )}
+                  {lead.tcpa_consent ? (
+                    <Badge
+                      className="rounded-full bg-emerald-100 text-emerald-900 border-0"
+                      data-testid="client-tcpa-badge-ok"
+                      title={
+                        lead.tcpa_consent_text || "TCPA consent on file"
+                      }
+                    >
+                      <ShieldCheck className="w-3 h-3 mr-1" /> TCPA Consented
+                      {lead.tcpa_consent_timestamp && (
+                        <span className="ml-1 opacity-80">
+                          · {new Date(lead.tcpa_consent_timestamp).toLocaleDateString()}
+                        </span>
+                      )}
+                    </Badge>
+                  ) : (
+                    <Badge
+                      className="rounded-full bg-rose-100 text-rose-900 border-0"
+                      data-testid="client-tcpa-badge-none"
+                    >
+                      <ShieldAlert className="w-3 h-3 mr-1" /> No TCPA Consent —
+                      Do not SMS
+                    </Badge>
+                  )}
                 </div>
                 <ImpersonationBanner />
+                {!lead.tcpa_consent && (
+                  <div
+                    className="mt-3 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+                    data-testid="client-tcpa-warning"
+                  >
+                    <ShieldAlert className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                    <span>
+                      This contact has not granted TCPA consent. Do not send
+                      marketing SMS or auto-dial. Capture consent via a fresh
+                      Quick-Add or in-person form before outreach.
+                    </span>
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 {editing ? (

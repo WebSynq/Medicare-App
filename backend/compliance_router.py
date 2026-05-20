@@ -254,14 +254,14 @@ async def export_tcpa(
     """TCPA consent log — every lead with consent status + provenance."""
     rows: List[List[Any]] = [[
         "lead_id", "name", "phone", "email", "tcpa_consent",
-        "tcpa_consent_at", "tcpa_consent_ip", "lead_source",
+        "tcpa_consent_timestamp", "tcpa_consent_ip", "lead_source",
         "agent_name", "created_at",
     ]]
     async for ld in db.leads.find(
         {},
         {"_id": 0, "id": 1, "first_name": 1, "last_name": 1,
          "phone": 1, "email": 1, "tcpa_consent": 1,
-         "tcpa_consent_at": 1, "tcpa_consent_ip": 1, "lead_source": 1,
+         "tcpa_consent_timestamp": 1, "tcpa_consent_ip": 1, "lead_source": 1,
          "agent_name": 1, "created_at": 1},
     ):
         rows.append([
@@ -270,7 +270,7 @@ async def export_tcpa(
             ld.get("phone") or "",
             ld.get("email") or "",
             "true" if ld.get("tcpa_consent") else "false",
-            ld.get("tcpa_consent_at") or "",
+            ld.get("tcpa_consent_timestamp") or "",
             ld.get("tcpa_consent_ip") or "",
             ld.get("lead_source") or "",
             ld.get("agent_name") or "",

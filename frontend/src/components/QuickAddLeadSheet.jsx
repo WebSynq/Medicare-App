@@ -24,12 +24,22 @@ const EMPTY = {
   notes: "",
 };
 
+// Verbatim consent paragraph shown next to the checkbox. Sent to the
+// server alongside the boolean so /api/compliance/export/tcpa.csv can
+// prove exactly what the contact agreed to at sign-up time, even if we
+// reword the prompt later.
+export const TCPA_CONSENT_TEXT =
+  "I agree to receive text messages and marketing communications from " +
+  "Gruening Health & Wealth regarding Medicare insurance options. " +
+  "Message & data rates may apply. Reply STOP to opt out at any time.";
+
 // Quick-add lead drawer. Lives in /components so both ClientsList and
 // the AgentDashboard header can mount the same form; previously it was
 // defined inline on ClientsList, which left the dashboard with no path
 // to create a lead except via the standalone /intake flow.
 export default function QuickAddLeadSheet({ open, onOpenChange, onCreated }) {
   const [form, setForm] = useState(EMPTY);
+  const [tcpa, setTcpa] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   function update(field, value) {
@@ -42,14 +52,25 @@ export default function QuickAddLeadSheet({ open, onOpenChange, onCreated }) {
       toast.error("First and last name are required.");
       return;
     }
+    if (!tcpa) {
+      // Belt + suspenders — button is also disabled, but a determined
+      // user could submit via Enter; the server doesn't enforce consent
+      // (some leads come from offline channels), so we enforce on the
+      // UI surface that owns the explicit checkbox interaction.
+      toast.error("Please confirm TCPA consent to continue.");
+      return;
+    }
     setSubmitting(true);
     try {
       const payload = Object.fromEntries(
         Object.entries(form).filter(([_, v]) => v !== "" && v !== null),
       );
+      payload.tcpa_consent = true;
+      payload.tcpa_consent_text = TCPA_CONSENT_TEXT;
       const { data } = await api.post("/leads", payload);
       toast.success(`Created ${data.first_name} ${data.last_name}`);
       setForm(EMPTY);
+      setTcpa(false);
       onCreated?.(data);
       onOpenChange(false);
     } catch (err) {
@@ -133,6 +154,24 @@ export default function QuickAddLeadSheet({ open, onOpenChange, onCreated }) {
               data-testid="new-client-notes"
             />
           </div>
+
+          <label
+            className="flex items-start gap-2 rounded-md border border-border bg-secondary/30 p-3 cursor-pointer"
+            data-testid="new-client-tcpa-row"
+          >
+            <input
+              type="checkbox"
+              className="mt-0.5 accent-[#e85d2f]"
+              checked={tcpa}
+              onChange={(e) => setTcpa(e.target.checked)}
+              required
+              data-testid="new-client-tcpa-checkbox"
+            />
+            <span className="text-[11px] leading-snug text-foreground/80">
+              {TCPA_CONSENT_TEXT}
+            </span>
+          </label>
+
           <SheetFooter className="px-0">
             <Button
               type="button"
@@ -144,7 +183,7 @@ export default function QuickAddLeadSheet({ open, onOpenChange, onCreated }) {
             </Button>
             <Button
               type="submit"
-              disabled={submitting}
+              disabled={submitting || !tcpa}
               data-testid="new-client-submit"
             >
               {submitting ? "Creating…" : "Create lead"}

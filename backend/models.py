@@ -240,6 +240,12 @@ class LeadBase(BaseModel):
     underwriting_approved: Optional[Literal["Yes", "No", "Pending"]] = None
     cancel_old_plan: Optional[Literal["Yes", "No", "N/A"]] = None
     admin_requests: Optional[str] = None
+    # TCPA consent — the boolean and the verbatim consent text the user
+    # saw at checkbox-click time are accepted from the client. Timestamp
+    # and IP are stamped server-side only (see Lead below) so a forged
+    # POST body can't backdate or spoof the consent provenance.
+    tcpa_consent: bool = False
+    tcpa_consent_text: Optional[str] = None
 
 
 class LeadCreate(LeadBase):
@@ -271,6 +277,11 @@ class Lead(LeadBase):
     ghl_sync_status: str = "pending"  # pending, synced, error, mock
     ghl_sync_error: Optional[str] = None
     ghl_synced_at: Optional[str] = None
+    # Server-stamped TCPA consent provenance — never accepted from the
+    # client. Set in leads_router.create_lead when payload.tcpa_consent
+    # is True.
+    tcpa_consent_timestamp: Optional[str] = None
+    tcpa_consent_ip: Optional[str] = None
     created_at: str = Field(default_factory=utcnow_iso)
     updated_at: str = Field(default_factory=utcnow_iso)
 

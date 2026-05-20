@@ -1427,3 +1427,48 @@ def test_commission_unknown_combo_returns_zero_with_note():
     assert r["agency_revenue"] == 0.0
     assert r["agent_commission"] == 0.0
     assert "No Aetna" in r["notes"]
+
+
+# ── TCPA consent ────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_lead_post_stamps_tcpa_consent(client, db, admin_headers):
+    """When the client supplies tcpa_consent=true + tcpa_consent_text,
+    the server stamps the timestamp + IP and writes a separate
+    tcpa_consent_recorded audit row."""
+    payload = {
+        "first_name": "Tcpa",
+        "last_name": "Consenter",
+        "phone": "555-4040",
+        "tcpa_consent": True,
+        "tcpa_consent_text": "I agree to receive text messages…",
+    }
+    r = client.post("/api/leads", headers=admin_headers, json=payload)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["tcpa_consent"] is True
+    assert body["tcpa_consent_timestamp"], "timestamp should be server-stamped"
+    # An audit row should land for the consent event.
+    audit = await db.audit_logs.find_one(
+        {"event_type": "tcpa_consent_recorded", "target_id": body["id"]},
+    )
+    assert audit is not None
+    md = audit.get("metadata") or {}
+    assert md.get("tcpa_consent_timestamp") == body["tcpa_consent_timestamp"]
+    assert md.get("tcpa_consent_text_hash"), "verbatim text hash recorded"
+
+
+@pytest.mark.asyncio
+async def test_lead_post_without_tcpa_leaves_fields_unset(client, db, admin_headers):
+    """No tcpa_consent flag → no timestamp / IP / audit row."""
+    r = client.post("/api/leads", headers=admin_headers, json={
+        "first_name": "No",
+        "last_name": "Consent",
+    })
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["tcpa_consent"] is False
+    assert body["tcpa_consent_timestamp"] is None
+    audit = await db.audit_logs.find_one(
+        {"event_type": "tcpa_consent_recorded", "target_id": body["id"]},
+    )
+    assert audit is None

@@ -26,6 +26,7 @@ import {
   Sparkles,
   FileSignature,
   ShieldCheck,
+  ShieldAlert,
   ArrowUpRight,
   Plus,
 } from "lucide-react";
@@ -277,6 +278,7 @@ export default function ClientsList() {
                     <TableHead>Contact Info</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>SOA</TableHead>
+                    <TableHead>TCPA</TableHead>
                     <TableHead>GHL</TableHead>
                     <TableHead>Products</TableHead>
                     <TableHead>Submitted</TableHead>
@@ -327,6 +329,31 @@ export default function ClientsList() {
                         ) : (
                           <span className="text-xs text-muted-foreground">
                             Pending
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {l.tcpa_consent ? (
+                          <span
+                            className="text-xs flex items-center gap-1.5 text-emerald-700"
+                            title={
+                              l.tcpa_consent_timestamp
+                                ? `Consented ${new Date(l.tcpa_consent_timestamp).toLocaleString()}`
+                                : "Consented"
+                            }
+                            data-testid={`client-tcpa-${l.id}-ok`}
+                          >
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                            Yes
+                          </span>
+                        ) : (
+                          <span
+                            className="text-xs flex items-center gap-1.5 text-rose-700"
+                            title="No TCPA consent — do not SMS"
+                            data-testid={`client-tcpa-${l.id}-none`}
+                          >
+                            <ShieldAlert className="w-3.5 h-3.5" />
+                            None
                           </span>
                         )}
                       </TableCell>
