@@ -22,6 +22,8 @@ import ClientProfile from "@/pages/ClientProfile";
 import DataImport from "@/pages/DataImport";
 import AgentManagement from "@/pages/AgentManagement";
 import AgencyAdmin from "@/pages/AgencyAdmin";
+import BirthdayRule from "@/pages/BirthdayRule";
+import RenewalCalendar from "@/pages/RenewalCalendar";
 import Settings from "@/pages/Settings";
 import PrivacyPolicy from "@/pages/PrivacyPolicy";
 import SecurityPage from "@/pages/SecurityPage";
@@ -82,6 +84,8 @@ export default function App() {
         <Route path="/clients" element={<Protected><ClientsList /></Protected>} />
         <Route path="/clients/:leadId" element={<Protected><ClientProfile /></Protected>} />
         <Route path="/leaderboard" element={<Protected><Leaderboard /></Protected>} />
+        <Route path="/birthday-rule" element={<Protected><BirthdayRule /></Protected>} />
+        <Route path="/renewals" element={<Protected><RenewalCalendar /></Protected>} />
         <Route path="/applications" element={<Protected><ApplicationSubmission /></Protected>} />
         {/* Audit Log + Compliance now live inside Settings. Old URLs
             redirect so existing bookmarks land on the right tab. */}

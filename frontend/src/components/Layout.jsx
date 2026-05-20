@@ -4,6 +4,8 @@ import {
   ShieldCheck,
   LayoutDashboard,
   Building2,
+  Cake,
+  CalendarClock,
   Users,
   Users2,
   Trophy,
@@ -369,6 +371,8 @@ function SidebarContent({ user, role, onNavigate, onSignOut }) {
           <NavItem to="/dashboard" icon={LayoutDashboard} label="Dashboard" onClick={onNavigate} testId="nav-dashboard" />
           <NavItem to="/clients" icon={Users2} label="Clients" onClick={onNavigate} testId="nav-clients" />
           <NavItem to="/leaderboard" icon={Trophy} label="Leaderboard" onClick={onNavigate} testId="nav-leaderboard" />
+          <NavItem to="/birthday-rule" icon={Cake} label="Birthday Rule" onClick={onNavigate} testId="nav-birthday-rule" />
+          <NavItem to="/renewals" icon={CalendarClock} label="Renewals" onClick={onNavigate} testId="nav-renewals" />
           <NavItem to="/applications" icon={FileText} label="Applications" onClick={onNavigate} testId="nav-applications" />
           <NavItem to="/commissions" icon={DollarSign} label="Commissions" onClick={onNavigate} testId="nav-commissions" />
         </div>

@@ -921,6 +921,7 @@ function AgencyTab() {
   const eoExpired = eoDays !== null && eoDays < 0;
 
   return (
+    <div className="space-y-5">
     <div className="grid lg:grid-cols-2 gap-5">
       <Card>
         <CardContent className="p-5 space-y-3">
@@ -1071,6 +1072,166 @@ function AgencyTab() {
         </CardContent>
       </Card>
     </div>
+      <BackupCard />
+    </div>
+  );
+}
+
+
+// ── Database Backup card (rendered inside AgencyTab) ─────────────────────
+function BackupCard() {
+  const [running, setRunning] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [lastResult, setLastResult] = useState(null);
+
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    try {
+      const { data } = await api.get("/backup/history");
+      setHistory(data?.items || []);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not load backup history");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
+
+  async function runNow() {
+    setRunning(true);
+    try {
+      const { data } = await api.post("/backup/run");
+      setLastResult(data);
+      if (data?.success) {
+        toast.success(
+          `Backup uploaded · ${(data.size_bytes / 1024 / 1024).toFixed(2)} MB`,
+        );
+      } else {
+        toast.error(`Backup failed: ${data?.error || "unknown error"}`);
+      }
+      await loadHistory();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Backup failed");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  const latest = history[0];
+
+  return (
+    <Card data-testid="backup-card">
+      <CardContent className="p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold">Database Backups</h3>
+          {latest && (
+            <Badge
+              className={`rounded-full border-0 ${
+                latest.success
+                  ? "bg-emerald-100 text-emerald-900"
+                  : "bg-rose-100 text-rose-900"
+              }`}
+            >
+              {latest.success ? "Success" : "Failed"}
+            </Badge>
+          )}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          Last backup:{" "}
+          <span className="text-foreground/80 font-medium">
+            {latest
+              ? `${fmtDateTime(latest.timestamp)}${
+                  latest.size_bytes
+                    ? ` · ${(latest.size_bytes / 1024 / 1024).toFixed(2)} MB`
+                    : ""
+                }`
+              : "never"}
+          </span>
+        </div>
+        {lastResult && !lastResult.success && (
+          <div className="text-xs text-rose-700 rounded-md bg-rose-50 border border-rose-200 p-2">
+            {lastResult.error}
+          </div>
+        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            onClick={runNow}
+            disabled={running}
+            className="text-white"
+            style={{
+              background: "linear-gradient(135deg, #e85d2f 0%, #c84416 100%)",
+            }}
+            data-testid="backup-run-now"
+          >
+            {running ? "Running…" : "Run Backup Now"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setHistoryOpen((v) => !v)}
+            data-testid="backup-toggle-history"
+          >
+            {historyOpen ? "Hide history" : "View Backup History"}
+          </Button>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Backups run automatically daily at 02:00 AM UTC. Retained for 90 days.
+        </p>
+
+        {historyOpen && (
+          <div
+            className="border-t border-border pt-3 max-h-72 overflow-y-auto ghw-scroll"
+            data-testid="backup-history"
+          >
+            {historyLoading && (
+              <p className="text-xs text-muted-foreground py-3 text-center">
+                Loading…
+              </p>
+            )}
+            {!historyLoading && history.length === 0 && (
+              <p className="text-xs text-muted-foreground py-3 text-center">
+                No backups recorded yet.
+              </p>
+            )}
+            <ul className="space-y-1.5 text-xs">
+              {history.map((h, i) => (
+                <li
+                  key={`${h.timestamp}-${i}`}
+                  className="flex items-start justify-between gap-3 border-b border-border/60 pb-1.5 last:border-0"
+                >
+                  <div className="min-w-0">
+                    <div className="font-medium">
+                      {fmtDateTime(h.timestamp)}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground font-mono truncate">
+                      {h.s3_key || h.error || ""}
+                    </div>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    {h.success ? (
+                      <span className="text-emerald-700 font-semibold">
+                        {h.size_bytes
+                          ? `${(h.size_bytes / 1024 / 1024).toFixed(2)} MB`
+                          : "ok"}
+                      </span>
+                    ) : (
+                      <span className="text-rose-700 font-semibold">
+                        failed
+                      </span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

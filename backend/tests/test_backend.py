@@ -1799,3 +1799,94 @@ async def test_agency_health_score_calculation(client, db, admin_headers):
     for f in factors:
         assert f["max"] == 25
         assert 0 <= f["points"] <= 25
+
+
+# ── Birthday Rule + Renewals + Backup ─────────────────────────────────────
+@pytest.mark.asyncio
+async def test_birthday_rule_il_client_upcoming(client, db, admin_headers):
+    """An IL lead whose birthday is ~60 days away lands in the 'soon'
+    bucket — outside the open-window range but within 90 days."""
+    from datetime import date, timedelta
+    target = date.today() + timedelta(days=60)
+    dob_str = f"1955-{target.month:02d}-{target.day:02d}"
+    await db.leads.insert_one({
+        "id": "il-soon",
+        "first_name": "Ila", "last_name": "Norris",
+        "phone": "555-0010", "email": "ila@example.com",
+        "state": "IL", "date_of_birth": dob_str,
+        "status": "new", "agent_id": "admin-1",
+        "soa_signed": False, "document_ids": [],
+        "ghl_sync_status": "synced",
+        "created_at": "2026-01-01T00:00:00+00:00",
+    })
+    r = client.get("/api/birthday-rule/alerts", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    soon_ids = [x["lead_id"] for x in body.get("soon", [])]
+    assert "il-soon" in soon_ids, body
+
+
+@pytest.mark.asyncio
+async def test_birthday_rule_window_currently_open(client, db, admin_headers):
+    """An IL lead whose birthday was a few days ago lands in 'urgent'
+    with a positive days_remaining_in_window value."""
+    from datetime import date, timedelta
+    target = date.today() - timedelta(days=10)
+    dob_str = f"1950-{target.month:02d}-{target.day:02d}"
+    await db.leads.insert_one({
+        "id": "il-urgent",
+        "first_name": "Open", "last_name": "Window",
+        "phone": "555-0011",
+        "state": "IL", "date_of_birth": dob_str,
+        "status": "contacted", "agent_id": "admin-1",
+        "soa_signed": False, "document_ids": [],
+        "ghl_sync_status": "synced",
+        "created_at": "2026-01-01T00:00:00+00:00",
+    })
+    r = client.get("/api/birthday-rule/alerts", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    urgent_ids = [x["lead_id"] for x in body.get("urgent", [])]
+    assert "il-urgent" in urgent_ids
+    row = next(x for x in body["urgent"] if x["lead_id"] == "il-urgent")
+    assert row["days_remaining_in_window"] is not None
+    assert row["days_remaining_in_window"] > 0
+
+
+def test_aep_countdown_calculation(client, db, admin_headers):
+    """AEP fields: days_until + is_active boolean, both shaped right."""
+    r = client.get("/api/renewals/alerts", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    aep = body.get("aep_countdown") or {}
+    oep = body.get("oep_countdown") or {}
+    assert "days_until" in aep
+    assert "is_active" in aep
+    assert isinstance(aep["days_until"], int) and aep["days_until"] >= 0
+    assert isinstance(aep["is_active"], bool)
+    assert "days_until" in oep
+    assert "is_active" in oep
+
+
+@pytest.mark.asyncio
+async def test_backup_excludes_passwords(client, db, admin_headers):
+    """The backup dump must NEVER include hashed_password — neither
+    via the projection nor via the belt-and-suspenders post-strip."""
+    import os, gzip, json
+    # Force the backup helper into "S3 not configured" mode so we
+    # don't try to ship to a real bucket from tests — we exercise the
+    # in-memory dump path directly instead.
+    os.environ.pop("AWS_S3_BUCKET", None)
+    from backup_service import BACKUP_COLLECTIONS, _dump_collection
+
+    # The users projection itself must not include hashed_password.
+    users_spec = next(s for s in BACKUP_COLLECTIONS if s["name"] == "users")
+    proj = users_spec.get("projection") or {}
+    assert proj.get("hashed_password") == 0, (
+        f"hashed_password must be excluded by projection, got {proj}"
+    )
+
+    # Round-trip the dump: ensure no row carries the field.
+    rows = await _dump_collection(db, "users", proj)
+    for u in rows:
+        assert "hashed_password" not in u, u

@@ -44,6 +44,9 @@ from commission_router import router as commission_calc_router  # noqa: E402
 from compliance_router import router as compliance_router  # noqa: E402
 from policies_router import router as policies_router  # noqa: E402
 from agency_router import router as agency_router  # noqa: E402
+from birthday_rule_router import router as birthday_rule_router  # noqa: E402
+from renewal_router import router as renewal_router  # noqa: E402
+from backup_router import router as backup_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
 
 
@@ -154,6 +157,9 @@ app.include_router(commission_calc_router, prefix="/api")
 app.include_router(compliance_router, prefix="/api")
 app.include_router(policies_router, prefix="/api")
 app.include_router(agency_router, prefix="/api")
+app.include_router(birthday_rule_router, prefix="/api")
+app.include_router(renewal_router, prefix="/api")
+app.include_router(backup_router, prefix="/api")
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
@@ -342,6 +348,12 @@ _CSRF_EXEMPT_PREFIXES = (
     # Agency command center — admin-only GETs, but cover the prefix in
     # case we add stat-export POSTs later.
     "/api/agency/",
+    # Birthday Rule + Renewal Calendar — GET-only today, prefix exempt
+    # to future-proof for action endpoints.
+    "/api/birthday-rule/",
+    "/api/renewals/",
+    # Admin backup trigger + history.
+    "/api/backup/",
     # Dashboard aggregator — all GET today, but exempting the prefix
     # future-proofs us when we add the "refresh stats" POST and keeps
     # parity with the other admin/agent surfaces.
@@ -578,8 +590,10 @@ async def on_startup():
     # would leak between tests.
     from comtrack_sync import start_scheduler as start_comtrack_scheduler
     from statement_generator import start_scheduler as start_statement_scheduler
+    from backup_service import start_backup_scheduler
     app.state.comtrack_scheduler = start_comtrack_scheduler(get_db)
     app.state.statement_scheduler = start_statement_scheduler(get_db)
+    app.state.backup_scheduler = start_backup_scheduler(get_db)
 
 
 @app.on_event("shutdown")
