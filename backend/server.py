@@ -380,6 +380,103 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 app.add_middleware(CSRFMiddleware)
 
 
+# ── Production-scale indexes ─────────────────────────────────────────────
+# Declared as a fixed table so it's easy to audit + extend. Each entry is
+# ``(collection_name, key_spec, options)``. ``key_spec`` accepts either a
+# single field string (ascending) or a list of (field, direction) tuples
+# for compound or descending indexes. Options pass straight through to
+# motor's ``create_index`` (``unique``, ``sparse``, etc.).
+#
+# We pass ``background=True`` on every entry. From MongoDB 4.2 onward
+# the option is a no-op (all index builds are non-blocking by default)
+# but it stays here so the intent is documented + the call is correct
+# on older clusters.
+_PROD_INDEXES = [
+    # leads
+    ("leads", "agent_id", {"background": True}),
+    ("leads", "ghl_contact_id", {"background": True}),
+    ("leads", "email", {"background": True}),
+    ("leads", "phone", {"background": True}),
+    ("leads", "status", {"background": True}),
+    ("leads", [("created_at", -1)], {"background": True}),
+    ("leads", "tcpa_consent", {"background": True}),
+
+    # production_records
+    ("production_records", "agent_id", {"background": True}),
+    ("production_records", [("effective_date", -1)], {"background": True}),
+    ("production_records", "carrier", {"background": True}),
+    ("production_records", "product_label", {"background": True}),
+    ("production_records", "agent_name", {"background": True}),
+    ("production_records", [("app_date", -1)], {"background": True}),
+
+    # policies
+    ("policies", "agent_id", {"background": True}),
+    ("policies", "lead_id", {"background": True}),
+    ("policies", [("created_at", -1)], {"background": True}),
+    ("policies", "product_type", {"background": True}),
+    ("policies", "carrier", {"background": True}),
+
+    # audit_logs
+    ("audit_logs", "actor_id", {"background": True}),
+    ("audit_logs", [("timestamp", -1)], {"background": True}),
+    ("audit_logs", "event_type", {"background": True}),
+    ("audit_logs", "actor_email", {"background": True}),
+
+    # soa_records
+    ("soa_records", "agent_id", {"background": True}),
+    ("soa_records", "lead_id", {"background": True}),
+    ("soa_records", "status", {"background": True}),
+    # token is the public-page identifier — must be unique. Sparse so
+    # legacy in-app signed SOAs (which never got a token) don't trip
+    # the constraint.
+    ("soa_records", "token", {"background": True, "unique": True, "sparse": True}),
+    ("soa_records", [("created_at", -1)], {"background": True}),
+
+    # documents
+    ("documents", "agent_id", {"background": True}),
+    ("documents", "lead_id", {"background": True}),
+
+    # users
+    ("users", "email", {"background": True, "unique": True}),
+    ("users", "role", {"background": True}),
+    ("users", "is_active", {"background": True}),
+
+    # invite_tokens (token field — distinct from the existing token_hash)
+    ("invite_tokens", "token", {"background": True, "unique": True, "sparse": True}),
+    ("invite_tokens", "email", {"background": True}),
+    ("invite_tokens", "used", {"background": True}),
+    ("invite_tokens", "expires_at", {"background": True}),
+
+    # password_resets
+    ("password_resets", "token", {"background": True, "unique": True}),
+    ("password_resets", "user_id", {"background": True}),
+    ("password_resets", "used", {"background": True}),
+]
+
+
+async def _ensure_production_indexes(db) -> None:
+    """Best-effort: ensure every index in ``_PROD_INDEXES`` exists.
+
+    ``create_index`` is idempotent — re-declaring an existing index is
+    a no-op and returns the existing name. A failure on one entry
+    (e.g. a duplicate unique constraint on an existing row set) is
+    logged + skipped so startup never blocks on index creation.
+    """
+    for coll_name, key_spec, options in _PROD_INDEXES:
+        try:
+            await db[coll_name].create_index(key_spec, **options)
+        except Exception as e:
+            # Common causes: pre-existing index with different options
+            # (e.g. another unique constraint elsewhere), or a sparse-
+            # vs-non-sparse mismatch on an already-indexed field. Log
+            # and continue — the rest of the indexes still get a
+            # chance to land.
+            logger.warning(
+                "index ensure failed coll=%s key=%s opts=%s: %s",
+                coll_name, key_spec, options, e,
+            )
+
+
 @app.on_event("startup")
 async def on_startup():
     db = get_db()
@@ -459,6 +556,16 @@ async def on_startup():
     await db.policies.create_index("ghl_contact_id")
     await db.policies.create_index("submitted_at")
     await db.policies.create_index([("ghl_contact_id", 1), ("product_type", 1)])
+
+    # Production-scale indexes — declared as a single table at module
+    # level so the surface is auditable. Wrapped in try/except so even
+    # a Mongo timeout here can't block boot; the per-index helper also
+    # catches per-collection failures.
+    try:
+        await _ensure_production_indexes(db)
+        logger.info("MongoDB indexes verified")
+    except Exception as e:
+        logger.warning("ensure_production_indexes top-level failure: %s", e)
 
     await seed_admin(db)
     # Stamp agent_id / agent_name on any pre-existing user rows that pre-date
