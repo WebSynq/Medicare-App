@@ -175,6 +175,33 @@ async def test_reconciliation_flags_gap(client, db, admin_headers):
     assert rec["gap"] == 120.0
 
 
+# ── CFO chat payload aliasing ──────────────────────────────────────────
+def test_cfo_chat_accepts_message_field():
+    """Direct Pydantic check: ``message`` is normalised through cleanly."""
+    from cfo_chat_router import CFOChatRequest
+    m = CFOChatRequest(message="hello")
+    assert m.message == "hello"
+
+
+def test_cfo_chat_accepts_query_field_alias():
+    """Legacy callers sending ``query`` instead of ``message`` must not 422.
+    The pre-validator coalesces ``query`` onto ``message`` for downstream
+    code that only knows about ``message``."""
+    from cfo_chat_router import CFOChatRequest
+    m = CFOChatRequest(query="legacy caller payload")
+    assert m.message == "legacy caller payload"
+
+
+def test_cfo_chat_rejects_empty_payload():
+    """Neither field supplied → ValidationError. The route still has a
+    runtime guard for whitespace-only after stripping."""
+    import pytest as _pt
+    from pydantic import ValidationError
+    from cfo_chat_router import CFOChatRequest
+    with _pt.raises(ValidationError):
+        CFOChatRequest()
+
+
 # ── CFO chat context ────────────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_cfo_chat_returns_quote(client, db, admin_headers):

@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import boto3
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from slowapi import Limiter
 
 from deps import (
@@ -89,8 +89,32 @@ class CFOChatTurn(BaseModel):
 
 
 class CFOChatRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=MAX_MESSAGE_LEN)
+    """Body schema for /api/cfo-chat.
+
+    The user-typed prompt is accepted under either ``message`` (preferred,
+    matches the in-repo CFOChat.jsx) or ``query`` (legacy / alternative
+    clients). Whichever is supplied is normalised onto ``message`` by the
+    pre-validator below — handlers downstream only ever read ``message``.
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    message: Optional[str] = Field(
+        default=None, max_length=MAX_MESSAGE_LEN,
+    )
+    query: Optional[str] = Field(
+        default=None, max_length=MAX_MESSAGE_LEN,
+        description="Legacy alias for ``message``.",
+    )
     conversation_history: List[CFOChatTurn] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _coalesce_message(self) -> "CFOChatRequest":
+        if not (self.message and self.message.strip()):
+            if self.query and self.query.strip():
+                self.message = self.query
+        if not (self.message and self.message.strip()):
+            raise ValueError("Either 'message' or 'query' is required")
+        return self
 
 
 # ── Context builder ──────────────────────────────────────────────────────
