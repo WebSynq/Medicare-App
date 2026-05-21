@@ -4,7 +4,7 @@ All submissions audit-logged. No raw PHI stored in MongoDB.
 """
 import os, json, base64, logging, asyncio, uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
@@ -14,6 +14,15 @@ from slowapi.util import get_remote_address
 from deps import get_db, get_effective_agent, agent_filter
 from auth_router import get_current_user
 from ghl_client import GHLClient
+from extraction_schemas import (
+    DOC_TYPES,
+    SCHEMA_FIELDS,
+    build_ghl_payload,
+    build_prompt,
+    canonical_field,
+    detect_conflicts,
+    label_to_doc_type,
+)
 
 logger = logging.getLogger("gruening.applications")
 limiter = Limiter(key_func=get_remote_address)
@@ -32,7 +41,8 @@ MAX_PER_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
 MAX_TOTAL_BATCH_BYTES = 50 * 1024 * 1024  # 50 MB
 SUPPORTING_LABELS = (
     "SOA", "Election Notice", "EFT Form",
-    "PHI Auth", "ID Copy", "Other",
+    "PHI Auth", "ID Copy",
+    "Prescription List", "Agent Attestation", "Other",
 )
 _PDF_MAGIC = b"%PDF-"
 _JPG_MAGIC = b"\xff\xd8\xff"
@@ -100,6 +110,126 @@ def _get_s3_client():
         aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
     )
+
+
+# ── Bedrock multi-document extraction ───────────────────────────────────
+def _strip_json_fences(raw: str) -> str:
+    """Trim ```json``` / ``` fences and surrounding whitespace.
+
+    The Bedrock model is told not to emit fences, but we tolerate them
+    anyway — the alternative is an empty extraction every time the
+    model gets chatty."""
+    if not raw:
+        return ""
+    s = raw.strip()
+    if s.startswith("```"):
+        s = s.strip("`")
+        if s.lower().startswith("json"):
+            s = s[4:].strip()
+    return s
+
+
+def _coerce_extraction_payload(parsed: Any) -> Tuple[Dict[str, Any], Dict[str, float]]:
+    """Pull ``fields`` + ``confidences`` out of a model response, being
+    defensive about the older format (a flat dict of fields with no
+    confidences). Returns ``(fields, confidences)`` — empty dicts if
+    the payload is malformed."""
+    if not isinstance(parsed, dict):
+        return {}, {}
+    fields = parsed.get("fields")
+    confs = parsed.get("confidences")
+    if isinstance(fields, dict):
+        if not isinstance(confs, dict):
+            confs = {}
+        # Coerce confidences to floats 0..1.
+        clean_confs: Dict[str, float] = {}
+        for k, v in confs.items():
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                continue
+            clean_confs[k] = max(0.0, min(1.0, f))
+        return fields, clean_confs
+    # Legacy shape: flat dict of fields. Treat every field as medium
+    # confidence so the UI still renders something useful.
+    if all(not isinstance(v, dict) for v in parsed.values()):
+        return parsed, {k: 0.7 for k in parsed.keys()}
+    return {}, {}
+
+
+def _bedrock_extract_doc(pdf_bytes: bytes, doc_type: str) -> Tuple[Dict[str, Any], Dict[str, float]]:
+    """SYNC: invoke Bedrock for one document. Returns ``(fields,
+    confidences)``; never raises.
+
+    Async callers should wrap this in ``run_in_executor`` so parallel
+    extractions don't block the event loop on each Bedrock round-trip.
+    """
+    try:
+        client = _get_bedrock_client()
+    except Exception as e:
+        logger.warning("Bedrock client init failed: %s", e)
+        return {}, {}
+
+    pdf_b64 = base64.standard_b64encode(pdf_bytes).decode("utf-8")
+    prompt = build_prompt(doc_type)
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 3500,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "document",
+                 "source": {"type": "base64",
+                            "media_type": "application/pdf",
+                            "data": pdf_b64}},
+                {"type": "text", "text": prompt},
+            ],
+        }],
+    })
+    try:
+        resp = client.invoke_model(
+            modelId=BEDROCK_MODEL_ID, body=body,
+            contentType="application/json", accept="application/json",
+        )
+        raw = resp["body"].read()
+        outer = json.loads(raw) if raw else {}
+    except Exception as e:
+        logger.warning("Bedrock invoke failed for doc_type=%s: %s", doc_type, e)
+        return {}, {}
+
+    text = ""
+    for block in outer.get("content") or []:
+        if block.get("type") == "text":
+            text += block.get("text") or ""
+    text = _strip_json_fences(text)
+    if not text:
+        return {}, {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning(
+            "Bedrock returned non-JSON for doc_type=%s: %r",
+            doc_type, text[:200],
+        )
+        return {}, {}
+    return _coerce_extraction_payload(parsed)
+
+
+async def _extract_documents_parallel(
+    docs: List[Tuple[bytes, str]],
+) -> List[Tuple[Dict[str, Any], Dict[str, float]]]:
+    """Run N extractions concurrently and preserve input order.
+
+    Each ``docs`` entry is ``(pdf_bytes, doc_type)``. Bedrock invokes
+    via ``run_in_executor`` so the event loop isn't pinned on each
+    round-trip; ``asyncio.gather`` collects results in order."""
+    loop = asyncio.get_event_loop()
+    tasks = [
+        loop.run_in_executor(None, _bedrock_extract_doc, b, dt)
+        for b, dt in docs
+    ]
+    return await asyncio.gather(*tasks)
+
 
 
 async def _upload_pdf_to_s3(
@@ -522,11 +652,32 @@ async def extract_application(
     # "pending" as the key segment. Non-fatal — empty URL on any failure.
     pdf_url = await _upload_pdf_to_s3(contents, "pending", product_type)
 
+    # Second pass: full Main Application schema extraction (applicant
+    # identity, MBI, PCP, signatures, etc.) so the SPA can drive the
+    # cross-document review surface from the same /extract call. Run in
+    # a thread so the existing product-type extraction (already done
+    # above) doesn't block on this second round-trip. Non-fatal — if
+    # the schema pass fails we return empty dicts and the SPA falls
+    # back to the legacy fields.
+    main_fields: Dict[str, Any] = {}
+    main_confidences: Dict[str, float] = {}
+    try:
+        loop = asyncio.get_event_loop()
+        main_fields, main_confidences = await loop.run_in_executor(
+            None, _bedrock_extract_doc, contents, "main_application",
+        )
+    except Exception as e:
+        logger.warning("Main-schema extraction failed (non-fatal): %s", e)
+
     return {"product_type": product_type, "product_label": PRODUCT_LABELS[product_type],
             "extracted": extracted, "field_count": field_count,
             "fields_available": list(FIELD_MAPS[product_type].keys()),
             "auto_detected": auto,
-            "pdf_url": pdf_url}
+            "pdf_url": pdf_url,
+            # New full-schema fields (additive — old callers ignore).
+            "main_extracted": main_fields,
+            "main_confidences": main_confidences,
+            "doc_type": "main_application"}
 
 
 # ── Supporting-document upload ─────────────────────────────────────────────
@@ -624,20 +775,55 @@ async def upload_supporting_files(
         })
 
     agent_id = effective.get("id") or "unknown"
+
+    # ── Parallel Bedrock extraction ──
+    # Only PDFs can be PDF-extracted (Bedrock's document content block
+    # accepts application/pdf). For images we skip extraction — the
+    # frontend will still render the file with its label, and the agent
+    # can transcribe any fields manually on the review screen.
+    extractable: List[Tuple[bytes, str]] = []
+    extractable_idx: List[int] = []
+    for i, s in enumerate(staged):
+        if s["kind"] != "pdf":
+            continue
+        doc_type = label_to_doc_type(s["label"])
+        extractable.append((s["contents"], doc_type))
+        extractable_idx.append(i)
+
+    extractions: Dict[int, Tuple[Dict[str, Any], Dict[str, float]]] = {}
+    if extractable:
+        try:
+            results_pairs = await _extract_documents_parallel(extractable)
+            for idx, pair in zip(extractable_idx, results_pairs):
+                extractions[idx] = pair
+        except Exception as e:
+            logger.warning(
+                "Parallel extraction failed (non-fatal) — proceeding with "
+                "uploads only: %s", e,
+            )
+
     results: List[Dict[str, Any]] = []
-    for s in staged:
+    for i, s in enumerate(staged):
         s3_url, s3_key = await _upload_supporting_to_s3(
             s["contents"], s["filename"], s["kind"],
             contact_id or "", agent_id, s["label"],
         )
+        fields, confidences = extractions.get(i, ({}, {}))
         results.append({
             "file_id": str(uuid.uuid4()),
             "filename": s["filename"],
             "size_bytes": s["size"],
             "content_type": _CONTENT_TYPE_BY_KIND[s["kind"]],
             "file_label": s["label"],
+            "doc_type": label_to_doc_type(s["label"]),
             "s3_url": s3_url,
             "s3_key": s3_key,
+            "extracted": fields,
+            "confidences": confidences,
+            "extracted_field_count": sum(
+                1 for v in fields.values()
+                if v not in (None, "", [], {})
+            ),
         })
 
     try:
@@ -661,7 +847,13 @@ class SupportingDoc(BaseModel):
     """Metadata for a supporting document already uploaded via
     /api/applications/upload-supporting. The bytes live in S3 — this is
     only the pointer that the SPA echoes back at submit time so the
-    application record can persist the list."""
+    application record can persist the list.
+
+    ``extracted`` + ``confidences`` carry the per-doc Bedrock pass
+    results so the submit handler can persist the full extracted
+    dataset into ``application_extracted_data`` without re-running
+    Bedrock. Empty dicts when extraction failed or the file is an
+    image (no PDF extraction path for those)."""
     file_id: Optional[str] = None
     filename: str = ""
     file_label: str = "Other"
@@ -669,6 +861,9 @@ class SupportingDoc(BaseModel):
     s3_key: str = ""
     size_bytes: int = 0
     content_type: str = "application/octet-stream"
+    doc_type: Optional[str] = None
+    extracted: Dict[str, Any] = {}
+    confidences: Dict[str, float] = {}
 
 
 class SubmitApplicationRequest(BaseModel):
@@ -678,10 +873,18 @@ class SubmitApplicationRequest(BaseModel):
     contact_name: Optional[str] = None
     pdf_url: Optional[str] = None
     # Supporting documents (up to nine) uploaded out-of-band via
-    # /api/applications/upload-supporting. AI extraction only runs on the
-    # primary carrier app (pdf_url); these ride along as policy attachments
-    # so the agent can keep SOA / EFT / ID copy together with the record.
+    # /api/applications/upload-supporting. AI extraction runs on the
+    # primary carrier app (pdf_url) AND on each supporting PDF; these
+    # ride along as policy attachments so the agent can keep SOA / EFT
+    # / ID copy together with the record.
     supporting_documents: List[SupportingDoc] = []
+    # Full-schema extraction for the Main Application itself. The SPA
+    # populates this from the second pass of /extract; on submit we
+    # merge it with the supporting-document extractions, write the
+    # combined dataset into ``application_extracted_data``, and use it
+    # to drive the GHL custom-field push.
+    main_extracted: Dict[str, Any] = {}
+    main_confidences: Dict[str, float] = {}
 
 
 def _split_name(full_name: Optional[str]) -> tuple[str, str]:
@@ -1142,6 +1345,78 @@ async def submit_application(
             payload.contact_id, e,
         )
 
+    # ── Full extracted-data persistence + cross-reference + GHL push ──
+    # Build the per-doc dict that the cross-reference detector + GHL
+    # payload builder both consume.
+    extracted_by_doc: Dict[str, Dict[str, Any]] = {}
+    confidences_by_doc: Dict[str, Dict[str, float]] = {}
+    if payload.main_extracted:
+        extracted_by_doc["main_application"] = payload.main_extracted
+    if payload.main_confidences:
+        confidences_by_doc["main_application"] = payload.main_confidences
+    for d in payload.supporting_documents or []:
+        if not d.extracted:
+            continue
+        dt = d.doc_type or label_to_doc_type(d.file_label)
+        # Multiple files of the same type → merge, last-non-empty wins
+        # so a later EFT doesn't blank out an earlier EFT.
+        prev = extracted_by_doc.get(dt) or {}
+        merged = {**prev}
+        for k, v in d.extracted.items():
+            if v not in (None, "", [], {}):
+                merged[k] = v
+        extracted_by_doc[dt] = merged
+        if d.confidences:
+            prev_c = confidences_by_doc.get(dt) or {}
+            confidences_by_doc[dt] = {**prev_c, **d.confidences}
+
+    conflicts = detect_conflicts(extracted_by_doc)
+
+    try:
+        await db["application_extracted_data"].insert_one({
+            "submission_id": policy_id,
+            "lead_id": lead_id,
+            "ghl_contact_id": payload.contact_id,
+            "agent_id": agent_id,
+            "agent_email": agent_email,
+            "agent_name": agent_name,
+            "product_type": payload.product_type,
+            "by_doc": extracted_by_doc,
+            "confidences_by_doc": confidences_by_doc,
+            "conflicts": conflicts,
+            "supporting_summaries": [
+                {
+                    "file_id": d.file_id,
+                    "filename": d.filename,
+                    "file_label": d.file_label,
+                    "doc_type": d.doc_type
+                                  or label_to_doc_type(d.file_label),
+                    "s3_url": d.s3_url,
+                    "size_bytes": d.size_bytes,
+                }
+                for d in (payload.supporting_documents or [])
+            ],
+            "created_at": now_iso,
+        })
+    except Exception as e:
+        logger.warning(
+            "application_extracted_data insert failed (non-fatal) for %s: %s",
+            payload.contact_id, e,
+        )
+
+    # Push the canonical fields to GHL on a best-effort basis. The
+    # custom-field keys must already exist in the GHL custom-field
+    # registry — anything the carrier rejects is logged and skipped.
+    ghl_canonical_payload = build_ghl_payload(extracted_by_doc)
+    if ghl_canonical_payload and payload.contact_id:
+        try:
+            await ghl.update_contact(payload.contact_id, ghl_canonical_payload)
+        except Exception as e:
+            logger.warning(
+                "GHL canonical-field push failed (non-fatal) for %s: %s",
+                payload.contact_id, e,
+            )
+
     return {
         "success": True,
         "contact_id": payload.contact_id,
@@ -1150,6 +1425,9 @@ async def submit_application(
         "lead_created": lead_resolution.get("created_new", False),
         "fields_synced": len(custom_fields),
         "ghl_mock": result.get("mock", False),
+        "extracted_doc_count": len(extracted_by_doc),
+        "conflict_count": len(conflicts),
+        "ghl_canonical_pushed": len(ghl_canonical_payload),
     }
 
 async def _import_ghl_contact_to_portal(
@@ -1206,6 +1484,44 @@ async def _import_ghl_contact_to_portal(
     except Exception as e:
         logger.warning("Auto-import GHL contact to portal failed: %s", e)
         return None
+
+
+@router.get("/extracted-data/{lead_id}")
+async def get_extracted_data(
+    lead_id: str,
+    db=Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Return the most recent ``application_extracted_data`` document
+    for a lead.
+
+    Used by the client profile's Application Data tab to render the
+    full per-doc extraction. Returns ``{by_doc: {}, conflicts: []}``
+    when no application has been submitted yet so the SPA can render
+    an empty state without special-casing 404."""
+    # IDOR: agents only see their own leads (admins / compliance see
+    # everything). Cheapest check is to compare ``agent_id`` on the
+    # extracted-data row against the caller's id.
+    role = (current_user.get("role") or "").lower()
+    base_query: Dict[str, Any] = {"lead_id": lead_id}
+    if role not in ("admin", "compliance", "cyber_security", "sales_manager"):
+        base_query["agent_id"] = current_user.get("id")
+    doc = await db["application_extracted_data"].find_one(
+        base_query,
+        sort=[("created_at", -1)],
+    )
+    if not doc:
+        return {
+            "lead_id": lead_id,
+            "by_doc": {},
+            "confidences_by_doc": {},
+            "conflicts": [],
+            "supporting_summaries": [],
+            "empty": True,
+        }
+    doc.pop("_id", None)
+    doc["empty"] = False
+    return doc
 
 
 @router.get("/search-contacts")

@@ -33,6 +33,11 @@ import {
   Clock,
   DollarSign,
   Activity,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  AlertTriangle,
+  Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -736,6 +741,9 @@ export default function ClientProfile() {
             <TabsTrigger value="documents" data-testid="tab-documents">
               Documents
             </TabsTrigger>
+            <TabsTrigger value="application-data" data-testid="tab-application-data">
+              Application Data
+            </TabsTrigger>
             <TabsTrigger value="notes" data-testid="tab-notes">
               Notes &amp; Activity
             </TabsTrigger>
@@ -1217,7 +1225,12 @@ export default function ClientProfile() {
             </Card>
           </TabsContent>
 
-          {/* Tab 4: Notes & Activity */}
+          {/* Tab: Application Data — full extracted dataset */}
+          <TabsContent value="application-data" className="mt-4 space-y-4">
+            <ApplicationDataTab leadId={leadId} />
+          </TabsContent>
+
+          {/* Tab 5: Notes & Activity */}
           <TabsContent value="notes" className="mt-4 space-y-4">
             <Card>
               <CardContent className="p-5 space-y-2">
@@ -1268,6 +1281,306 @@ export default function ClientProfile() {
           </TabsContent>
         </Tabs>
       </main>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Application Data tab
+//
+// Renders the most-recent extracted-data document for this lead, grouped
+// by source document type, with per-field copy-to-clipboard and a
+// conflict card at the top when extracted values disagree across docs.
+
+const DOC_TYPE_TITLES = {
+  main_application: "Main Application",
+  soa: "Scope of Appointment",
+  election_notice: "Election Notice",
+  eft_form: "EFT / Bank Authorization",
+  phi_auth: "PHI Authorization",
+  id_copy: "ID Copy / Medicare Card",
+  prescriptions: "Prescriptions",
+  agent_attestation: "Agent Attestation",
+  other: "Other Document",
+};
+
+function confidenceTone(score) {
+  if (score == null) return "muted";
+  if (score >= 0.85) return "ok";
+  if (score >= 0.6) return "warn";
+  return "low";
+}
+
+function fmtFieldValue(v) {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "boolean") return v ? "Yes" : "No";
+  if (Array.isArray(v)) {
+    if (v.length === 0) return "";
+    if (typeof v[0] === "object") {
+      // Prescriptions array of meds, etc.
+      return v
+        .map((x) => Object.entries(x).map(([k, val]) => `${k}: ${val}`).join(", "))
+        .join("\n");
+    }
+    return v.join(", ");
+  }
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function CopyableField({ name, value, score, testId }) {
+  const tone = confidenceTone(score);
+  const text = fmtFieldValue(value);
+  const empty = text === "";
+  const toneStyle =
+    tone === "ok"
+      ? "border-emerald-200"
+      : tone === "warn"
+        ? "border-amber-300"
+        : tone === "low"
+          ? "border-red-300"
+          : "border-border";
+  function copy() {
+    if (empty) return;
+    try {
+      navigator.clipboard.writeText(text);
+      toast.success(`Copied ${name.replace(/_/g, " ")}`);
+    } catch {
+      /* ignore */
+    }
+  }
+  return (
+    <div
+      className={`rounded-lg border ${toneStyle} p-2.5 flex items-start gap-2`}
+      data-testid={testId}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+          {name.replace(/_/g, " ")}
+          {tone === "ok" ? (
+            <Badge className="text-[9px] rounded-full border-0 bg-emerald-100 text-emerald-900">
+              {Math.round(score * 100)}%
+            </Badge>
+          ) : tone === "warn" ? (
+            <Badge className="text-[9px] rounded-full border-0 bg-amber-100 text-amber-900">
+              Verify · {Math.round(score * 100)}%
+            </Badge>
+          ) : tone === "low" ? (
+            <Badge className="text-[9px] rounded-full border-0 bg-red-100 text-red-900">
+              Not detected
+            </Badge>
+          ) : null}
+        </div>
+        <div
+          className={`mt-1 text-sm break-words whitespace-pre-wrap ${
+            empty ? "text-muted-foreground italic" : "font-medium"
+          }`}
+        >
+          {empty ? "—" : text}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={copy}
+        disabled={empty}
+        className="p-2 text-muted-foreground hover:text-[#e85d2f] disabled:opacity-30 min-w-[44px] min-h-[44px] grid place-items-center"
+        aria-label={`Copy ${name}`}
+        data-testid={`${testId}-copy`}
+      >
+        <Copy className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function DocCollapsible({ docType, title, fields, confidences, defaultOpen }) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  const entries = Object.entries(fields || {});
+  const populated = entries.filter(
+    ([, v]) => v !== null && v !== undefined && String(v).trim() !== "",
+  ).length;
+  return (
+    <Card data-testid={`appdata-${docType}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-4 py-3 text-left min-h-[44px]"
+      >
+        <FileText className="w-4 h-4 text-[#e85d2f]" />
+        <span className="text-sm font-semibold flex-1">{title}</span>
+        <Badge variant="outline" className="text-[10px] tabular-nums">
+          {populated}/{entries.length || 0} fields
+        </Badge>
+        {open ? (
+          <ChevronUp className="w-4 h-4 text-muted-foreground" />
+        ) : (
+          <ChevronDown className="w-4 h-4 text-muted-foreground" />
+        )}
+      </button>
+      {open ? (
+        <CardContent className="pt-0 pb-4 px-4">
+          {entries.length === 0 ? (
+            <div className="text-xs text-muted-foreground py-2">
+              No fields extracted for this document.
+            </div>
+          ) : (
+            <div className="grid md:grid-cols-2 gap-2">
+              {entries.map(([k, v]) => (
+                <CopyableField
+                  key={k}
+                  name={k}
+                  value={v}
+                  score={(confidences || {})[k]}
+                  testId={`appdata-${docType}-${k}`}
+                />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      ) : null}
+    </Card>
+  );
+}
+
+function ApplicationDataTab({ leadId }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get(`/applications/extracted-data/${leadId}`);
+      setData(data);
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.detail || "Could not load application data",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [leadId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="p-5 text-sm text-muted-foreground">
+          Loading extracted data…
+        </CardContent>
+      </Card>
+    );
+  }
+  if (!data || data.empty) {
+    return (
+      <Card>
+        <CardContent className="p-6 text-center space-y-2">
+          <Sparkles className="w-6 h-6 text-[#e85d2f] mx-auto" />
+          <h3 className="text-sm font-semibold">No application data yet</h3>
+          <p className="text-xs text-muted-foreground">
+            Once an application is submitted for this client, the full
+            AI-extracted dataset will appear here — organized by source
+            document.
+          </p>
+          <Button asChild size="sm" className="mt-2 min-h-[44px]">
+            <Link to="/applications">Submit Application</Link>
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const byDoc = data.by_doc || {};
+  const confByDoc = data.confidences_by_doc || {};
+  const conflicts = data.conflicts || [];
+  const supporting = data.supporting_summaries || [];
+  const docOrder = [
+    "main_application", "soa", "election_notice", "eft_form",
+    "phi_auth", "id_copy", "prescriptions", "agent_attestation", "other",
+  ];
+  const docEntries = docOrder
+    .filter((dt) => byDoc[dt])
+    .map((dt) => [dt, byDoc[dt]]);
+
+  return (
+    <div className="space-y-3">
+      {conflicts.length > 0 ? (
+        <div
+          className="rounded-lg border border-red-300 bg-red-50 p-3 space-y-2"
+          data-testid="appdata-conflicts"
+        >
+          <div className="flex items-center gap-1.5 text-sm font-medium text-red-900">
+            <AlertTriangle className="w-4 h-4" />
+            {conflicts.length} field{conflicts.length === 1 ? "" : "s"}{" "}
+            disagree across documents
+          </div>
+          <ul className="space-y-1 text-xs">
+            {conflicts.map((c) => (
+              <li
+                key={c.canonical}
+                data-testid={`appdata-conflict-${c.canonical}`}
+              >
+                <div className="font-medium">
+                  {c.canonical.replace(/_/g, " ")}
+                </div>
+                <ul className="ml-3 list-disc">
+                  {(c.sources || []).map((s, i) => (
+                    <li key={i}>
+                      {DOC_TYPE_TITLES[s.doc_type] || s.doc_type}:{" "}
+                      <span className="font-mono">{String(s.value)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {supporting.length > 0 ? (
+        <Card>
+          <CardContent className="p-3">
+            <div className="text-xs uppercase tracking-wider text-muted-foreground mb-1">
+              Attached files
+            </div>
+            <ul className="text-xs space-y-1">
+              {supporting.map((s) => (
+                <li
+                  key={s.file_id || s.s3_url || s.filename}
+                  className="flex items-center gap-2"
+                >
+                  <FileText className="w-3 h-3 text-[#e85d2f]" />
+                  <span className="flex-1 truncate">{s.filename}</span>
+                  <Badge variant="outline" className="text-[10px]">
+                    {s.file_label}
+                  </Badge>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {docEntries.length === 0 ? (
+        <Card>
+          <CardContent className="p-5 text-sm text-muted-foreground">
+            No extracted fields available.
+          </CardContent>
+        </Card>
+      ) : (
+        docEntries.map(([dt, fields], idx) => (
+          <DocCollapsible
+            key={dt}
+            docType={dt}
+            title={DOC_TYPE_TITLES[dt] || dt}
+            fields={fields}
+            confidences={confByDoc[dt]}
+            defaultOpen={idx === 0}
+          />
+        ))
+      )}
     </div>
   );
 }

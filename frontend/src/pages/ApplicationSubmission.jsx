@@ -14,7 +14,10 @@ import {
 } from "@/components/ui/select";
 import {
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   ExternalLink,
   FileImage,
   FileText,
@@ -36,9 +39,49 @@ const SUPPORTING_LABELS = [
   "EFT Form",
   "PHI Auth",
   "ID Copy",
+  "Prescription List",
+  "Agent Attestation",
   "Other",
 ];
 const ALL_LABELS = [MAIN_LABEL, ...SUPPORTING_LABELS];
+
+// Canonical doc-type keys — must match backend/extraction_schemas.py.
+const DOC_TYPE_TITLES = {
+  main_application: "Main Application",
+  soa: "Scope of Appointment",
+  election_notice: "Election Notice",
+  eft_form: "EFT / Bank Authorization",
+  phi_auth: "PHI Authorization",
+  id_copy: "ID Copy / Medicare Card",
+  prescriptions: "Prescriptions",
+  agent_attestation: "Agent Attestation",
+  other: "Other Document",
+};
+const LABEL_TO_DOC_TYPE = {
+  "Main Application": "main_application",
+  SOA: "soa",
+  "Election Notice": "election_notice",
+  "EFT Form": "eft_form",
+  "PHI Auth": "phi_auth",
+  "ID Copy": "id_copy",
+  "Prescription List": "prescriptions",
+  "Agent Attestation": "agent_attestation",
+  Other: "other",
+};
+function labelToDocType(label) {
+  return LABEL_TO_DOC_TYPE[label] || "other";
+}
+
+// Confidence buckets (mirrored from spec):
+//   >= 0.85 → green (auto)
+//   0.60..0.85 → amber Verify
+//   < 0.60 → red Not detected (blank shown)
+function confidenceTone(score) {
+  if (score == null) return "muted";
+  if (score >= 0.85) return "ok";
+  if (score >= 0.6) return "warn";
+  return "low";
+}
 // Mobile-friendly: accept any PDF + any image. We deliberately omit the
 // `capture` attribute so iOS / Android show the full "Camera Roll, Files,
 // Take Photo" sheet rather than forcing the camera. The wide image/*
@@ -150,6 +193,188 @@ function ImageThumb({ file, alt }) {
   );
 }
 
+function ConfidenceBadge({ score }) {
+  const tone = confidenceTone(score);
+  if (tone === "ok")
+    return (
+      <Badge className="text-[9px] rounded-full border-0 bg-emerald-100 text-emerald-900">
+        {Math.round(score * 100)}%
+      </Badge>
+    );
+  if (tone === "warn")
+    return (
+      <Badge className="text-[9px] rounded-full border-0 bg-amber-100 text-amber-900">
+        Verify · {Math.round(score * 100)}%
+      </Badge>
+    );
+  if (tone === "low")
+    return (
+      <Badge className="text-[9px] rounded-full border-0 bg-red-100 text-red-900">
+        Not detected
+      </Badge>
+    );
+  return null;
+}
+
+function ExtractedFieldRow({
+  fieldName, value, confidence, onChange, testId,
+}) {
+  const tone = confidenceTone(confidence);
+  const border =
+    tone === "ok"
+      ? "border-emerald-200"
+      : tone === "warn"
+        ? "border-amber-300"
+        : tone === "low"
+          ? "border-red-300"
+          : "border-border";
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2 mb-0.5">
+        <Label
+          htmlFor={testId}
+          className="text-[10px] uppercase tracking-wider text-muted-foreground"
+        >
+          {fieldName.replace(/_/g, " ")}
+        </Label>
+        <ConfidenceBadge score={confidence} />
+      </div>
+      <Input
+        id={testId}
+        value={
+          value === null || value === undefined
+            ? ""
+            : typeof value === "object"
+              ? JSON.stringify(value)
+              : String(value)
+        }
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={tone === "low" ? "Manual entry…" : "—"}
+        className={`min-h-[44px] ${border}`}
+        data-testid={testId}
+      />
+    </div>
+  );
+}
+
+function DocSection({
+  docType, title, fields, confidences, edits, onEditField, defaultOpen,
+}) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  const entries = Object.entries(fields || {});
+  const populated = entries.filter(
+    ([, v]) => v !== null && v !== undefined && String(v).trim() !== "",
+  ).length;
+  return (
+    <div
+      className="rounded-lg border border-border"
+      data-testid={`doc-section-${docType}`}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left min-h-[44px]"
+      >
+        <FileText className="w-4 h-4 text-[#e85d2f]" />
+        <span className="text-sm font-medium flex-1">{title}</span>
+        <Badge variant="outline" className="text-[10px] tabular-nums">
+          {populated}/{entries.length || 0} fields
+        </Badge>
+        {open ? (
+          <ChevronUp className="w-4 h-4 text-muted-foreground" />
+        ) : (
+          <ChevronDown className="w-4 h-4 text-muted-foreground" />
+        )}
+      </button>
+      {open ? (
+        entries.length === 0 ? (
+          <div className="px-3 py-3 text-xs text-muted-foreground border-t border-border">
+            No fields extracted — was this an image or scanned doc? You can
+            still attach it to the application.
+          </div>
+        ) : (
+          <div className="grid md:grid-cols-2 gap-3 px-3 py-3 border-t border-border">
+            {entries.map(([fieldName, value]) => (
+              <ExtractedFieldRow
+                key={fieldName}
+                fieldName={fieldName}
+                value={
+                  edits && fieldName in edits ? edits[fieldName] : value
+                }
+                confidence={(confidences || {})[fieldName]}
+                onChange={(v) => onEditField(fieldName, v)}
+                testId={`extracted-${docType}-${fieldName}`}
+              />
+            ))}
+          </div>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+// Client-side cross-reference: spot canonical fields where two documents
+// disagree. Mirrors the backend detect_conflicts() — kept simple, just
+// surfaces the cards on the review screen so the agent can resolve
+// before submit.
+function detectClientConflicts(extractedByDoc) {
+  const aliases = {
+    applicant_full_name: "full_name",
+    client_name: "full_name",
+    account_holder_name: "full_name",
+    applicant_dob: "dob",
+    client_dob: "dob",
+    applicant_address: "address",
+    client_address: "address",
+    applicant_phone: "phone",
+    client_phone: "phone",
+    applicant_medicare_id: "medicare_id",
+    medicare_beneficiary_id: "medicare_id",
+    date_of_appointment: "soa_date_signed",
+    soa_date_signed: "soa_date_signed",
+    plan_name: "plan_name",
+    carrier: "carrier",
+    policy_id: "policy_id",
+    effective_date: "effective_date",
+    premium: "premium",
+    agent_npn: "agent_npn",
+    agent_name: "agent_name",
+  };
+  const normalize = (v) => {
+    if (v === null || v === undefined) return null;
+    if (typeof v === "boolean") return v ? "true" : "false";
+    if (Array.isArray(v)) {
+      if (v.length === 0) return null;
+      return v.map((x) => String(x).toLowerCase().trim()).sort().join(",");
+    }
+    const s = String(v).toLowerCase().trim();
+    if (!s) return null;
+    return s.replace(/[\s.,;:]+/g, " ").trim();
+  };
+  const byCanon = {};
+  Object.entries(extractedByDoc || {}).forEach(([docType, fields]) => {
+    Object.entries(fields || {}).forEach(([k, v]) => {
+      const canonical = aliases[k] || k;
+      const norm = normalize(v);
+      if (norm === null) return;
+      (byCanon[canonical] = byCanon[canonical] || []).push({
+        docType,
+        field: k,
+        value: v,
+        norm,
+      });
+    });
+  });
+  const conflicts = [];
+  Object.entries(byCanon).forEach(([canonical, sources]) => {
+    if (sources.length < 2) return;
+    const norms = new Set(sources.map((s) => s.norm));
+    if (norms.size <= 1) return;
+    conflicts.push({ canonical, sources });
+  });
+  return conflicts;
+}
+
 function FileIconOrThumb({ doc }) {
   if (doc.file && !isPdf(doc.file)) {
     return <ImageThumb file={doc.file} alt={doc.filename} />;
@@ -201,6 +426,15 @@ export default function ApplicationSubmission() {
   const [autoDetected, setAutoDetected] = useState(false);
   const [pdfUrl, setPdfUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Full-schema Main Application extraction (separate from the
+  // product-type ``extracted`` dict — that one still drives the GHL
+  // product-specific custom fields).
+  const [mainExtracted, setMainExtracted] = useState({});
+  const [mainConfidences, setMainConfidences] = useState({});
+  // Local edits to the per-doc extracted data. Keyed by local_id ->
+  // {field_name: edited_value}. Empty by default; only populated when
+  // the agent actually changes something on the review screen.
+  const [docEdits, setDocEdits] = useState({});
 
   // Step 4: done
   const [syncedCount, setSyncedCount] = useState(0);
@@ -300,6 +534,10 @@ export default function ApplicationSubmission() {
           s3_key: meta.s3_key || "",
           content_type: meta.content_type || doc.file.type,
           label: meta.file_label || doc.label,
+          doc_type: meta.doc_type || labelToDocType(doc.label),
+          extracted_fields: meta.extracted || {},
+          extracted_confidences: meta.confidences || {},
+          extracted_field_count: meta.extracted_field_count || 0,
           size_bytes: meta.size_bytes || doc.file.size,
           error: null,
           // Bytes already in S3 — we can release the File reference to free
@@ -496,6 +734,8 @@ export default function ApplicationSubmission() {
       setFieldsAvailable(data.fields_available || []);
       setAutoDetected(!!data.auto_detected);
       setPdfUrl(data.pdf_url || "");
+      setMainExtracted(data.main_extracted || {});
+      setMainConfidences(data.main_confidences || {});
       // Promote the primary row's status to "done" so the submit gate
       // sees something fully-handled. We keep the file ref in case the
       // agent goes Back and re-extracts.
@@ -539,15 +779,29 @@ export default function ApplicationSubmission() {
     try {
       const supporting = supportingDocs
         .filter((d) => d.status === "done")
-        .map((d) => ({
-          file_id: d.file_id,
-          filename: d.filename,
-          file_label: d.label,
-          s3_url: d.s3_url,
-          s3_key: d.s3_key,
-          size_bytes: d.size_bytes,
-          content_type: d.content_type,
-        }));
+        .map((d) => {
+          const edits = docEdits[d.local_id] || {};
+          const merged = { ...(d.extracted_fields || {}), ...edits };
+          return {
+            file_id: d.file_id,
+            filename: d.filename,
+            file_label: d.label,
+            doc_type: d.doc_type || labelToDocType(d.label),
+            s3_url: d.s3_url,
+            s3_key: d.s3_key,
+            size_bytes: d.size_bytes,
+            content_type: d.content_type,
+            extracted: merged,
+            confidences: d.extracted_confidences || {},
+          };
+        });
+      // Merge any review-screen edits onto the Main App schema before
+      // shipping. ``docEdits["main"]`` is the special key for the
+      // primary doc since it doesn't have a local_id.
+      const mainEditsMerged = {
+        ...mainExtracted,
+        ...(docEdits.main || {}),
+      };
       const { data } = await api.post("/applications/submit", {
         contact_id: selectedContact.id,
         product_type: productType,
@@ -555,6 +809,8 @@ export default function ApplicationSubmission() {
         contact_name: contactDisplay(selectedContact),
         pdf_url: pdfUrl || undefined,
         supporting_documents: supporting,
+        main_extracted: mainEditsMerged,
+        main_confidences: mainConfidences,
       });
       setSyncedCount(data.fields_synced || 0);
       setGhlMock(!!data.ghl_mock);
@@ -585,6 +841,9 @@ export default function ApplicationSubmission() {
     setFieldsAvailable([]);
     setAutoDetected(false);
     setPdfUrl("");
+    setMainExtracted({});
+    setMainConfidences({});
+    setDocEdits({});
     setSyncedCount(0);
     setGhlMock(false);
   }
@@ -597,6 +856,9 @@ export default function ApplicationSubmission() {
     setFieldsAvailable([]);
     setAutoDetected(false);
     setPdfUrl("");
+    setMainExtracted({});
+    setMainConfidences({});
+    setDocEdits({});
     setSyncedCount(0);
     setGhlMock(false);
     setStep(STEP.UPLOAD);
@@ -967,6 +1229,119 @@ export default function ApplicationSubmission() {
                   </div>
                 ))}
               </div>
+
+              {/* Per-document extraction sections (full schema) */}
+              {(() => {
+                const byDoc = { main_application: { ...mainExtracted } };
+                const confByDoc = { main_application: mainConfidences };
+                const editsByDoc = { main_application: docEdits.main || {} };
+                documents
+                  .filter((d) => d.label !== MAIN_LABEL && d.status === "done")
+                  .forEach((d) => {
+                    const dt = d.doc_type || labelToDocType(d.label);
+                    byDoc[dt] = {
+                      ...(byDoc[dt] || {}),
+                      ...(d.extracted_fields || {}),
+                    };
+                    confByDoc[dt] = {
+                      ...(confByDoc[dt] || {}),
+                      ...(d.extracted_confidences || {}),
+                    };
+                    if (docEdits[d.local_id]) {
+                      editsByDoc[dt] = {
+                        ...(editsByDoc[dt] || {}),
+                        ...docEdits[d.local_id],
+                      };
+                    }
+                  });
+                const conflicts = detectClientConflicts({
+                  // Apply edits before running the conflict scan so the
+                  // agent's typed corrections silence flagged rows.
+                  ...Object.fromEntries(
+                    Object.entries(byDoc).map(([dt, fields]) => [
+                      dt,
+                      { ...fields, ...(editsByDoc[dt] || {}) },
+                    ]),
+                  ),
+                });
+                return (
+                  <div className="space-y-2 pt-3 border-t border-border">
+                    <div className="text-sm font-medium flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-[#e85d2f]" />
+                      Full extracted data
+                      <Badge variant="outline" className="text-[10px] ml-1">
+                        {Object.keys(byDoc).length} document
+                        {Object.keys(byDoc).length === 1 ? "" : "s"}
+                      </Badge>
+                    </div>
+                    {conflicts.length > 0 ? (
+                      <div
+                        className="rounded-lg border border-red-300 bg-red-50 p-3 space-y-2"
+                        data-testid="conflicts-card"
+                      >
+                        <div className="flex items-center gap-1.5 text-sm font-medium text-red-900">
+                          <AlertTriangle className="w-4 h-4" />
+                          {conflicts.length} field
+                          {conflicts.length === 1 ? "" : "s"} disagree across
+                          documents — review before submit.
+                        </div>
+                        <ul className="space-y-1 text-xs">
+                          {conflicts.map((c) => (
+                            <li
+                              key={c.canonical}
+                              data-testid={`conflict-${c.canonical}`}
+                            >
+                              <div className="font-medium">
+                                {c.canonical.replace(/_/g, " ")}
+                              </div>
+                              <ul className="ml-3 list-disc">
+                                {c.sources.map((s, i) => (
+                                  <li key={i}>
+                                    {DOC_TYPE_TITLES[s.docType] || s.docType}:{" "}
+                                    <span className="font-mono">
+                                      {String(s.value)}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {Object.entries(byDoc).map(([dt, fields], idx) => {
+                      const isMain = dt === "main_application";
+                      const editKey = isMain
+                        ? "main"
+                        : (documents.find(
+                            (d) =>
+                              (d.doc_type || labelToDocType(d.label)) === dt
+                              && d.status === "done",
+                          ) || {}).local_id || dt;
+                      return (
+                        <DocSection
+                          key={dt}
+                          docType={dt}
+                          title={DOC_TYPE_TITLES[dt] || dt}
+                          fields={fields}
+                          confidences={confByDoc[dt]}
+                          edits={docEdits[editKey]}
+                          onEditField={(fieldName, val) =>
+                            setDocEdits((prev) => ({
+                              ...prev,
+                              [editKey]: {
+                                ...(prev[editKey] || {}),
+                                [fieldName]: val,
+                              },
+                            }))
+                          }
+                          defaultOpen={idx === 0}
+                        />
+                      );
+                    })}
+                  </div>
+                );
+              })()}
 
               {/* Attached files summary (read-only) */}
               <div className="pt-3 border-t border-border space-y-2">
