@@ -47,6 +47,9 @@ from agency_router import router as agency_router  # noqa: E402
 from birthday_rule_router import router as birthday_rule_router  # noqa: E402
 from renewal_router import router as renewal_router  # noqa: E402
 from backup_router import router as backup_router  # noqa: E402
+from accounting_router import router as accounting_router  # noqa: E402
+from reconciliation_router import router as reconciliation_router  # noqa: E402
+from cfo_chat_router import router as cfo_chat_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
 
 
@@ -160,6 +163,9 @@ app.include_router(agency_router, prefix="/api")
 app.include_router(birthday_rule_router, prefix="/api")
 app.include_router(renewal_router, prefix="/api")
 app.include_router(backup_router, prefix="/api")
+app.include_router(accounting_router, prefix="/api")
+app.include_router(reconciliation_router, prefix="/api")
+app.include_router(cfo_chat_router, prefix="/api")
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
@@ -354,6 +360,12 @@ _CSRF_EXEMPT_PREFIXES = (
     "/api/renewals/",
     # Admin backup trigger + history.
     "/api/backup/",
+    # Accounting / reconciliation / CFO chat — admin + compliance write
+    # surfaces. JWT-authenticated via require_roles. Prefix-exempt for
+    # parity with the other admin AI / financial endpoints.
+    "/api/accounting/",
+    "/api/reconciliation/",
+    "/api/cfo-chat",
     # Dashboard aggregator — all GET today, but exempting the prefix
     # future-proofs us when we add the "refresh stats" POST and keeps
     # parity with the other admin/agent surfaces.

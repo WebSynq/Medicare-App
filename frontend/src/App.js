@@ -102,7 +102,7 @@ export default function App() {
         <Route
           path="/admin/accounting"
           element={
-            <Protected roles={["admin"]}>
+            <Protected roles={["admin", "compliance"]}>
               <AccountingDashboard />
             </Protected>
           }
