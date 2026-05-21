@@ -136,6 +136,11 @@ export default function ChatWidget() {
     location.pathname.startsWith("/privacy") ||
     location.pathname.startsWith("/intake");
 
+  // Accounting pages have the dedicated CFO chat panel — the general
+  // agent widget would compete with it. Match anything under /accounting
+  // or /admin/accounting (case-insensitive) and bail out of the render.
+  const isAccountingRoute = /\/accounting(\/|$)/i.test(location.pathname);
+
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_OPEN_KEY, open ? "1" : "0");
@@ -273,7 +278,7 @@ export default function ChatWidget() {
     }
   }
 
-  if (isAuthRoute || !user) return null;
+  if (isAuthRoute || isAccountingRoute || !user) return null;
 
   if (!open) {
     return (
