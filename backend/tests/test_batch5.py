@@ -192,6 +192,33 @@ def test_cfo_chat_accepts_query_field_alias():
     assert m.message == "legacy caller payload"
 
 
+def test_cfo_chat_payload_is_body_not_query():
+    """Regression: FastAPI must classify ``payload: CFOChatRequest`` as a
+    request-body parameter, not a query-string parameter.
+
+    A previous commit added ``from __future__ import annotations`` to
+    this router; combined with the @limiter.limit decorator (which
+    wraps via functools.wraps and drops __globals__), FastAPI's
+    analyze_param could no longer resolve the forward-ref and silently
+    fell through to query-parameter classification — every POST then
+    returned 422 with loc=['query','payload']."""
+    from cfo_chat_router import router
+    post = next(
+        r for r in router.routes
+        if hasattr(r, "methods") and "POST" in r.methods
+        and r.path == "/cfo-chat"
+    )
+    body_names = [p.name for p in post.dependant.body_params]
+    query_names = [p.name for p in post.dependant.query_params]
+    assert "payload" in body_names, (
+        f"payload must be a body param, got body={body_names} "
+        f"query={query_names}"
+    )
+    assert "payload" not in query_names, (
+        f"payload must NOT be a query param, got query={query_names}"
+    )
+
+
 def test_cfo_chat_rejects_empty_payload():
     """Neither field supplied → ValidationError. The route still has a
     runtime guard for whitespace-only after stripping."""

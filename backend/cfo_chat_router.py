@@ -17,9 +17,16 @@ PHI:
 - Specific client names are never seeded into context. If the user
   asks about a specific client, that's their typed query — they made
   the choice.
-"""
-from __future__ import annotations
 
+Note: this file deliberately does NOT use ``from __future__ import
+annotations``. The @limiter.limit decorator wraps the route via
+``functools.wraps`` (which copies ``__annotations__`` but not
+``__globals__``), so FastAPI's ``analyze_param`` can't resolve string
+forward-refs from this module's namespace — and would classify
+``payload: 'CFOChatRequest'`` as a query-string parameter instead of a
+request body, returning 422 on every call. Keeping annotations as live
+class objects sidesteps the issue entirely.
+"""
 import json
 import logging
 import os
