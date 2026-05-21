@@ -23,6 +23,52 @@ BEDROCK_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "")
 
+# ── Supporting-document upload constants ────────────────────────────────────
+# Up to ten files per submission total (primary carrier app + nine supporting),
+# 10 MB per file, 50 MB across the batch. PDF / JPG / PNG only; magic-byte
+# verified so a renamed binary can't pivot through the upload path.
+MAX_FILES_PER_BATCH = 10
+MAX_PER_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_TOTAL_BATCH_BYTES = 50 * 1024 * 1024  # 50 MB
+SUPPORTING_LABELS = (
+    "SOA", "Election Notice", "EFT Form",
+    "PHI Auth", "ID Copy", "Other",
+)
+_PDF_MAGIC = b"%PDF-"
+_JPG_MAGIC = b"\xff\xd8\xff"
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_KIND_BY_EXT = {
+    ".pdf": "pdf",
+    ".jpg": "jpg",
+    ".jpeg": "jpg",
+    ".png": "png",
+}
+_CONTENT_TYPE_BY_KIND = {
+    "pdf": "application/pdf",
+    "jpg": "image/jpeg",
+    "png": "image/png",
+}
+
+
+def _sniff_kind(contents: bytes) -> Optional[str]:
+    """Return 'pdf' / 'jpg' / 'png' for known magic-byte prefixes, or None."""
+    if contents.startswith(_PDF_MAGIC):
+        return "pdf"
+    if contents.startswith(_JPG_MAGIC):
+        return "jpg"
+    if contents.startswith(_PNG_MAGIC):
+        return "png"
+    return None
+
+
+def _slug_label(label: str) -> str:
+    return (
+        label.lower()
+        .replace(" ", "_")
+        .replace("/", "_")
+        .replace("\\", "_")
+    )
+
 # GHL custom-field keys that accept the S3 URL of the uploaded PDF. Keyed by
 # product_type code (not display label) so this can't drift when labels change.
 # Annuity intentionally omitted — no file-upload field in the GHL schema.
@@ -152,6 +198,64 @@ async def _relocate_pdf_to_agent_scope(
         logger.warning(
             "S3 relocate failed (non-fatal) for agent=%s policy=%s: %s",
             agent_id, policy_id, e,
+        )
+        return ("", "")
+
+
+async def _upload_supporting_to_s3(
+    contents: bytes,
+    filename: str,
+    kind: str,
+    contact_id: str,
+    agent_id: str,
+    label: str,
+) -> tuple[str, str]:
+    """Upload a single supporting document to S3 under the canonical
+    agent-scoped key. Returns ``(s3_url, s3_key)``; both empty on failure
+    so the caller can degrade gracefully (the agent's metadata is still
+    captured even if S3 is unavailable).
+
+    Key layout:
+      applications/{agent_id}/{YYYY}/{MM}/{contact_id|pending}_supporting_
+      {label_slug}_{ts}_{rand}.{ext}
+
+    We bucket by ``agent_id`` first (same as the primary-PDF relocate
+    target) so a future per-agent retention rule has one prefix to match.
+    """
+    if not S3_BUCKET:
+        return ("", "")
+    now = datetime.now(timezone.utc)
+    ext = {"pdf": "pdf", "jpg": "jpg", "png": "png"}[kind]
+    safe_label = _slug_label(label or "other")
+    key = (
+        f"applications/{agent_id}/{now.strftime('%Y')}/{now.strftime('%m')}/"
+        f"{contact_id or 'pending'}_supporting_{safe_label}_"
+        f"{now.strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}.{ext}"
+    )
+    content_type = _CONTENT_TYPE_BY_KIND[kind]
+
+    def _put():
+        s3 = _get_s3_client()
+        s3.put_object(
+            Bucket=S3_BUCKET, Key=key, Body=contents,
+            ContentType=content_type, ServerSideEncryption="AES256",
+            Metadata={
+                "contact_id": contact_id or "pending",
+                "agent_id": agent_id or "",
+                "file_label": label or "Other",
+                "original_filename": filename[:120],
+            },
+        )
+        return f"https://{S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{key}"
+
+    try:
+        loop = asyncio.get_event_loop()
+        url = await loop.run_in_executor(None, _put)
+        return (url, key)
+    except Exception as e:
+        logger.warning(
+            "supporting S3 upload failed (non-fatal) for agent=%s label=%s: %s",
+            agent_id, label, e,
         )
         return ("", "")
 
@@ -424,12 +528,160 @@ async def extract_application(
             "auto_detected": auto,
             "pdf_url": pdf_url}
 
+
+# ── Supporting-document upload ─────────────────────────────────────────────
+@router.post("/upload-supporting")
+async def upload_supporting_files(
+    files: List[UploadFile] = File(...),
+    labels: Optional[str] = Form(None),
+    contact_id: Optional[str] = Form(None),
+    current_user: dict = Depends(get_current_user),
+    effective: dict = Depends(get_effective_agent),
+    db=Depends(get_db),
+):
+    """Upload up to ten supporting documents in one request.
+
+    ``files``     — list of UploadFile; PDF / JPG / PNG only; ≤10 MB each;
+                    ≤50 MB across the batch.
+    ``labels``    — optional JSON-encoded array of label strings parallel to
+                    ``files``. Any label not in ``SUPPORTING_LABELS`` is
+                    coerced to ``"Other"``. Missing entries default to
+                    ``"Other"``.
+    ``contact_id``— GHL contact id when known, else the upload lands under
+                    the ``pending`` prefix and the agent's ``/submit`` call
+                    is responsible for grouping the docs onto the record.
+
+    Magic-byte validation is enforced AND cross-checked against the file
+    extension so a renamed binary can't pivot through the upload path
+    (post-pentest hardening — same rule as ``/extract``)."""
+    if not files:
+        raise HTTPException(400, "At least one file is required.")
+    if len(files) > MAX_FILES_PER_BATCH:
+        raise HTTPException(
+            400, f"At most {MAX_FILES_PER_BATCH} files per upload."
+        )
+
+    # Parse the optional labels array. Tolerate missing / malformed input —
+    # we fall back to "Other" rather than 400 to keep the upload flow
+    # forgiving (the agent can re-label after upload).
+    parsed_labels: List[str] = []
+    if labels:
+        try:
+            decoded = json.loads(labels)
+        except json.JSONDecodeError:
+            raise HTTPException(400, "labels must be a JSON array.")
+        if not isinstance(decoded, list):
+            raise HTTPException(400, "labels must be a JSON array.")
+        parsed_labels = [str(x) if x is not None else "" for x in decoded]
+
+    # Read + validate every file before any S3 call. This way a bad file
+    # at index 3 rejects the whole batch instead of leaving half-uploaded
+    # orphans in S3.
+    staged: List[Dict[str, Any]] = []
+    total = 0
+    for i, f in enumerate(files):
+        filename = (f.filename or f"file_{i+1}").strip()
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in _KIND_BY_EXT:
+            raise HTTPException(
+                415,
+                f"'{filename}': unsupported file type. "
+                "Accepted formats: PDF, JPG, PNG.",
+            )
+        contents = await f.read()
+        size = len(contents)
+        if size == 0:
+            raise HTTPException(400, f"'{filename}' is empty.")
+        if size > MAX_PER_FILE_BYTES:
+            raise HTTPException(
+                413,
+                f"'{filename}' exceeds the {MAX_PER_FILE_BYTES // (1024*1024)} MB "
+                "per-file limit.",
+            )
+        total += size
+        if total > MAX_TOTAL_BATCH_BYTES:
+            raise HTTPException(
+                413,
+                f"Combined upload exceeds the "
+                f"{MAX_TOTAL_BATCH_BYTES // (1024*1024)} MB batch limit.",
+            )
+        kind = _sniff_kind(contents)
+        expected_kind = _KIND_BY_EXT[ext]
+        if kind is None or kind != expected_kind:
+            raise HTTPException(
+                415,
+                f"'{filename}' content does not match its extension "
+                "(magic-byte check failed).",
+            )
+        raw_label = parsed_labels[i] if i < len(parsed_labels) else ""
+        label = raw_label if raw_label in SUPPORTING_LABELS else "Other"
+        staged.append({
+            "contents": contents,
+            "filename": filename,
+            "size": size,
+            "kind": kind,
+            "label": label,
+        })
+
+    agent_id = effective.get("id") or "unknown"
+    results: List[Dict[str, Any]] = []
+    for s in staged:
+        s3_url, s3_key = await _upload_supporting_to_s3(
+            s["contents"], s["filename"], s["kind"],
+            contact_id or "", agent_id, s["label"],
+        )
+        results.append({
+            "file_id": str(uuid.uuid4()),
+            "filename": s["filename"],
+            "size_bytes": s["size"],
+            "content_type": _CONTENT_TYPE_BY_KIND[s["kind"]],
+            "file_label": s["label"],
+            "s3_url": s3_url,
+            "s3_key": s3_key,
+        })
+
+    try:
+        await db["audit_logs"].insert_one({
+            "action": "application_supporting_uploaded",
+            "agent_email": current_user.get("email"),
+            "agent_id": agent_id,
+            "contact_id": contact_id or "pending",
+            "file_count": len(results),
+            "total_bytes": total,
+            "labels": [r["file_label"] for r in results],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        logger.warning("supporting upload audit log failed: %s", e)
+
+    return {"files": results, "count": len(results), "total_bytes": total}
+
+
+class SupportingDoc(BaseModel):
+    """Metadata for a supporting document already uploaded via
+    /api/applications/upload-supporting. The bytes live in S3 — this is
+    only the pointer that the SPA echoes back at submit time so the
+    application record can persist the list."""
+    file_id: Optional[str] = None
+    filename: str = ""
+    file_label: str = "Other"
+    s3_url: str = ""
+    s3_key: str = ""
+    size_bytes: int = 0
+    content_type: str = "application/octet-stream"
+
+
 class SubmitApplicationRequest(BaseModel):
     contact_id: str
     product_type: str
     extracted: Dict[str, Any]
     contact_name: Optional[str] = None
     pdf_url: Optional[str] = None
+    # Supporting documents (up to nine) uploaded out-of-band via
+    # /api/applications/upload-supporting. AI extraction only runs on the
+    # primary carrier app (pdf_url); these ride along as policy attachments
+    # so the agent can keep SOA / EFT / ID copy together with the record.
+    supporting_documents: List[SupportingDoc] = []
 
 
 def _split_name(full_name: Optional[str]) -> tuple[str, str]:
@@ -662,6 +914,29 @@ async def submit_application(
     if not custom_fields:
         raise HTTPException(status_code=400, detail="No non-null fields to submit.")
 
+    # Defence-in-depth: even though /upload-supporting enforces the
+    # per-batch cap, a single submission must never carry more than the
+    # global limits — caps both file count (10 total = 1 primary + 9
+    # supporting) and total byte budget (50 MB).
+    supporting = payload.supporting_documents or []
+    if len(supporting) > MAX_FILES_PER_BATCH - 1:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Too many supporting documents (max "
+                f"{MAX_FILES_PER_BATCH - 1}; primary PDF counts as one)."
+            ),
+        )
+    supporting_bytes = sum(int(d.size_bytes or 0) for d in supporting)
+    if supporting_bytes > MAX_TOTAL_BATCH_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Supporting documents exceed the "
+                f"{MAX_TOTAL_BATCH_BYTES // (1024*1024)} MB total cap."
+            ),
+        )
+
     # Generate the policy_id up front so the S3 key (which references it)
     # and the policy doc agree. UUID4 — distinct from the carrier's policy
     # number which lives inside extracted_fields.
@@ -850,6 +1125,12 @@ async def submit_application(
             "s3_url": final_s3_url,
             "pdf_url": final_s3_url or payload.pdf_url or "",
             "all_fields": extracted,
+            # Supporting documents (SOA, EFT form, ID copy, …) uploaded
+            # via /api/applications/upload-supporting. Stored as a list
+            # of pointer dicts — bytes live in S3.
+            "supporting_documents": [
+                d.model_dump() for d in (payload.supporting_documents or [])
+            ],
             "submitted_by": current_user.get("email", ""),
             "submitted_at": now_iso,
             "ghl_synced": True,
