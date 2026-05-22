@@ -118,9 +118,14 @@ def db():
 
 @pytest.fixture
 def client():
-    """TestClient with cookies persisting across calls within a single test."""
+    """TestClient with cookies persisting across calls within a single test.
+
+    base_url is https://testserver so the httpx cookie jar accepts the
+    Secure-flagged session cookies the auth router plants. With the
+    default http://testserver, Secure cookies would be silently dropped
+    on receipt and the cookie/CSRF tests would all 401."""
     from fastapi.testclient import TestClient
-    with TestClient(server.app) as c:
+    with TestClient(server.app, base_url="https://testserver") as c:
         yield c
 
 

@@ -19,26 +19,29 @@ from slowapi.util import get_remote_address
 _ACCESS_COOKIE = "ghw_access_token"
 _CSRF_COOKIE = "ghw_csrf_token"
 _COOKIE_MAX_AGE = 60 * 60 * 24  # 24h — matches what we ask of the JWT expiry
-_IS_DEV = os.getenv("ENVIRONMENT", "production").lower() in ("development", "dev", "local")
 
 
 def _set_session_cookies(response: Response, jwt_token: str) -> None:
     """Plant the httpOnly access cookie + JS-readable CSRF cookie.
 
-    SameSite=None;Secure is required because the SPA (Vercel) and API (Render)
-    are on different sites — SameSite=Strict would prevent the browser from
-    sending the cookie cross-site, breaking login on the second request.
-    Secure is mandatory whenever SameSite=None per the spec; in dev mode we
-    relax both so the localhost flow works without HTTPS.
+    SameSite=None;Secure is the only configuration that works for the
+    cross-site Vercel → Render flow AND for mobile browsers that
+    enforce SameSite=Lax-by-default with stricter cross-context rules
+    than desktop. Per the spec these two flags must travel together —
+    SameSite=None without Secure is rejected by every modern browser.
+
+    Hardcoded (not env-conditional) so a misconfigured ENVIRONMENT
+    var on Render can't silently downgrade prod cookies and break the
+    mobile login flow. Local dev over plain HTTP cannot plant these
+    cookies as a result — tunnel through HTTPS (ngrok, Caddy, etc.)
+    or run the SPA against a deployed API for end-to-end testing.
     """
-    samesite = "lax" if _IS_DEV else "none"
-    secure = not _IS_DEV
     response.set_cookie(
         key=_ACCESS_COOKIE,
         value=jwt_token,
         httponly=True,
-        secure=secure,
-        samesite=samesite,
+        secure=True,
+        samesite="none",
         max_age=_COOKIE_MAX_AGE,
         path="/",
     )
@@ -46,8 +49,8 @@ def _set_session_cookies(response: Response, jwt_token: str) -> None:
         key=_CSRF_COOKIE,
         value=secrets.token_hex(32),
         httponly=False,                # JS must read this to echo as header
-        secure=secure,
-        samesite=samesite,
+        secure=True,
+        samesite="none",
         max_age=_COOKIE_MAX_AGE,
         path="/",
     )
