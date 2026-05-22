@@ -1,0 +1,89 @@
+/*
+ * Page-local overrides for react-big-calendar. The library ships with
+ * its own stylesheet (imported in CalendarPage.jsx) — these tweaks
+ * blend its chrome with the shadcn/tailwind palette without forking
+ * the upstream CSS. Selectors are nested under `.ghw-calendar` so
+ * nothing leaks onto other pages.
+ */
+.ghw-calendar {
+  font-family: inherit;
+}
+
+.ghw-calendar .rbc-toolbar {
+  margin-bottom: 12px;
+  font-size: 14px;
+  gap: 8px;
+}
+
+.ghw-calendar .rbc-toolbar button {
+  border: 1px solid hsl(var(--border));
+  background: transparent;
+  color: hsl(var(--foreground));
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background-color 0.12s ease;
+}
+
+.ghw-calendar .rbc-toolbar button:hover,
+.ghw-calendar .rbc-toolbar button:focus {
+  background: hsl(var(--secondary));
+  color: hsl(var(--foreground));
+}
+
+.ghw-calendar .rbc-toolbar button.rbc-active {
+  background: #e85d2f;
+  border-color: #e85d2f;
+  color: white;
+}
+
+.ghw-calendar .rbc-toolbar-label {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.ghw-calendar .rbc-header {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+  border-bottom: 1px solid hsl(var(--border));
+  padding: 6px 4px;
+}
+
+.ghw-calendar .rbc-today {
+  background: rgba(232, 93, 47, 0.06);
+}
+
+.ghw-calendar .rbc-off-range-bg {
+  background: hsl(var(--secondary) / 0.4);
+}
+
+.ghw-calendar .rbc-event {
+  cursor: pointer;
+}
+
+.ghw-calendar .rbc-event.rbc-selected {
+  outline: 2px solid #e85d2f;
+  outline-offset: 1px;
+}
+
+.ghw-calendar .rbc-month-view,
+.ghw-calendar .rbc-time-view,
+.ghw-calendar .rbc-agenda-view {
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.ghw-calendar .rbc-day-bg + .rbc-day-bg,
+.ghw-calendar .rbc-month-row + .rbc-month-row {
+  border-color: hsl(var(--border));
+}
+
+.ghw-calendar .rbc-show-more {
+  color: #e85d2f;
+  font-weight: 500;
+}

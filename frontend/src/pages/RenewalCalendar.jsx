@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { CalendarClock, Phone } from "lucide-react";
+import { CalendarClock, Phone, CalendarDays } from "lucide-react";
 import { toast } from "sonner";
 
 import { Card, CardContent } from "@/components/ui/card";
@@ -105,9 +105,17 @@ export default function RenewalCalendar() {
             </p>
             <ImpersonationBanner />
           </div>
-          <Button variant="outline" size="sm" onClick={load} disabled={loading}>
-            {loading ? "Refreshing…" : "Refresh"}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button asChild variant="outline" size="sm" data-testid="renewals-calendar-view">
+              <Link to="/calendar">
+                <CalendarDays className="w-3.5 h-3.5 mr-1.5" />
+                Calendar View
+              </Link>
+            </Button>
+            <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+              {loading ? "Refreshing…" : "Refresh"}
+            </Button>
+          </div>
         </div>
 
         {/* AEP / OEP countdown cards */}
