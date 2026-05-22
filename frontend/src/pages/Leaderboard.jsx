@@ -17,7 +17,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Trophy, RefreshCw } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, auth } from "@/lib/api";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import ScrollableCard from "@/components/ScrollableCard";
 
@@ -74,6 +74,13 @@ export default function Leaderboard() {
   const [limit, setLimit] = useState(25);
   const [loading, setLoading] = useState(true);
   const [refreshedAt, setRefreshedAt] = useState(null);
+
+  // Backend strips revenue_total for non-privileged roles, so the gross
+  // line is only ever rendered when the response actually carries the
+  // field. We still consult the role here for the column header label.
+  const currentUser = auth.getUser();
+  const canSeeGross =
+    currentUser?.role === "admin" || currentUser?.role === "compliance";
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -174,7 +181,9 @@ export default function Leaderboard() {
                   <TableHead className="w-16">Rank</TableHead>
                   <TableHead>Agent</TableHead>
                   <TableHead className="text-right">Policies</TableHead>
-                  <TableHead className="text-right">Revenue</TableHead>
+                  <TableHead className="text-right">
+                    {canSeeGross ? "Commission / Agency" : "Your Commission"}
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -198,8 +207,13 @@ export default function Leaderboard() {
                     <TableCell className="text-right tabular-nums">
                       {r.policies_count}
                     </TableCell>
-                    <TableCell className="text-right tabular-nums font-medium">
-                      {fmtUSD(r.revenue_total)}
+                    <TableCell className="text-right tabular-nums">
+                      <div className="font-medium">{fmtUSD(r.agent_split)}</div>
+                      {r.revenue_total != null && (
+                        <div className="text-[11px] text-muted-foreground mt-0.5">
+                          Agency {fmtUSD(r.revenue_total)}
+                        </div>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}

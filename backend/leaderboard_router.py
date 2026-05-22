@@ -35,6 +35,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/leaderboard", tags=["leaderboard"])
 limiter = Limiter(key_func=get_remote_address)
 
+# Share of the agency revenue that lands with the agent. Plecto's
+# revenue_expected is gross-of-split, so the leaderboard must apply this
+# rate before showing an agent their own number. revenue_total (the gross)
+# is admin/compliance-only.
+AGENT_SPLIT_RATE = 0.30
+
 
 def _period_filter(period: str) -> Optional[dict]:
     if period == "all":
@@ -63,13 +69,15 @@ async def get_leaderboard(
     """Agency-wide leaderboard sourced from production_records.
 
     Each row reports, for the requested period:
-      - revenue_total    Sum of revenue_expected (Plecto truth)
+      - agent_split      Agent's share of revenue (revenue_total * AGENT_SPLIT_RATE)
+      - revenue_total    Agency gross (Plecto truth) — admin/compliance only
       - audit_gap        Sum of unresolved gaps (resolved records contribute 0)
       - policies_count   Row count
-    Sorted by revenue_total descending.
+    Sorted by agent_split descending.
 
-    `is_self` flags the calling user's own row when their agent_name
-    matches — lets the UI highlight without an extra round trip.
+    Agents never see ``revenue_total`` — the gross is stripped server-side
+    so a curious agent can't read it from devtools. ``is_self`` flags the
+    calling user's own row when their agent_name matches.
     """
     base_filter: dict = {}
     period_f = _period_filter(period)
@@ -99,16 +107,25 @@ async def get_leaderboard(
     # endpoints use — agent_name primary, full_name fallback for legacy
     # users whose agent_name hasn't been backfilled.
     my_agent_name = resolve_agent_key(current_user)
+    role = current_user.get("role")
+    can_see_gross = role in ("admin", "compliance")
+
     rows = []
     for row in by_agent.values():
-        rows.append({
-            **row,
-            "revenue_total": round(row["revenue_total"], 2),
+        revenue_total = round(row["revenue_total"], 2)
+        out = {
+            "agent_name": row["agent_name"],
+            "agent_split": round(revenue_total * AGENT_SPLIT_RATE, 2),
+            "agent_split_pct": AGENT_SPLIT_RATE,
             "audit_gap": round(row["audit_gap"], 2),
+            "policies_count": row["policies_count"],
             "is_self": (my_agent_name is not None
                          and row["agent_name"] == my_agent_name),
-        })
-    rows.sort(key=lambda r: r["revenue_total"], reverse=True)
+        }
+        if can_see_gross:
+            out["revenue_total"] = revenue_total
+        rows.append(out)
+    rows.sort(key=lambda r: r["agent_split"], reverse=True)
     rows = rows[:limit]
     # Rank after slicing so positions reflect what the client sees.
     for i, r in enumerate(rows, start=1):
