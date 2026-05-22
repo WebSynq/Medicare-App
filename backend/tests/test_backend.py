@@ -1946,6 +1946,194 @@ async def test_today_actions_audits(client, db, admin_headers):
     assert "urgent_count" in entry["metadata"]
 
 
+# ── Appointments router ────────────────────────────────────────────────────
+def test_appointments_requires_auth(client, db):
+    """Unauthenticated GET is rejected."""
+    r = client.get("/api/appointments")
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_appointment_create_and_list(client, db, admin_headers):
+    """Happy-path create stamps the doc; list returns it with denormalized name."""
+    # Seed a lead the admin owns so _resolve_lead passes for non-privileged
+    # too — admin is privileged anyway, but this also verifies denormalization.
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    await db.leads.insert_one({
+        "id": "appt-lead-1",
+        "first_name": "Mira", "last_name": "Holt",
+        "phone": "555-0101", "email": "mira@example.com",
+        "status": "new", "agent_id": admin["id"],
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    r = client.post("/api/appointments", headers=admin_headers, json={
+        "lead_id": "appt-lead-1",
+        "appointment_date": "2026-06-15",
+        "appointment_time": "10:30",
+        "duration_minutes": 60,
+        "type": "plan_review",
+        "notes": "Annual review prep",
+        "estimated_commission": 480.00,
+    })
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["appointment_id"]
+    assert body["client_name"] == "Mira Holt"
+    assert body["status"] == "scheduled"
+    assert body["estimated_commission"] == 480.00
+
+    listed = client.get("/api/appointments?date=2026-06-15", headers=admin_headers)
+    assert listed.status_code == 200
+    rows = listed.json()["appointments"]
+    assert any(r["appointment_id"] == body["appointment_id"] for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_appointment_create_400_when_lead_missing(client, db, admin_headers):
+    """Booking against a non-existent lead returns 404."""
+    r = client.post("/api/appointments", headers=admin_headers, json={
+        "lead_id": "no-such-lead",
+        "appointment_date": "2026-06-15",
+        "appointment_time": "10:30",
+    })
+    assert r.status_code == 404
+    assert "Lead not found" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_appointment_rejects_bad_date_time(client, db, admin_headers):
+    """Date/time validators reject obviously bad input."""
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    await db.leads.insert_one({
+        "id": "appt-lead-2",
+        "first_name": "Bad", "last_name": "Input",
+        "status": "new", "agent_id": admin["id"],
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    bad_date = client.post("/api/appointments", headers=admin_headers, json={
+        "lead_id": "appt-lead-2",
+        "appointment_date": "06/15/2026",  # MM/DD/YYYY — rejected
+        "appointment_time": "10:30",
+    })
+    assert bad_date.status_code == 422
+
+    bad_time = client.post("/api/appointments", headers=admin_headers, json={
+        "lead_id": "appt-lead-2",
+        "appointment_date": "2026-06-15",
+        "appointment_time": "10:99",  # minute out of range
+    })
+    assert bad_time.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_appointment_patch_and_cancel(client, db, admin_headers):
+    """PATCH updates whitelisted fields; DELETE soft-cancels without removing."""
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    await db.leads.insert_one({
+        "id": "appt-lead-3",
+        "first_name": "Soft", "last_name": "Cancel",
+        "status": "new", "agent_id": admin["id"],
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    created = client.post("/api/appointments", headers=admin_headers, json={
+        "lead_id": "appt-lead-3",
+        "appointment_date": "2026-07-01",
+        "appointment_time": "14:00",
+    }).json()
+    appt_id = created["appointment_id"]
+
+    patched = client.patch(
+        f"/api/appointments/{appt_id}",
+        headers=admin_headers,
+        json={"status": "completed", "outcome": "Enrolled in MAPD"},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["status"] == "completed"
+    assert patched.json()["outcome"] == "Enrolled in MAPD"
+
+    cancelled = client.delete(f"/api/appointments/{appt_id}", headers=admin_headers)
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+
+    # Doc still exists in DB — soft-cancel only.
+    surviving = await db.appointments.find_one({"appointment_id": appt_id})
+    assert surviving is not None
+    assert surviving["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_appointment_idor_agent_cant_see_others(client, db, admin_headers):
+    """An agent must 403 on another agent's appointment id."""
+    # Stand up a second agent via the invite/register flow.
+    inv = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": "appt.bob@example.com", "full_name": "Bob Booker",
+        "agency_name": "BB", "agent_name": "Bob Booker",
+    }).json()
+    reg = client.post("/api/auth/register", json={
+        "email": "appt.bob@example.com", "password": "BobPass!2026",
+        "full_name": "Bob Booker", "agency_name": "BB",
+        "invite_token": inv["token"],
+    })
+    client.post(f"/api/auth/users/{reg.json()['id']}/approve", headers=admin_headers)
+    bob_login = client.post("/api/auth/login", json={
+        "email": "appt.bob@example.com", "password": "BobPass!2026",
+    })
+    bob_headers = {"Authorization": f"Bearer {bob_login.json()['access_token']}"}
+
+    # Admin books an appointment owned by admin.
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    await db.leads.insert_one({
+        "id": "appt-lead-admin",
+        "first_name": "Admin", "last_name": "Client",
+        "status": "new", "agent_id": admin["id"],
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    appt = client.post("/api/appointments", headers=admin_headers, json={
+        "lead_id": "appt-lead-admin",
+        "appointment_date": "2026-08-10",
+        "appointment_time": "09:00",
+    }).json()
+
+    # Bob tries to read it — must 403 (existence is acknowledged, ownership isn't).
+    r = client.get(f"/api/appointments/{appt['appointment_id']}", headers=bob_headers)
+    assert r.status_code == 403
+    # Bob's own list is empty — agent_filter scopes to him.
+    own = client.get("/api/appointments", headers=bob_headers)
+    assert own.status_code == 200
+    assert own.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_today_picks_up_scheduled_appointment(client, db, admin_headers):
+    """Once an appointment exists for today, /today/actions surfaces it."""
+    from datetime import date, timezone, datetime
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    await db.leads.insert_one({
+        "id": "appt-today-lead",
+        "first_name": "Today", "last_name": "Caller",
+        "status": "new", "agent_id": admin["id"],
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    client.post("/api/appointments", headers=admin_headers, json={
+        "lead_id": "appt-today-lead",
+        "appointment_date": today_iso,
+        "appointment_time": "11:00",
+        "notes": "Plan review call",
+    })
+
+    r = client.get("/api/today/actions", headers=admin_headers)
+    body = r.json()
+    appts = body["todays_appointments"]
+    assert any(a["client_name"] == "Today Caller" for a in appts)
+    assert body["summary"]["appointments_count"] >= 1
+
+
 @pytest.mark.asyncio
 async def test_backup_excludes_passwords(client, db, admin_headers):
     """The backup dump must NEVER include hashed_password — neither

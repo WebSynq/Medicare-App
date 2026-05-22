@@ -12,6 +12,7 @@ import SOAForm from "@/pages/SOAForm";
 import MfaSetup from "@/pages/MfaSetup";
 import AgentDashboard from "@/pages/AgentDashboard";
 import TodayPage from "@/pages/TodayPage";
+import AppointmentsList from "@/pages/AppointmentsList";
 import LeadDetail from "@/pages/LeadDetail";
 import CommissionsDashboard from "@/pages/CommissionsDashboard";
 import AdminCommissions from "@/pages/AdminCommissions";
@@ -79,6 +80,7 @@ export default function App() {
         <Route path="/security" element={<SecurityPage />} />
         <Route path="/mfa-setup" element={<Protected noLayout><MfaSetup /></Protected>} />
         <Route path="/today" element={<Protected><TodayPage /></Protected>} />
+        <Route path="/appointments" element={<Protected><AppointmentsList /></Protected>} />
         <Route path="/dashboard" element={<Protected><AgentDashboard /></Protected>} />
         <Route
           path="/commissions"
