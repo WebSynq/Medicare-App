@@ -251,6 +251,10 @@ class LeadBase(BaseModel):
     underwriting_approved: Optional[Literal["Yes", "No", "Pending"]] = None
     cancel_old_plan: Optional[Literal["Yes", "No", "N/A"]] = None
     admin_requests: Optional[str] = None
+    # Internal assignment: which client-success rep owns post-sale support
+    # for this lead. Not synced to GHL — this is back-office routing only.
+    # "Other" leaves room for future names without a code change.
+    client_success_rep: Optional[Literal["Kelsey", "Ashley", "Other"]] = None
     # Free-text product the client is interested in. Drives auto-SOA
     # generation in leads_router for Medicare-flavoured products.
     product_interest: Optional[str] = None

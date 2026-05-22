@@ -263,6 +263,7 @@ const INITIAL_DATA = {
   underwriting_approved: "",
   cancel_old_plan: "",
   admin_requests: "",
+  client_success_rep: "",
   consent_acknowledged: false,
   plan_types: { MA: false, MAPD: false, PDP: false, MedSupp: false },
 };
@@ -388,6 +389,7 @@ export default function IntakeWizard() {
         underwriting_approved: data.underwriting_approved || undefined,
         cancel_old_plan: data.cancel_old_plan || undefined,
         admin_requests: data.admin_requests || undefined,
+        client_success_rep: data.client_success_rep || undefined,
       };
       const res = await api.post("/leads", payload);
       setCreatedLeadId(res.data.id);
@@ -934,6 +936,21 @@ function ApplicationDetailsStep({ data, update }) {
               placeholder="Anything the back-office team should know — special requests, urgency, follow-ups."
               data-testid="intake-admin-requests"
             />
+          </Field>
+          <Field label="Assigned Client Success Rep">
+            <Select
+              value={data.client_success_rep}
+              onValueChange={(v) => update("client_success_rep", v)}
+            >
+              <SelectTrigger className="h-14 text-[16px]" data-testid="intake-cs-rep">
+                <SelectValue placeholder="Select…" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Kelsey">Kelsey</SelectItem>
+                <SelectItem value="Ashley">Ashley</SelectItem>
+                <SelectItem value="Other">Other</SelectItem>
+              </SelectContent>
+            </Select>
           </Field>
         </div>
       </CardContent>

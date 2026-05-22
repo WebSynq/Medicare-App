@@ -38,6 +38,7 @@ import {
   Copy,
   AlertTriangle,
   Sparkles,
+  Headphones,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -602,6 +603,14 @@ export default function ClientProfile() {
                     >
                       <ShieldAlert className="w-3 h-3 mr-1" /> No TCPA Consent —
                       Do not SMS
+                    </Badge>
+                  )}
+                  {lead.client_success_rep && (
+                    <Badge
+                      className="rounded-full bg-secondary text-secondary-foreground border-0"
+                      data-testid="client-cs-rep-badge"
+                    >
+                      <Headphones className="w-3 h-3 mr-1" /> CS Rep: {lead.client_success_rep}
                     </Badge>
                   )}
                 </div>

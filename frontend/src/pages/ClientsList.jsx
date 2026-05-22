@@ -281,6 +281,7 @@ export default function ClientsList() {
                     <TableHead>TCPA</TableHead>
                     <TableHead>GHL</TableHead>
                     <TableHead>Products</TableHead>
+                    <TableHead>CS Rep</TableHead>
                     <TableHead>Submitted</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
@@ -369,6 +370,11 @@ export default function ClientsList() {
                       </TableCell>
                       <TableCell className="text-sm">
                         {l.plan_type_premium || (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {l.client_success_rep || (
                           <span className="text-muted-foreground">—</span>
                         )}
                       </TableCell>
