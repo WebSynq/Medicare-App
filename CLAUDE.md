@@ -35,7 +35,6 @@
 - /commissions/live keys by users.agent_name (DB row)
 - These must be unified to users.agent_name before new commission work
 - agent_name is empty for existing users — needs backfill migration
-- InviteAgentModal.jsx missing agent_name/agent_npn fields
 - Bearer-header auth path still active (deprecate before new routes)
 
 ## Env Vars Required (Render)

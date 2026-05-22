@@ -15,6 +15,10 @@ export default function InviteAgentModal({ onClose }) {
 
   const handleSubmit = async () => {
     if (!form.email) { toast.error("Email is required"); return; }
+    if (!form.agent_name.trim()) {
+      toast.error("Full Name (as on carrier statements) is required");
+      return;
+    }
     // Send only fields the user filled in. Backend validators reject empty
     // strings on agent_npn (must be 5-10 digits) so we drop falsy values
     // before posting.
@@ -95,24 +99,25 @@ export default function InviteAgentModal({ onClose }) {
             </div>
             <div>
               <label className="block text-xs font-medium mb-1.5 uppercase" style={{ letterSpacing: "0.08em", color: "var(--color-text-secondary)" }}>
-                Agent Name (ComTrack)
+                Full Name (as it appears on carrier statements) *
               </label>
               <input
                 type="text"
-                placeholder="Name as it appears in ComTrack"
+                placeholder="Name as it appears on carrier commission statements"
                 value={form.agent_name}
                 onChange={e => setForm(f => ({ ...f, agent_name: e.target.value }))}
                 maxLength={100}
+                required
                 className="w-full px-3 py-2 rounded-lg text-sm outline-none"
                 style={{ background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", color: "var(--color-text-primary)" }}
               />
               <p className="text-[11px] mt-1" style={{ color: "var(--color-text-secondary)" }}>
-                Used to look up commissions for this agent. Leave blank if unknown.
+                Used to look up this agent's commissions. Must match carrier statements exactly.
               </p>
             </div>
             <div>
               <label className="block text-xs font-medium mb-1.5 uppercase" style={{ letterSpacing: "0.08em", color: "var(--color-text-secondary)" }}>
-                NPN
+                NPN (National Producer Number)
               </label>
               <input
                 type="text"
