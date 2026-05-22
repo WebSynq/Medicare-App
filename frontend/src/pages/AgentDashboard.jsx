@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
+  ArrowDownRight,
+  ArrowUpRight,
   Bell,
+  CalendarDays,
   CheckCircle2,
   ChevronRight,
   ClipboardList,
@@ -10,6 +13,7 @@ import {
   Eye,
   FileSignature,
   ListChecks,
+  Minus,
   PieChart as PieIcon,
   Quote as QuoteIcon,
   Sparkles,
@@ -102,8 +106,34 @@ function monthLabel(yyyymm) {
   return d.toLocaleString("en-US", { month: "short" });
 }
 
+// Build a small {dir,label} object describing how `current` moved vs
+// `prev`. "new" when the prior week was zero but this week isn't,
+// "—" when there's nothing to compare on either side. Returns null when
+// the caller didn't pass a prev value so the card stays unchanged.
+function buildTrend(current, prev) {
+  if (prev === undefined || prev === null) return null;
+  const c = current || 0;
+  const p = prev || 0;
+  if (p === 0) {
+    if (c === 0) return { dir: "flat", label: "—" };
+    return { dir: "up", label: "new" };
+  }
+  const pct = Math.round(((c - p) / p) * 100);
+  if (c === p) return { dir: "flat", label: "0%" };
+  const sign = c > p ? "+" : "";
+  return { dir: c > p ? "up" : "down", label: `${sign}${pct}%` };
+}
+
 // ── Small reusable bits ─────────────────────────────────────────────────
-function KpiCard({ label, value, icon: Icon, accent = false, money = false }) {
+function KpiCard({ label, value, icon: Icon, accent = false, money = false, trend = null }) {
+  const TrendIcon =
+    trend?.dir === "up" ? ArrowUpRight : trend?.dir === "down" ? ArrowDownRight : Minus;
+  const trendColor =
+    trend?.dir === "up"
+      ? "text-emerald-700"
+      : trend?.dir === "down"
+        ? "text-rose-700"
+        : "text-muted-foreground";
   return (
     <Card className="bg-surface">
       <CardContent className="p-4">
@@ -123,6 +153,15 @@ function KpiCard({ label, value, icon: Icon, accent = false, money = false }) {
         >
           {money ? fmtMoney(value) : (value ?? 0).toLocaleString()}
         </div>
+        {trend && (
+          <div
+            className={`mt-1 flex items-center gap-1 text-[11px] font-medium ${trendColor}`}
+            data-testid="kpi-trend"
+          >
+            <TrendIcon className="w-3 h-3" />
+            <span>{trend.label} vs last week</span>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -630,13 +669,19 @@ export default function AgentDashboard() {
 
         {/* ── ROW 1: KPI cards ── */}
         {loading ? (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-            {Array.from({ length: 6 }).map((_, i) => (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3 mb-6">
+            {Array.from({ length: 7 }).map((_, i) => (
               <SkeletonBlock key={i} />
             ))}
           </div>
         ) : isAdminAgency ? (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3 mb-6">
+            <KpiCard
+              label="This Week"
+              value={stats?.weekly_enrollments || 0}
+              icon={CalendarDays}
+              trend={buildTrend(stats?.weekly_enrollments, stats?.weekly_enrollments_prev)}
+            />
             <KpiCard label="Active Agents" value={stats?.agents_active || 0} icon={Users2} />
             <KpiCard label="Leads MTD" value={stats?.leads_total || 0} icon={ListChecks} />
             <KpiCard label="Apps MTD" value={stats?.apps_submitted_mtd || 0} icon={FileSignature} />
@@ -645,7 +690,13 @@ export default function AgentDashboard() {
             <KpiCard label="Open Alerts" value={(stats?.alerts || []).length} icon={Bell} />
           </div>
         ) : (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-3 mb-6">
+            <KpiCard
+              label="This Week"
+              value={stats?.weekly_enrollments || 0}
+              icon={CalendarDays}
+              trend={buildTrend(stats?.weekly_enrollments, stats?.weekly_enrollments_prev)}
+            />
             <KpiCard label="New Leads" value={stats?.leads_new || 0} icon={Sparkles} accent />
             <KpiCard label="Apps Submitted" value={stats?.apps_submitted_mtd || 0} icon={FileSignature} />
             <KpiCard label="SOAs Sent" value={stats?.soa_sent_mtd || 0} icon={FileSignature} />

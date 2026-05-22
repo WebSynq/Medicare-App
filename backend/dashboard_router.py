@@ -259,6 +259,31 @@ async def _appointments_this_week(db, scope: dict) -> int:
     return await db.leads.count_documents(q)
 
 
+async def _weekly_enrollments(db, scope: dict) -> Dict[str, int]:
+    """New leads created in the rolling 7-day window plus the 7 days before it.
+
+    Returns both numbers so the dashboard can render a week-over-week
+    trend arrow without a second round trip. Scoped by ``scope`` (the
+    same agent_filter the rest of /stats uses) so an agent sees only
+    their own intake count.
+    """
+    now = datetime.now(timezone.utc)
+    week_ago_iso = (now - timedelta(days=7)).isoformat()
+    two_weeks_ago_iso = (now - timedelta(days=14)).isoformat()
+    this_week = await db.leads.count_documents({
+        **scope,
+        "created_at": {"$gte": week_ago_iso},
+    })
+    prev_week = await db.leads.count_documents({
+        **scope,
+        "created_at": {"$gte": two_weeks_ago_iso, "$lt": week_ago_iso},
+    })
+    return {
+        "weekly_enrollments": this_week,
+        "weekly_enrollments_prev": prev_week,
+    }
+
+
 async def _soa_stats(db, scope: dict) -> Dict[str, Any]:
     """SOA "sent" approximates to leads that have SOA workflow started.
     Today the portal only stamps soa_signed/soa_signed_at, so we use
@@ -710,6 +735,7 @@ async def dashboard_stats(
     try:
         lead_stats = await _lead_stats(db, scope)
         appt_week = await _appointments_this_week(db, scope)
+        weekly_stats = await _weekly_enrollments(db, scope)
         soa_stats = await _soa_stats(db, scope)
         policy_stats = await _policy_stats(db, scope)
         revenue_stats = await _revenue_stats(db, scope)
@@ -742,6 +768,7 @@ async def dashboard_stats(
             "daily_quote": quote,
             **lead_stats,
             "appointments_this_week": appt_week,
+            **weekly_stats,
             **soa_stats,
             **policy_stats,
             **revenue_stats,
