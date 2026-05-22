@@ -30,6 +30,7 @@ import {
   PanelLeftOpen,
   Search as SearchIcon,
   Command as CommandIcon,
+  Sparkles,
 } from "lucide-react";
 import { Link, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { api, auth } from "@/lib/api";
