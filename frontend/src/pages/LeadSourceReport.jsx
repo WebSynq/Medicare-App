@@ -144,7 +144,11 @@ export default function LeadSourceReport() {
     };
   }, [period]);
 
-  const sources = data?.sources || [];
+  // Wrap in useMemo so the array reference is stable across renders when
+  // `data` doesn't change — the chartRows useMemo below depends on this
+  // value, and a fresh `[]` literal on every render would defeat the
+  // memoization (react-hooks/exhaustive-deps catches this).
+  const sources = useMemo(() => data?.sources || [], [data]);
   const top = sources.find((s) => s.source === data?.top_source);
   const best = sources.find((s) => s.source === data?.best_converting);
 
