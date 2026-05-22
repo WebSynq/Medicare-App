@@ -34,6 +34,7 @@ import { api, auth } from "@/lib/api";
 import { useAgent } from "@/context/AgentContext";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import ChatWidget from "@/components/ChatWidget";
 import CommandPalette from "@/components/CommandPalette";
 
@@ -172,26 +173,23 @@ function SectionLabel({ children, collapsed }) {
 }
 
 // ── Agent switcher (admin/compliance only) ────────────────────────────────
-// Lives above the main nav. Two states:
-//   - Not impersonating → compact dropdown ("All Agents" + list).
-//   - Impersonating     → orange banner showing the target with an X to clear.
-// Agents (role !== admin/compliance) never see this control. We also guard
-// against the agent list being unreadable (403/network) by simply not
-// rendering — the rest of the sidebar still works.
-function AgentSwitcher({ role, onNavigate }) {
+// "Agency / Sub-Account" toggle, modelled on GHL's agency-vs-sub-account
+// switcher. Lives at the bottom of the nav, just above Settings. Two states:
+//   - Not impersonating → "Agency View" with a building icon.
+//   - Impersonating     → "Viewing As: <name>" with an explicit
+//                         "Exit to Agency" button.
+// Visibility is admin/compliance only — wider compliance-bucket roles
+// (cyber_security, sales_manager) don't impersonate; they read agency
+// data directly. Failures fetching the agent list silently degrade.
+function AgentSwitcher({ role, onNavigate, collapsed, onToggleCollapse }) {
   const navigate = useNavigate();
   const { selectedAgent, setSelectedAgent, clearAgent, isImpersonating } = useAgent();
   const [agents, setAgents] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
 
-  // Same role profile as the admin-area sidebar: anything in the
-  // compliance bucket plus admin proper can impersonate.
-  const canSee =
-    role === "admin" ||
-    role === "compliance" ||
-    role === "cyber_security" ||
-    role === "sales_manager";
+  const canSee = role === "admin" || role === "compliance";
 
   useEffect(() => {
     if (!canSee) return;
@@ -232,6 +230,17 @@ function AgentSwitcher({ role, onNavigate }) {
     });
   }, [agents]);
 
+  // Search filter — case-insensitive substring match against the agent's
+  // display name / email. Empty query passes the full sorted list through.
+  const filteredAgents = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return sortedAgents;
+    return sortedAgents.filter((a) => {
+      const hay = ((a.full_name || "") + " " + (a.email || "")).toLowerCase();
+      return hay.includes(q);
+    });
+  }, [sortedAgents, query]);
+
   const roleLabel = (r) => {
     if (!r) return "";
     const m = {
@@ -241,17 +250,26 @@ function AgentSwitcher({ role, onNavigate }) {
       sales_manager: "Sales Manager",
       cyber_security: "Cyber Security",
       va: "Virtual Assistant",
-      support: "Customer Support",
+      support: "Support",
       crm_specialist: "CRM Specialist",
       onboarding: "Onboarding",
+      client_success: "Client Success",
     };
     return m[r] || r.replace(/_/g, " ");
   };
 
   if (!canSee) return null;
 
+  const activeName = isImpersonating
+    ? selectedAgent?.full_name ||
+      selectedAgent?.agent_name ||
+      selectedAgent?.email ||
+      "Agent"
+    : null;
+
   function handlePick(agent) {
     setSelectedAgent(agent);
+    setQuery("");
     setOpen(false);
     if (onNavigate) onNavigate();
     navigate("/dashboard");
@@ -263,92 +281,198 @@ function AgentSwitcher({ role, onNavigate }) {
     navigate("/dashboard");
   }
 
-  if (isImpersonating && selectedAgent) {
-    const name =
-      selectedAgent.full_name ||
-      selectedAgent.agent_name ||
-      selectedAgent.email ||
-      "Agent";
+  // Collapsed mode: a single icon. Tapping it expands the sidebar first
+  // (so the Popover anchor settles into its final width) and then opens
+  // the dropdown after the width transition finishes — matches the
+  // 200ms transition-[width] duration set on <aside>.
+  function handleCollapsedClick() {
+    if (collapsed && onToggleCollapse) {
+      onToggleCollapse();
+      setTimeout(() => setOpen(true), 220);
+      return;
+    }
+    setOpen((v) => !v);
+  }
+
+  if (collapsed) {
     return (
-      <div className="px-3 pt-3 pb-2" data-testid="agent-switcher-banner">
-        <div
-          className="flex items-center gap-2 px-3 py-2 rounded-md text-xs font-medium"
-          style={{
-            background: "rgba(232, 93, 47, 0.15)",
-            border: "1px solid rgba(232, 93, 47, 0.45)",
-            color: "#ffb997",
-          }}
-        >
-          <Eye className="w-3.5 h-3.5 flex-shrink-0" />
-          <span className="truncate flex-1" title={name}>
-            {name}
-          </span>
-          <button
-            type="button"
-            onClick={handleClear}
-            className="p-0.5 -mr-1 rounded hover:bg-white/10 text-white/80 hover:text-white"
-            aria-label="Stop viewing as agent"
-            data-testid="agent-switcher-clear"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
+      <div className="px-2 pt-2 pb-1">
+        <Tooltip delayDuration={120}>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={handleCollapsedClick}
+              aria-label={
+                isImpersonating
+                  ? `Viewing as ${activeName}`
+                  : "Switch agent — Agency view"
+              }
+              className="w-full grid place-items-center py-2 rounded-md bg-white/5 hover:bg-white/10 transition-colors"
+              style={
+                isImpersonating
+                  ? {
+                      background: "rgba(232,93,47,0.15)",
+                      border: "1px solid rgba(232,93,47,0.4)",
+                    }
+                  : undefined
+              }
+              data-testid="agent-switcher-collapsed"
+            >
+              <Users
+                className="w-4 h-4"
+                style={{ color: isImpersonating ? ACCENT : "rgba(255,255,255,0.7)" }}
+              />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right" sideOffset={8}>
+            {isImpersonating ? `Viewing as ${activeName}` : "Agency View"}
+          </TooltipContent>
+        </Tooltip>
       </div>
     );
   }
 
   return (
-    <div className="px-3 pt-3 pb-1 relative" data-testid="agent-switcher">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-md text-xs text-white/70 hover:text-white bg-white/5 hover:bg-white/10 transition-colors"
-        data-testid="agent-switcher-toggle"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-      >
-        <span className="flex items-center gap-2 truncate">
-          <UsersRound className="w-3.5 h-3.5 flex-shrink-0 text-white/70" aria-hidden="true" />
-          <span className="truncate">All Agents</span>
-        </span>
-        <ChevronDown
-          className={`w-3.5 h-3.5 flex-shrink-0 transition-transform ${
-            open ? "rotate-180" : ""
-          }`}
-        />
-      </button>
-      {open && (
-        <div
-          className="absolute left-3 right-3 mt-1 max-h-72 overflow-y-auto rounded-md shadow-lg z-50 py-1 text-xs"
+    <div className="px-3 pt-2 pb-1" data-testid="agent-switcher">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-md text-xs transition-colors"
+            style={
+              isImpersonating
+                ? {
+                    background: "rgba(232,93,47,0.12)",
+                    border: "1px solid rgba(232,93,47,0.4)",
+                    color: "#ffb997",
+                  }
+                : {
+                    background: "rgba(255,255,255,0.05)",
+                    color: "rgba(255,255,255,0.75)",
+                  }
+            }
+            data-testid="agent-switcher-toggle"
+            aria-haspopup="dialog"
+            aria-expanded={open}
+          >
+            <span className="flex items-center gap-2 min-w-0 flex-1">
+              {isImpersonating ? (
+                <Eye
+                  className="w-3.5 h-3.5 flex-shrink-0"
+                  style={{ color: ACCENT }}
+                />
+              ) : (
+                <Building2 className="w-3.5 h-3.5 flex-shrink-0 text-white/70" />
+              )}
+              <span className="min-w-0 flex-1 text-left">
+                <span className="block text-[9px] uppercase tracking-[0.12em] text-white/45 leading-none mb-0.5">
+                  {isImpersonating ? "Viewing As" : "View"}
+                </span>
+                <span
+                  className="block truncate text-xs font-medium leading-tight"
+                  title={activeName || "Agency View"}
+                >
+                  {activeName || "Agency View"}
+                </span>
+              </span>
+            </span>
+            <ChevronDown
+              className={`w-3.5 h-3.5 flex-shrink-0 transition-transform ${
+                open ? "rotate-180" : ""
+              }`}
+            />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          side="top"
+          align="start"
+          sideOffset={8}
+          className="w-[220px] p-0 border-0 shadow-xl"
           style={{
             background: "#152234",
             border: "1px solid rgba(255,255,255,0.08)",
           }}
-          role="listbox"
+          data-testid="agent-switcher-popover"
         >
-          {!loaded && (
-            <div className="px-3 py-2 text-white/50">Loading…</div>
-          )}
-          {loaded && sortedAgents.length === 0 && (
-            <div className="px-3 py-2 text-white/50">No agents</div>
-          )}
-          {sortedAgents.map((a) => (
-            <button
-              type="button"
-              key={a.id}
-              onClick={() => handlePick(a)}
-              className="w-full text-left px-3 py-2 text-white/80 hover:text-white hover:bg-white/5 truncate"
-              data-testid={`agent-switcher-pick-${a.id}`}
-            >
-              {a.full_name || a.email}
-              {a.role && (
-                <span className="ml-1 text-white/45">
-                  ({roleLabel(a.role)})
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+          <div className="p-2 border-b border-white/5">
+            <div className="relative">
+              <SearchIcon className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-white/40" />
+              <input
+                type="text"
+                placeholder="Search agents…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                className="w-full pl-7 pr-2 py-1.5 text-xs rounded bg-white/5 text-white/85 placeholder-white/35 outline-none focus:bg-white/10"
+                data-testid="agent-switcher-search"
+                autoFocus
+              />
+            </div>
+          </div>
+          <div
+            className="overflow-y-auto py-1"
+            style={{ maxHeight: 240 }}
+            role="listbox"
+          >
+            {!loaded && (
+              <div className="px-3 py-2 text-white/50 text-xs">Loading…</div>
+            )}
+            {loaded && filteredAgents.length === 0 && (
+              <div className="px-3 py-2 text-white/50 text-xs">
+                {query.trim() ? "No matches" : "No agents"}
+              </div>
+            )}
+            {filteredAgents.map((a) => {
+              const isActive = selectedAgent?.id === a.id;
+              return (
+                <button
+                  type="button"
+                  key={a.id}
+                  onClick={() => handlePick(a)}
+                  role="option"
+                  aria-selected={isActive}
+                  className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-left text-xs hover:bg-white/5 transition-colors"
+                  style={
+                    isActive
+                      ? {
+                          background: "rgba(232,93,47,0.18)",
+                          color: "#ffb997",
+                        }
+                      : { color: "rgba(255,255,255,0.85)" }
+                  }
+                  data-testid={`agent-switcher-pick-${a.id}`}
+                >
+                  <span className="truncate flex-1">
+                    {a.full_name || a.email}
+                  </span>
+                  {a.role && (
+                    <span
+                      className="flex-shrink-0 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider"
+                      style={{
+                        background: isActive
+                          ? "rgba(232,93,47,0.25)"
+                          : "rgba(255,255,255,0.08)",
+                        color: isActive ? "#ffb997" : "rgba(255,255,255,0.55)",
+                      }}
+                    >
+                      {roleLabel(a.role)}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </PopoverContent>
+      </Popover>
+      {isImpersonating && (
+        <button
+          type="button"
+          onClick={handleClear}
+          className="mt-1.5 w-full flex items-center justify-center gap-1.5 px-3 py-1 rounded text-[11px] text-white/55 hover:text-white hover:bg-white/5 transition-colors"
+          data-testid="agent-switcher-clear"
+        >
+          <X className="w-3 h-3" />
+          Exit to Agency
+        </button>
       )}
     </div>
   );
@@ -471,11 +595,6 @@ function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggle
         </div>
       )}
 
-      {/* Admin-only "view as agent" switcher — hidden when collapsed
-          (would need a dedicated icon-only popover; deferred to keep
-          Phase 2 tight). */}
-      {!c && <AgentSwitcher role={role} onNavigate={onNavigate} />}
-
       {/* Nav */}
       <nav className={`flex-1 overflow-y-auto py-3 ${c ? "px-2" : "px-2"}`}>
         <SectionLabel collapsed={c}>Main</SectionLabel>
@@ -508,7 +627,19 @@ function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggle
           </>
         )}
 
-        <div className="space-y-0.5 mt-5">
+        {/* Agency / Sub-Account switcher — admin & compliance only, lives
+            just above Settings/Logout so it's the last persistent control
+            before personal account actions. Renders nothing for other roles. */}
+        <div className="mt-5">
+          <AgentSwitcher
+            role={role}
+            onNavigate={onNavigate}
+            collapsed={c}
+            onToggleCollapse={onToggleCollapse}
+          />
+        </div>
+
+        <div className="space-y-0.5 mt-2">
           <NavItem to="/settings" icon={SettingsIcon} label="Settings" onClick={onNavigate} testId="nav-settings" collapsed={c} />
         </div>
       </nav>
