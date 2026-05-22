@@ -240,7 +240,13 @@ function ClientTypeahead({ selected, onSelect }) {
 }
 
 function NewAppointmentSheet({ open, onOpenChange, onCreated }) {
-  const [client, setClient] = useState(null);
+  // clientName is always present; linkedLead is the (optional) CRM
+  // record we're attaching the appointment to. Booking against a
+  // walk-in prospect who isn't in the system yet sends just
+  // client_name with lead_id omitted — the backend stores lead_id=null
+  // and the SPA hides the View Client button for those rows.
+  const [clientName, setClientName] = useState("");
+  const [linkedLead, setLinkedLead] = useState(null);
   const [date, setDate] = useState(null);
   const [time, setTime] = useState("");
   const [duration, setDuration] = useState(30);
@@ -249,24 +255,11 @@ function NewAppointmentSheet({ open, onOpenChange, onCreated }) {
   const [commission, setCommission] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // Pre-fill the commission estimate from the lead's current plan/carrier
-  // when one is picked — agents can override before saving. Empty when
-  // the lead has nothing on file.
-  useEffect(() => {
-    if (!client) {
-      setCommission("");
-      return;
-    }
-    // No commission calculator wired yet for "future policy", so leave
-    // blank by default — manual input per spec. We still expose the
-    // existing plan/carrier inline so the agent can eyeball it.
-    setCommission("");
-  }, [client]);
-
   // Reset state on close so the next open starts clean.
   useEffect(() => {
     if (!open) {
-      setClient(null);
+      setClientName("");
+      setLinkedLead(null);
       setDate(null);
       setTime("");
       setDuration(30);
@@ -277,10 +270,19 @@ function NewAppointmentSheet({ open, onOpenChange, onCreated }) {
     }
   }, [open]);
 
+  function handleLeadSelect(lead) {
+    setLinkedLead(lead);
+    if (lead) {
+      const full = `${lead.first_name || ""} ${lead.last_name || ""}`.trim();
+      setClientName(full || lead.email || "");
+    }
+  }
+
   async function handleSubmit(e) {
     e?.preventDefault?.();
-    if (!client) {
-      toast.error("Pick a client first");
+    const name = clientName.trim();
+    if (!name) {
+      toast.error("Client name is required");
       return;
     }
     if (!date) {
@@ -294,12 +296,13 @@ function NewAppointmentSheet({ open, onOpenChange, onCreated }) {
     setSaving(true);
     try {
       const payload = {
-        lead_id: client.id,
+        client_name: name,
         appointment_date: format(date, "yyyy-MM-dd"),
         appointment_time: time,
         duration_minutes: Number(duration) || 30,
         type,
       };
+      if (linkedLead) payload.lead_id = linkedLead.id;
       if (notes.trim()) payload.notes = notes.trim();
       const c = parseFloat(commission);
       if (Number.isFinite(c) && c >= 0) payload.estimated_commission = c;
@@ -320,20 +323,38 @@ function NewAppointmentSheet({ open, onOpenChange, onCreated }) {
         <SheetHeader className="mb-4">
           <SheetTitle>New Appointment</SheetTitle>
           <SheetDescription>
-            Schedule a call or meeting and tie it to a client.
+            Schedule a call or meeting. Linking to an existing client is
+            optional — leave it blank for walk-ins or prospects not yet
+            in the system.
           </SheetDescription>
         </SheetHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-[11px] uppercase tracking-widest text-muted-foreground mb-1.5">
-              Client *
+              Client Name *
             </label>
-            <ClientTypeahead selected={client} onSelect={setClient} />
-            {client && (client.current_plan || client.current_carrier) && (
+            <Input
+              type="text"
+              placeholder="e.g. Mira Holt"
+              value={clientName}
+              onChange={(e) => setClientName(e.target.value)}
+              maxLength={200}
+              className="h-10"
+              data-testid="appt-client-name"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-[11px] uppercase tracking-widest text-muted-foreground mb-1.5">
+              Link to existing client (optional)
+            </label>
+            <ClientTypeahead selected={linkedLead} onSelect={handleLeadSelect} />
+            {linkedLead && (linkedLead.current_plan || linkedLead.current_carrier) && (
               <p className="text-[11px] text-muted-foreground mt-1">
-                Current plan: {client.current_carrier || "—"} ·{" "}
-                {client.current_plan || "—"}
+                Current plan: {linkedLead.current_carrier || "—"} ·{" "}
+                {linkedLead.current_plan || "—"}
               </p>
             )}
           </div>
@@ -472,7 +493,7 @@ function NewAppointmentSheet({ open, onOpenChange, onCreated }) {
             <Button
               type="submit"
               className="flex-1 bg-[#e85d2f] hover:bg-[#c84416]"
-              disabled={saving || !client}
+              disabled={saving || !clientName.trim()}
               data-testid="appt-submit"
             >
               {saving ? "Scheduling…" : "Schedule"}

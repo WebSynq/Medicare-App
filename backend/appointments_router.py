@@ -83,7 +83,22 @@ def _validate_time(v: str) -> str:
 
 # ── Pydantic bodies ──────────────────────────────────────────────────────
 class AppointmentCreate(BaseModel):
-    lead_id: str = Field(..., min_length=1, max_length=128)
+    """Create an appointment. Two flows:
+
+    1. Linked: send ``lead_id`` for an existing lead. ``client_name`` is
+       ignored — the backend denormalizes from the lead row so the name
+       always matches the lead record.
+    2. Walk-in: omit ``lead_id`` and send ``client_name`` (required in
+       this case). Useful when an agent is booking a prospect who isn't
+       yet in the CRM. ``lead_id`` stays null on the appointment row and
+       the SPA hides "View Client" for these rows.
+
+    The handler enforces "client_name required when no lead_id" — the
+    schema can't express that conditional without a model_validator, so
+    both fields are nominally optional at the Pydantic layer.
+    """
+    lead_id: Optional[str] = Field(None, max_length=128)
+    client_name: Optional[str] = Field(None, max_length=200)
     appointment_date: str
     appointment_time: str
     duration_minutes: int = Field(30, ge=5, le=480)
@@ -172,8 +187,26 @@ async def create_appointment(
     db: AsyncIOMotorDatabase = Depends(get_db),
     effective: dict = Depends(get_effective_agent),
 ):
-    """Create an appointment for a lead owned by the effective agent."""
-    lead = await _resolve_lead(db, body.lead_id, effective)
+    """Create an appointment. Linked to a lead when ``lead_id`` is sent
+    (404 on missing, 403 if not owned by the effective agent); otherwise
+    the appointment is a walk-in stamped with the user-supplied
+    ``client_name`` and ``lead_id=None``."""
+    lead = None
+    if body.lead_id:
+        lead = await _resolve_lead(db, body.lead_id, effective)
+        client_name = _client_name(lead)
+        stored_lead_id = body.lead_id
+    else:
+        # Walk-in flow: name must be supplied since we have nothing to
+        # denormalize from.
+        supplied = (body.client_name or "").strip()
+        if not supplied:
+            raise HTTPException(
+                status_code=422,
+                detail="client_name is required when no lead_id is provided",
+            )
+        client_name = supplied
+        stored_lead_id = None
     now_iso = datetime.now(timezone.utc).isoformat()
 
     doc = {
@@ -181,8 +214,8 @@ async def create_appointment(
         "agent_id": effective["id"],
         "agent_name": effective.get("agent_name") or effective.get("full_name"),
         "agent_email": (effective.get("email") or "").lower() or None,
-        "lead_id": body.lead_id,
-        "client_name": _client_name(lead),
+        "lead_id": stored_lead_id,
+        "client_name": client_name,
         "appointment_date": body.appointment_date,
         "appointment_time": body.appointment_time,
         "duration_minutes": body.duration_minutes,
@@ -205,7 +238,8 @@ async def create_appointment(
         target_id=doc["appointment_id"],
         request=request,
         metadata={
-            "lead_id": body.lead_id,
+            "lead_id": stored_lead_id,
+            "walk_in": stored_lead_id is None,
             "appointment_date": body.appointment_date,
             "type": body.type,
             "impersonated_by": effective.get("_impersonated_by"),

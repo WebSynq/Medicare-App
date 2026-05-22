@@ -1938,6 +1938,55 @@ async def test_today_actions_surfaces_stale_lead(client, db, admin_headers):
 
 
 @pytest.mark.asyncio
+async def test_today_renewals_resolve_real_lead_id(client, db, admin_headers):
+    """BUG 1 regression: a policy in the renewal window should ship the
+    matching lead's id (not the policy.lead_id / ghl_contact_id) so the
+    SPA's /clients/:leadId link works. When no lead matches the policy,
+    lead_id is null so the UI can hide the View Client button."""
+    from datetime import date, timedelta
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    # Seed a lead with a GHL contact id we'll point the policy at. The
+    # policy's own "lead_id" field is intentionally a *legacy* value
+    # that doesn't match leads.id — mirroring the production data shape.
+    await db.leads.insert_one({
+        "id": "real-lead-id-123",
+        "ghl_contact_id": "ghl-abc",
+        "first_name": "Joining", "last_name": "Match",
+        "status": "enrolled", "agent_id": admin["id"],
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    # Policy effective_date one year ago + 10 days → anniversary in 10 days.
+    eff = (date.today() - timedelta(days=355)).isoformat()
+    await db.policies.insert_one({
+        "lead_id": "legacy-policy-id",          # NOT in leads collection
+        "ghl_contact_id": "ghl-abc",            # matches the lead above
+        "contact_name": "Joining Match",
+        "carrier": "Aetna", "product_label": "MA HMO",
+        "effective_date": eff,
+        "agent_id": admin["id"],
+    })
+    # Orphan policy: no matching lead anywhere.
+    await db.policies.insert_one({
+        "lead_id": "orphan-policy-id",
+        "ghl_contact_id": "ghl-no-match",
+        "contact_name": "Orphan Person",
+        "carrier": "UHC", "product_label": "PDP",
+        "effective_date": eff,
+        "agent_id": admin["id"],
+    })
+    r = client.get("/api/today/actions", headers=admin_headers)
+    body = r.json()
+    renewals = body["renewals_due"]
+    matched = next((x for x in renewals if x["full_name"] == "Joining Match"), None)
+    orphan = next((x for x in renewals if x["full_name"] == "Orphan Person"), None)
+    assert matched is not None
+    assert matched["lead_id"] == "real-lead-id-123"   # joined via ghl_contact_id
+    assert orphan is not None
+    assert orphan["lead_id"] is None                   # no match → null
+
+
+@pytest.mark.asyncio
 async def test_today_actions_audits(client, db, admin_headers):
     """Every Today fetch must drop a today_viewed audit row."""
     client.get("/api/today/actions", headers=admin_headers)
@@ -1999,6 +2048,34 @@ async def test_appointment_create_400_when_lead_missing(client, db, admin_header
     })
     assert r.status_code == 404
     assert "Lead not found" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_appointment_create_walkin_without_lead(client, db, admin_headers):
+    """Walk-in flow: omit lead_id, supply client_name → succeeds with
+    lead_id stored as null."""
+    r = client.post("/api/appointments", headers=admin_headers, json={
+        "client_name": "Walk-in Prospect",
+        "appointment_date": "2026-09-01",
+        "appointment_time": "10:00",
+        "type": "initial_consultation",
+    })
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["lead_id"] is None
+    assert body["client_name"] == "Walk-in Prospect"
+    assert body["status"] == "scheduled"
+
+
+def test_appointment_create_422_when_no_lead_and_no_name(client, db, admin_headers):
+    """Walk-in flow without a client_name must 422 — we have nothing to
+    stamp on the appointment row."""
+    r = client.post("/api/appointments", headers=admin_headers, json={
+        "appointment_date": "2026-09-01",
+        "appointment_time": "10:00",
+    })
+    assert r.status_code == 422
+    assert "client_name" in r.json()["detail"].lower()
 
 
 @pytest.mark.asyncio

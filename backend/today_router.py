@@ -129,6 +129,50 @@ def _renewal_anniversary(eff: date, today: date) -> date:
     return anniv
 
 
+async def _resolve_lead_id_for_policy(
+    db, scope: dict, policy: Dict[str, Any]
+) -> Optional[str]:
+    """Best-effort join policy → leads.id so the SPA's /clients/:leadId
+    link actually lands on a lead.
+
+    The policies collection historically stored the GHL contact id (or a
+    legacy lead id from a different lifecycle) under ``lead_id`` /
+    ``ghl_contact_id``, neither of which matches the canonical
+    ``leads.id`` the frontend expects. We try, in order:
+
+      1. leads.id      == policy.lead_id          (already correct)
+      2. leads.ghl_contact_id == policy.ghl_contact_id
+      3. leads.first_name + leads.last_name == policy.contact_name
+
+    All lookups respect ``scope`` so an agent can't surface a lead
+    outside their book via a stray policy reference. Returns ``None``
+    when nothing matches — the frontend hides the View Client button
+    rather than showing a broken link.
+    """
+    proj = {"_id": 0, "id": 1}
+    pid = policy.get("lead_id")
+    if pid:
+        ld = await db.leads.find_one({**scope, "id": pid}, proj)
+        if ld:
+            return ld["id"]
+    gcid = policy.get("ghl_contact_id")
+    if gcid:
+        ld = await db.leads.find_one({**scope, "ghl_contact_id": gcid}, proj)
+        if ld:
+            return ld["id"]
+    cn = policy.get("contact_name")
+    if cn and isinstance(cn, str):
+        parts = cn.strip().rsplit(" ", 1)
+        if len(parts) == 2:
+            fn, ln = parts
+            ld = await db.leads.find_one(
+                {**scope, "first_name": fn, "last_name": ln}, proj,
+            )
+            if ld:
+                return ld["id"]
+    return None
+
+
 async def _renewals_due(db, scope: dict, today: date) -> List[Dict[str, Any]]:
     """Policies whose anniversary is within the next 30 days."""
     proj = {
@@ -136,7 +180,10 @@ async def _renewals_due(db, scope: dict, today: date) -> List[Dict[str, Any]]:
         "contact_name": 1, "product_type": 1, "product_label": 1,
         "carrier": 1, "effective_date": 1,
     }
-    rows: List[Dict[str, Any]] = []
+    # Collect candidates first, then sort + truncate, then do the lead
+    # join only for the rows we actually return. Avoids N lookups when N
+    # could be much larger than _MAX_PER_BUCKET.
+    candidates: List[Dict[str, Any]] = []
     async for p in db.policies.find({
         **scope,
         "effective_date": {"$nin": [None, ""]},
@@ -148,16 +195,29 @@ async def _renewals_due(db, scope: dict, today: date) -> List[Dict[str, Any]]:
         days = (anniv - today).days
         if days < 0 or days > _RENEWAL_WINDOW_DAYS:
             continue
-        rows.append({
-            "lead_id": p.get("lead_id") or p.get("ghl_contact_id"),
+        candidates.append({
+            "_policy": p,
             "full_name": p.get("contact_name") or "—",
             "carrier": p.get("carrier"),
             "product_label": p.get("product_label") or p.get("product_type"),
             "renewal_date": anniv.isoformat(),
             "days_until_renewal": days,
         })
-    rows.sort(key=lambda r: r["days_until_renewal"])
-    return rows[:_MAX_PER_BUCKET]
+    candidates.sort(key=lambda r: r["days_until_renewal"])
+    candidates = candidates[:_MAX_PER_BUCKET]
+
+    rows: List[Dict[str, Any]] = []
+    for cand in candidates:
+        lead_id = await _resolve_lead_id_for_policy(db, scope, cand["_policy"])
+        rows.append({
+            "lead_id": lead_id,
+            "full_name": cand["full_name"],
+            "carrier": cand["carrier"],
+            "product_label": cand["product_label"],
+            "renewal_date": cand["renewal_date"],
+            "days_until_renewal": cand["days_until_renewal"],
+        })
+    return rows
 
 
 async def _stale_leads(db, scope: dict, now_dt: datetime) -> List[Dict[str, Any]]:

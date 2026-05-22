@@ -220,7 +220,10 @@ export default function TodayPage() {
             ))}
           </SectionCard>
 
-          {/* Section 2: Renewals due */}
+          {/* Section 2: Renewals due. Backend now joins policies → leads
+              so r.lead_id is the canonical leads.id (or null when no
+              match) — we only render View Client when it's set so we
+              never ship a broken /clients/null link. */}
           <SectionCard
             title="Renewals in Next 30 Days"
             kind="renewals"
@@ -229,8 +232,11 @@ export default function TodayPage() {
             emptyState="No renewals due in the next 30 days."
             testId="today-renewals-section"
           >
-            {renewals.map((r) => (
-              <Row key={`${r.lead_id}-${r.renewal_date}`} testId={`today-renewal-${r.lead_id}`}>
+            {renewals.map((r, i) => (
+              <Row
+                key={`renewal-${r.lead_id || "orphan"}-${r.renewal_date}-${i}`}
+                testId={`today-renewal-${r.lead_id || "orphan"}-${i}`}
+              >
                 <CalendarClock className="w-4 h-4 text-[#d97706] flex-shrink-0" />
                 <div className="min-w-0 flex-1">
                   <div className="font-medium text-sm truncate">{r.full_name}</div>
@@ -244,7 +250,7 @@ export default function TodayPage() {
                 >
                   {r.days_until_renewal} days
                 </Badge>
-                <ViewClientButton leadId={r.lead_id} />
+                {r.lead_id && <ViewClientButton leadId={r.lead_id} />}
               </Row>
             ))}
           </SectionCard>
