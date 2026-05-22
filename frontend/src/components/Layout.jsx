@@ -13,6 +13,7 @@ import {
   FileText,
   DollarSign,
   ClipboardList,
+  PieChart as PieIcon,
   Shield,
   UserCheck,
   Calculator,
@@ -610,6 +611,11 @@ function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggle
           <NavItem to="/renewals" icon={CalendarClock} label="Renewals" onClick={onNavigate} testId="nav-renewals" collapsed={c} />
           <NavItem to="/applications" icon={FileText} label="Applications" onClick={onNavigate} testId="nav-applications" collapsed={c} />
           <NavItem to="/commissions" icon={DollarSign} label="Commissions" onClick={onNavigate} testId="nav-commissions" collapsed={c} />
+        </div>
+
+        <SectionLabel collapsed={c}>Reports</SectionLabel>
+        <div className="space-y-0.5">
+          <NavItem to="/reports/lead-sources" icon={PieIcon} label="Lead Sources" onClick={onNavigate} testId="nav-lead-sources" collapsed={c} />
         </div>
 
         {isAdminOrCompliance && (

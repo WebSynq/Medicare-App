@@ -19,17 +19,24 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from deps import (
     agent_filter,
     get_current_user,
     get_db,
     get_effective_agent,
+    write_audit,
 )
 
 
 logger = logging.getLogger("gruening.dashboard")
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+# Per-router limiter — only the lead-sources endpoint uses it for now.
+# The existing /stats aggregator relies on the app-level slowapi
+# middleware for IP-based throttling.
+limiter = Limiter(key_func=get_remote_address)
 
 
 VALID_PERIODS = ("mtd", "ytd", "last30", "last90", "all")
@@ -815,3 +822,109 @@ async def _active_team_today(db) -> int:
         return await db.users.count_documents({"is_active": True})
     except Exception:
         return 0
+
+
+# ── Lead source reporting ────────────────────────────────────────────────
+# Aggregates the leads collection by the lead_source field so agents
+# and admins can see where their book is coming from and which sources
+# convert best. Period-filtered against created_at via _period_start.
+@router.get("/lead-sources")
+@limiter.limit("60/hour")
+async def lead_sources(
+    request: Request,
+    period: str = Query("mtd", description="mtd|ytd|last30|last90|all"),
+    db=Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Grouped lead-source roll-up scoped by agent_filter.
+
+    Each source row carries total / enrolled / conversion_rate
+    (one-decimal percent) and an optional avg_days_to_enroll computed
+    as (updated_at - created_at) for enrolled rows — a proxy until we
+    stamp an explicit enrolled_at on the lead. Sources sort by total
+    descending. Leads with a null/blank source land in an "Unknown"
+    bucket so they stay visible instead of silently disappearing.
+    """
+    if period not in VALID_PERIODS:
+        period = "mtd"
+
+    start = _period_start(period)
+    query: dict = dict(agent_filter(current_user))
+    if start is not None:
+        query["created_at"] = {"$gte": start.isoformat()}
+
+    proj = {"_id": 0, "lead_source": 1, "status": 1,
+            "created_at": 1, "updated_at": 1}
+    by_source: Dict[str, Dict[str, Any]] = {}
+
+    async for ld in db.leads.find(query, proj):
+        raw = ld.get("lead_source")
+        src = (raw or "").strip() if isinstance(raw, str) else ""
+        key = src or "Unknown"
+        bucket = by_source.setdefault(key, {
+            "source": key,
+            "total": 0,
+            "enrolled": 0,
+            "_enroll_days_sum": 0.0,
+            "_enroll_days_count": 0,
+        })
+        bucket["total"] += 1
+        if ld.get("status") == "enrolled":
+            bucket["enrolled"] += 1
+            created = _parse_iso(ld.get("created_at"))
+            updated = _parse_iso(ld.get("updated_at"))
+            if created and updated and updated >= created:
+                days = (updated - created).total_seconds() / 86400.0
+                bucket["_enroll_days_sum"] += days
+                bucket["_enroll_days_count"] += 1
+
+    rows: List[Dict[str, Any]] = []
+    for bucket in by_source.values():
+        total = bucket["total"]
+        enrolled = bucket["enrolled"]
+        conv = round((enrolled / total) * 100.0, 1) if total else 0.0
+        avg_days = None
+        if bucket["_enroll_days_count"] > 0:
+            avg_days = round(
+                bucket["_enroll_days_sum"] / bucket["_enroll_days_count"],
+                1,
+            )
+        rows.append({
+            "source": bucket["source"],
+            "total": total,
+            "enrolled": enrolled,
+            "conversion_rate": conv,
+            "avg_days_to_enroll": avg_days,
+        })
+    rows.sort(key=lambda r: r["total"], reverse=True)
+
+    top_source = rows[0]["source"] if rows else None
+    # best_converting: pick the highest conversion_rate among sources
+    # that actually have leads — sources at 0 dont count even though
+    # they technically share the floor.
+    best_row = None
+    for r in rows:
+        if r["total"] == 0:
+            continue
+        if best_row is None or r["conversion_rate"] > best_row["conversion_rate"]:
+            best_row = r
+    best_converting = best_row["source"] if best_row else None
+
+    await write_audit(
+        db, "lead_sources_viewed",
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
+        request=request,
+        metadata={
+            "period": period,
+            "source_count": len(rows),
+            "lead_count": sum(r["total"] for r in rows),
+        },
+    )
+
+    return {
+        "period": period,
+        "sources": rows,
+        "top_source": top_source,
+        "best_converting": best_converting,
+    }

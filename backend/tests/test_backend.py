@@ -2107,6 +2107,92 @@ async def test_appointment_idor_agent_cant_see_others(client, db, admin_headers)
     assert own.json()["total"] == 0
 
 
+# ── Lead source reporting ─────────────────────────────────────────────────
+def test_lead_sources_requires_auth(client, db):
+    """Unauthenticated GET is rejected."""
+    r = client.get("/api/dashboard/lead-sources")
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_lead_sources_groups_and_computes_conversion(client, db, admin_headers):
+    """Three sources, mixed statuses → conversion rate math matches a manual count."""
+    from datetime import datetime, timezone
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    now_iso = datetime.now(timezone.utc).isoformat()
+    # 4 referral (2 enrolled), 2 web (0 enrolled), 1 unknown source (1 enrolled).
+    seeds = [
+        ("ls-r1", "referral", "enrolled"),
+        ("ls-r2", "referral", "enrolled"),
+        ("ls-r3", "referral", "new"),
+        ("ls-r4", "referral", "contacted"),
+        ("ls-w1", "web", "new"),
+        ("ls-w2", "web", "lost"),
+        ("ls-u1", None, "enrolled"),
+    ]
+    for lid, src, status in seeds:
+        await db.leads.insert_one({
+            "id": lid,
+            "first_name": "S", "last_name": lid,
+            "status": status, "agent_id": admin["id"],
+            "lead_source": src,
+            "created_at": now_iso, "updated_at": now_iso,
+        })
+    r = client.get("/api/dashboard/lead-sources?period=all", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    by_src = {s["source"]: s for s in body["sources"]}
+    assert by_src["referral"]["total"] == 4
+    assert by_src["referral"]["enrolled"] == 2
+    assert by_src["referral"]["conversion_rate"] == 50.0
+    assert by_src["web"]["total"] == 2
+    assert by_src["web"]["conversion_rate"] == 0.0
+    assert by_src["Unknown"]["total"] == 1
+    assert by_src["Unknown"]["enrolled"] == 1
+    assert by_src["Unknown"]["conversion_rate"] == 100.0
+    # Sources sorted by total desc → referral first.
+    assert body["sources"][0]["source"] == "referral"
+    assert body["top_source"] == "referral"
+    # best_converting must be the highest rate (Unknown at 100%) — not the
+    # highest volume.
+    assert body["best_converting"] == "Unknown"
+
+
+@pytest.mark.asyncio
+async def test_lead_sources_period_filter(client, db, admin_headers):
+    """A lead created before the period window is excluded."""
+    from datetime import datetime, timedelta, timezone
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    old_iso = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
+    new_iso = datetime.now(timezone.utc).isoformat()
+    await db.leads.insert_one({
+        "id": "old-lead", "first_name": "Old", "last_name": "Lead",
+        "status": "new", "agent_id": admin["id"], "lead_source": "web",
+        "created_at": old_iso, "updated_at": old_iso,
+    })
+    await db.leads.insert_one({
+        "id": "new-lead", "first_name": "New", "last_name": "Lead",
+        "status": "new", "agent_id": admin["id"], "lead_source": "web",
+        "created_at": new_iso, "updated_at": new_iso,
+    })
+    # last30 should include only the new one.
+    r = client.get("/api/dashboard/lead-sources?period=last30",
+                    headers=admin_headers)
+    body = r.json()
+    web = next((s for s in body["sources"] if s["source"] == "web"), None)
+    assert web is not None
+    assert web["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_lead_sources_audits(client, db, admin_headers):
+    """Every fetch writes lead_sources_viewed."""
+    client.get("/api/dashboard/lead-sources?period=mtd", headers=admin_headers)
+    entry = await db.audit_logs.find_one({"event_type": "lead_sources_viewed"})
+    assert entry is not None
+    assert entry["metadata"]["period"] == "mtd"
+
+
 @pytest.mark.asyncio
 async def test_today_picks_up_scheduled_appointment(client, db, admin_headers):
     """Once an appointment exists for today, /today/actions surfaces it."""
