@@ -1938,6 +1938,10 @@ export default function Settings() {
   const role = me?.role || cachedUser?.role || "agent";
   const isAdmin = role === "admin";
   const canSeeCompliance = COMPLIANCE_TAB_ROLES.has(role);
+  // Client Success is a support-only role with no need (or authorisation)
+  // to see audit-log entries that span the whole agency. Keep the tab
+  // hidden — the backend /audit endpoint already 403s for them.
+  const canSeeAudit = role !== "client_success";
 
   // Read the ?tab=… query param so redirects from the legacy /audit and
   // /admin/compliance routes land on the right tab. Falls back to
@@ -1952,8 +1956,9 @@ export default function Settings() {
       return "profile";
     }
     if (requestedTab === "compliance" && !canSeeCompliance) return "profile";
+    if (requestedTab === "audit" && !canSeeAudit) return "profile";
     return requestedTab;
-  }, [requestedTab, isAdmin, canSeeCompliance]);
+  }, [requestedTab, isAdmin, canSeeCompliance, canSeeAudit]);
 
   const loadMe = useCallback(async () => {
     try {
@@ -2002,9 +2007,11 @@ export default function Settings() {
             <TabsTrigger value="security" data-testid="tab-security">
               Security
             </TabsTrigger>
-            <TabsTrigger value="audit" data-testid="tab-audit">
-              Audit Log
-            </TabsTrigger>
+            {canSeeAudit && (
+              <TabsTrigger value="audit" data-testid="tab-audit">
+                Audit Log
+              </TabsTrigger>
+            )}
             {isAdmin && (
               <TabsTrigger value="agency" data-testid="tab-agency">
                 Agency
@@ -2034,7 +2041,7 @@ export default function Settings() {
             <SecurityTab me={me} refresh={loadMe} />
           </TabsContent>
           <TabsContent value="audit" className="mt-4">
-            <AuditLogTab me={me} />
+            {canSeeAudit && <AuditLogTab me={me} />}
           </TabsContent>
           {isAdmin && (
             <TabsContent value="agency" className="mt-4">

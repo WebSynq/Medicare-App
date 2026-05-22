@@ -128,6 +128,22 @@ def require_roles(*roles: str):
     return _checker
 
 
+def forbid_roles(*roles: str):
+    """Inverse of ``require_roles``: 403s when the caller has one of the
+    listed roles, otherwise returns the user. Used to keep support roles
+    (e.g. client_success) out of the commission and leaderboard surfaces
+    they must never see.
+    """
+    forbidden = set(roles)
+
+    async def _checker(current_user=Depends(get_current_user)):
+        if current_user.get("role") in forbidden:
+            raise HTTPException(status_code=403, detail="Not authorized for this resource")
+        return current_user
+
+    return _checker
+
+
 # Role groups. Use these constants when gating an endpoint so the
 # expanded team roles (cyber_security, sales_manager, etc.) inherit
 # the same access we already grant compliance — extending the list
@@ -137,6 +153,15 @@ COMPLIANCE_ROLES = (
     "compliance",
     "cyber_security",
     "sales_manager",
+)
+
+# Roles that see the full agency's lead/client data, not just their own.
+# admin/compliance are agency leadership; client_success is support staff
+# who needs visibility across every agent's book to help clients.
+FULL_AGENCY_SCOPE_ROLES = (
+    "admin",
+    "compliance",
+    "client_success",
 )
 
 
@@ -176,7 +201,7 @@ def agent_filter(current_user: dict,
     centrally) when you want both behaviors driven by the same header.
     """
     role = current_user.get("role", "agent")
-    if role in ("admin", "compliance"):
+    if role in FULL_AGENCY_SCOPE_ROLES:
         if override_agent_id:
             return {"agent_id": override_agent_id}
         return {}

@@ -23,7 +23,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from deps import get_current_user, get_db, resolve_agent_key, write_audit
+from deps import forbid_roles, get_db, resolve_agent_key, write_audit
 # Reuse the same _classify / _gap helpers the audit router uses so the
 # leaderboard's "audit_gap" math matches what /commission/audit/summary returns
 # for the same user. One classification function, one source of truth.
@@ -64,7 +64,9 @@ async def get_leaderboard(
     period: str = Query("month", pattern="^(week|month|ytd|all)$"),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    # client_success is blocked from the leaderboard — revenue-shaped data
+    # is admin/agent territory only.
+    current_user: dict = Depends(forbid_roles("client_success")),
 ):
     """Agency-wide leaderboard sourced from production_records.
 

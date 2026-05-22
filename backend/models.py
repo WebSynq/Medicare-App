@@ -57,6 +57,7 @@ class UserBase(BaseModel):
         "cyber_security",
         "sales_manager",
         "onboarding",
+        "client_success",
     ] = "agent"
     is_active: bool = True
     status: UserStatus = "active"
@@ -179,6 +180,7 @@ class InviteRequest(BaseModel):
         "cyber_security",
         "sales_manager",
         "onboarding",
+        "client_success",
     ]] = "agent"
 
     @field_validator("agent_name")

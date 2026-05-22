@@ -15,7 +15,18 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from comtrack_client import ComtrackClient
-from deps import get_client_ip, get_current_user, get_db, resolve_agent_key, write_audit
+from deps import (
+    forbid_roles,
+    get_client_ip,
+    get_db,
+    resolve_agent_key,
+    write_audit,
+)
+
+# Roles that must never see commission revenue (e.g. support staff who
+# assist clients but aren't on the commission ladder). Applied as a
+# dependency on every read in this router.
+_COMMISSION_FORBIDDEN = ("client_success",)
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +63,7 @@ def _ext(filename: str) -> str:
 async def upload_statement(
     file: UploadFile = File(...),
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(forbid_roles(*_COMMISSION_FORBIDDEN)),
 ):
     """
     Upload a carrier commission statement.
@@ -145,7 +156,7 @@ async def upload_statement(
 @router.get("/summary")
 async def get_commission_summary(
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(forbid_roles(*_COMMISSION_FORBIDDEN)),
 ):
     """
     Return aggregated commission stats for the current agent.
@@ -191,7 +202,7 @@ async def get_commission_summary(
 @router.get("/history")
 async def get_upload_history(
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(forbid_roles(*_COMMISSION_FORBIDDEN)),
 ):
     """
     Return the current agent's past statement upload records.
@@ -299,7 +310,7 @@ async def get_live_commissions(
                                  description="Optional statement_date filter (MM/DD/YYYY)"),
     refresh: bool = Query(False, description="Bypass the 1h cache"),
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(forbid_roles(*_COMMISSION_FORBIDDEN)),
 ):
     """Live ComTrack commission rows for the authenticated agent.
 

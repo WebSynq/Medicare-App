@@ -28,13 +28,17 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from deps import (
+    forbid_roles,
     get_client_ip,
-    get_current_user,
     get_db,
     require_roles,
     resolve_agent_key,
     write_audit,
 )
+
+# Roles barred from every commission-audit and chat surface. Admin-only
+# endpoints below already use require_roles("admin") so they're covered.
+_COMMISSION_FORBIDDEN = ("client_success",)
 
 
 logger = logging.getLogger(__name__)
@@ -161,7 +165,7 @@ async def list_audit_records(
                                      description="Admin-only override"),
     limit: int = Query(200, ge=1, le=1000),
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(forbid_roles(*_COMMISSION_FORBIDDEN)),
 ):
     """Ranked list of records with discrepancies for the calling agent.
 
@@ -239,7 +243,7 @@ async def audit_summary(
     request: Request,
     period: str = Query("month", pattern="^(week|month|all)$"),
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(forbid_roles(*_COMMISSION_FORBIDDEN)),
 ):
     """Team-wide totals (admin) or own-only totals (agent).
 
@@ -357,7 +361,7 @@ async def get_commission_statement(
     request: Request,
     agent_name: Optional[str] = Query(None, max_length=128),
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(forbid_roles(*_COMMISSION_FORBIDDEN)),
 ):
     """Download the agent's monthly commission statement (PDF).
 
@@ -632,7 +636,7 @@ async def commission_chat(
     request: Request,
     body: ChatRequest = Body(...),
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(forbid_roles(*_COMMISSION_FORBIDDEN)),
 ):
     """AI commission assistant (Anthropic claude-sonnet-4-6).
 

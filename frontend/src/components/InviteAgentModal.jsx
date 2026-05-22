@@ -2,6 +2,21 @@ import { useState } from "react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 
+// Roles an admin can grant from this modal. Kept in sync with the
+// InviteRequest.role Literal on the backend — "admin" is intentionally
+// not invitable here (privilege escalation requires DB-level intervention).
+const INVITABLE_ROLES = [
+  { value: "agent", label: "Agent" },
+  { value: "client_success", label: "Client Success" },
+  { value: "compliance", label: "Compliance" },
+  { value: "sales_manager", label: "Sales Manager" },
+  { value: "cyber_security", label: "Cyber Security" },
+  { value: "onboarding", label: "Onboarding" },
+  { value: "crm_specialist", label: "CRM Specialist" },
+  { value: "va", label: "Virtual Assistant" },
+  { value: "support", label: "Support" },
+];
+
 export default function InviteAgentModal({ onClose }) {
   const [form, setForm] = useState({
     email: "",
@@ -9,14 +24,18 @@ export default function InviteAgentModal({ onClose }) {
     agency_name: "",
     agent_name: "",
     agent_npn: "",
+    role: "agent",
   });
   const [loading, setLoading] = useState(false);
   const [inviteUrl, setInviteUrl] = useState(null);
 
   const handleSubmit = async () => {
     if (!form.email) { toast.error("Email is required"); return; }
-    if (!form.agent_name.trim()) {
-      toast.error("Full Name (as on carrier statements) is required");
+    // Client Success and other non-agent roles don't earn commissions, so
+    // the carrier-statement name doesn't apply to them. Only enforce the
+    // requirement for the "agent" role.
+    if (form.role === "agent" && !form.agent_name.trim()) {
+      toast.error("Full Name (as on carrier statements) is required for agents");
       return;
     }
     // Send only fields the user filled in. Backend validators reject empty
@@ -70,6 +89,26 @@ export default function InviteAgentModal({ onClose }) {
                 className="w-full px-3 py-2 rounded-lg text-sm outline-none"
                 style={{ background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", color: "var(--color-text-primary)" }}
               />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1.5 uppercase" style={{ letterSpacing: "0.08em", color: "var(--color-text-secondary)" }}>
+                Role
+              </label>
+              <select
+                value={form.role}
+                onChange={e => setForm(f => ({ ...f, role: e.target.value }))}
+                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+                style={{ background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", color: "var(--color-text-primary)" }}
+              >
+                {INVITABLE_ROLES.map(r => (
+                  <option key={r.value} value={r.value}>{r.label}</option>
+                ))}
+              </select>
+              <p className="text-[11px] mt-1" style={{ color: "var(--color-text-secondary)" }}>
+                {form.role === "client_success"
+                  ? "Client Success sees all agents' clients but never commission data."
+                  : "Controls which screens the invited user can access."}
+              </p>
             </div>
             <div>
               <label className="block text-xs font-medium mb-1.5 uppercase" style={{ letterSpacing: "0.08em", color: "var(--color-text-secondary)" }}>

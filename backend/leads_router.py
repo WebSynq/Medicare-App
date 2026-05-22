@@ -21,6 +21,7 @@ from deps import (
     agent_filter,
     get_client_ip,
     write_audit,
+    FULL_AGENCY_SCOPE_ROLES,
 )
 from ghl_client import GHLClient
 from pdf_export import generate_lead_pdf
@@ -148,7 +149,7 @@ def _idor_or_403(doc: Optional[dict], current_user: dict) -> dict:
     if not doc:
         raise HTTPException(status_code=404, detail="Lead not found")
     role = current_user.get("role")
-    if role in ("admin", "compliance"):
+    if role in FULL_AGENCY_SCOPE_ROLES:
         return doc
     if doc.get("agent_id") != current_user["id"]:
         raise HTTPException(status_code=403, detail="Access denied")

@@ -35,7 +35,7 @@ import { AgentProvider } from "@/context/AgentContext";
 // Kept in sync with backend deps.COMPLIANCE_ROLES.
 const COMPLIANCE_BUCKET = ["compliance", "cyber_security", "sales_manager"];
 
-function Protected({ children, roles, noLayout }) {
+function Protected({ children, roles, forbid, noLayout }) {
   const user = auth.getUser();
   if (!user) return <Navigate to="/login" replace />;
   // Expand "compliance" in route role lists to include the wider
@@ -49,6 +49,12 @@ function Protected({ children, roles, noLayout }) {
       )
     : null;
   if (expanded && !expanded.includes(user.role)) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  // Inverse role gate. Lets us keep a route otherwise open while still
+  // bouncing specific support roles (client_success) away from
+  // revenue-shaped surfaces like /commissions and /leaderboard.
+  if (forbid && forbid.includes(user.role)) {
     return <Navigate to="/dashboard" replace />;
   }
   if (noLayout) return children;
@@ -75,7 +81,7 @@ export default function App() {
         <Route
           path="/commissions"
           element={
-            <Protected>
+            <Protected forbid={["client_success"]}>
               <CommissionsDashboard />
             </Protected>
           }
@@ -83,7 +89,7 @@ export default function App() {
         <Route path="/leads/:id" element={<Protected><LeadDetail /></Protected>} />
         <Route path="/clients" element={<Protected><ClientsList /></Protected>} />
         <Route path="/clients/:leadId" element={<Protected><ClientProfile /></Protected>} />
-        <Route path="/leaderboard" element={<Protected><Leaderboard /></Protected>} />
+        <Route path="/leaderboard" element={<Protected forbid={["client_success"]}><Leaderboard /></Protected>} />
         <Route path="/birthday-rule" element={<Protected><BirthdayRule /></Protected>} />
         <Route path="/renewals" element={<Protected><RenewalCalendar /></Protected>} />
         <Route path="/applications" element={<Protected><ApplicationSubmission /></Protected>} />
