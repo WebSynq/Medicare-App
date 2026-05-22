@@ -57,7 +57,7 @@ export default function HomePortal() {
       } else {
         auth.saveSession(res.data.access_token, res.data.user);
         toast.success("Welcome back");
-        nav("/dashboard");
+        nav("/today");
       }
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Login failed");

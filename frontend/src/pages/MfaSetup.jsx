@@ -32,7 +32,7 @@ export default function MfaSetup() {
       const me = await api.get("/auth/me");
       auth.saveSession(res.data.access_token, me.data);
       toast.success("MFA enabled — your account is now protected.");
-      nav("/dashboard");
+      nav("/today");
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Invalid code");
     } finally { setLoading(false); }

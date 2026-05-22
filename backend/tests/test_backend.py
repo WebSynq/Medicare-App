@@ -1869,6 +1869,83 @@ def test_aep_countdown_calculation(client, db, admin_headers):
     assert "is_active" in oep
 
 
+# ── Today action centre ────────────────────────────────────────────────────
+def test_today_actions_requires_auth(client, db):
+    """No token → 401 (rejects anonymous access to the aggregator)."""
+    r = client.get("/api/today/actions")
+    assert r.status_code == 401
+
+
+def test_today_actions_response_shape(client, db, admin_headers):
+    """Empty DB still returns the four-bucket envelope so the SPA can render."""
+    r = client.get("/api/today/actions", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "today" in body
+    assert "summary" in body
+    for k in ("urgent_count", "renewals_count", "stale_count", "appointments_count"):
+        assert k in body["summary"]
+    for k in ("urgent_calls", "renewals_due", "stale_leads", "todays_appointments"):
+        assert k in body and isinstance(body[k], list)
+
+
+@pytest.mark.asyncio
+async def test_today_actions_surfaces_urgent_birthday(client, db, admin_headers):
+    """A lead 10 days into the birthday window must land in urgent_calls."""
+    from datetime import date, timedelta
+    target = date.today() - timedelta(days=10)
+    dob_str = f"1955-{target.month:02d}-{target.day:02d}"
+    await db.leads.insert_one({
+        "id": "today-urgent",
+        "first_name": "Birthday", "last_name": "Now",
+        "phone": "555-9090", "state": "IL",
+        "date_of_birth": dob_str,
+        "status": "contacted", "agent_id": "admin-1",
+        "current_plan": "MAPD HMO", "current_carrier": "Aetna",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    r = client.get("/api/today/actions", headers=admin_headers)
+    assert r.status_code == 200
+    body = r.json()
+    ids = [x["lead_id"] for x in body["urgent_calls"]]
+    assert "today-urgent" in ids
+    row = next(x for x in body["urgent_calls"] if x["lead_id"] == "today-urgent")
+    assert row["days_remaining_in_window"] is not None
+    assert row["current_carrier"] == "Aetna"
+    assert body["summary"]["urgent_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_today_actions_surfaces_stale_lead(client, db, admin_headers):
+    """A new/contacted lead untouched in 7+ days must land in stale_leads."""
+    from datetime import datetime, timedelta, timezone
+    stale_iso = (datetime.now(timezone.utc) - timedelta(days=12)).isoformat()
+    await db.leads.insert_one({
+        "id": "today-stale",
+        "first_name": "Cold", "last_name": "Lead",
+        "phone": "555-1234",
+        "status": "new", "agent_id": "admin-1",
+        "created_at": stale_iso, "updated_at": stale_iso,
+    })
+    r = client.get("/api/today/actions", headers=admin_headers)
+    body = r.json()
+    ids = [x["lead_id"] for x in body["stale_leads"]]
+    assert "today-stale" in ids
+    row = next(x for x in body["stale_leads"] if x["lead_id"] == "today-stale")
+    assert row["days_since_contact"] >= 7
+    assert row["status"] == "new"
+
+
+@pytest.mark.asyncio
+async def test_today_actions_audits(client, db, admin_headers):
+    """Every Today fetch must drop a today_viewed audit row."""
+    client.get("/api/today/actions", headers=admin_headers)
+    entry = await db.audit_logs.find_one({"event_type": "today_viewed"})
+    assert entry is not None
+    assert "urgent_count" in entry["metadata"]
+
+
 @pytest.mark.asyncio
 async def test_backup_excludes_passwords(client, db, admin_headers):
     """The backup dump must NEVER include hashed_password — neither

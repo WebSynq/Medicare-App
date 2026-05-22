@@ -11,6 +11,7 @@ import ResetPassword from "@/pages/ResetPassword";
 import SOAForm from "@/pages/SOAForm";
 import MfaSetup from "@/pages/MfaSetup";
 import AgentDashboard from "@/pages/AgentDashboard";
+import TodayPage from "@/pages/TodayPage";
 import LeadDetail from "@/pages/LeadDetail";
 import CommissionsDashboard from "@/pages/CommissionsDashboard";
 import AdminCommissions from "@/pages/AdminCommissions";
@@ -49,13 +50,13 @@ function Protected({ children, roles, forbid, noLayout }) {
       )
     : null;
   if (expanded && !expanded.includes(user.role)) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to="/today" replace />;
   }
   // Inverse role gate. Lets us keep a route otherwise open while still
   // bouncing specific support roles (client_success) away from
   // revenue-shaped surfaces like /commissions and /leaderboard.
   if (forbid && forbid.includes(user.role)) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to="/today" replace />;
   }
   if (noLayout) return children;
   return <AppLayout>{children}</AppLayout>;
@@ -77,6 +78,7 @@ export default function App() {
         <Route path="/privacy" element={<PrivacyPolicy />} />
         <Route path="/security" element={<SecurityPage />} />
         <Route path="/mfa-setup" element={<Protected noLayout><MfaSetup /></Protected>} />
+        <Route path="/today" element={<Protected><TodayPage /></Protected>} />
         <Route path="/dashboard" element={<Protected><AgentDashboard /></Protected>} />
         <Route
           path="/commissions"

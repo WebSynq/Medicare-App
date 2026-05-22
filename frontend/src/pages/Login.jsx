@@ -45,7 +45,7 @@ export default function Login() {
       } else {
         auth.saveSession(res.data.access_token, res.data.user);
         toast.success("Welcome back");
-        nav("/dashboard");
+        nav("/today");
       }
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Login failed");

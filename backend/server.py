@@ -50,6 +50,7 @@ from backup_router import router as backup_router  # noqa: E402
 from accounting_router import router as accounting_router  # noqa: E402
 from reconciliation_router import router as reconciliation_router  # noqa: E402
 from cfo_chat_router import router as cfo_chat_router  # noqa: E402
+from today_router import router as today_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
 
 
@@ -166,6 +167,7 @@ app.include_router(backup_router, prefix="/api")
 app.include_router(accounting_router, prefix="/api")
 app.include_router(reconciliation_router, prefix="/api")
 app.include_router(cfo_chat_router, prefix="/api")
+app.include_router(today_router, prefix="/api")
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
