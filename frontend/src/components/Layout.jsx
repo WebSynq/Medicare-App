@@ -22,6 +22,8 @@ import {
   X,
   Eye,
   ChevronDown,
+  UsersRound,
+  Activity,
 } from "lucide-react";
 import { Link, NavLink, useNavigate, useLocation } from "react-router-dom";
 import { api, auth } from "@/lib/api";
@@ -38,7 +40,7 @@ export function PublicHeader() {
     <header className="crystal-nav sticky top-0 z-40 border-b border-border/60">
       <div className="max-w-7xl mx-auto px-6 lg:px-10 h-16 flex items-center justify-between">
         <Link to="/" className="flex items-center gap-2.5" data-testid="brand-link">
-          <div className="w-9 h-9 rounded-lg bg-primary text-primary-foreground grid place-items-center font-bold tracking-tight" style={{ fontFamily: "Outfit" }}>G</div>
+          <div className="w-9 h-9 rounded-xl bg-primary text-primary-foreground grid place-items-center font-bold tracking-tight elev-1" style={{ fontFamily: "Outfit" }}>G</div>
           <div className="leading-tight">
             <div className="text-sm font-semibold tracking-tight" style={{ fontFamily: "Outfit" }}>Gruening Health &amp; Wealth</div>
             <div className="text-[11px] text-muted-foreground -mt-0.5">Secure Medicare Intake Portal</div>
@@ -49,7 +51,7 @@ export function PublicHeader() {
         </nav>
         <div className="flex items-center gap-3">
           <Link to="/login" className="text-sm text-foreground/80 hover:text-primary hidden sm:inline" data-testid="header-agent-login">Agent Login</Link>
-          <Button asChild className="rounded-full px-5" data-testid="header-start-intake">
+          <Button asChild className="btn-press rounded-full px-5 elev-1" data-testid="header-start-intake">
             <Link to="/intake">Start Intake</Link>
           </Button>
         </div>
@@ -272,7 +274,7 @@ function AgentSwitcher({ role, onNavigate }) {
         aria-expanded={open}
       >
         <span className="flex items-center gap-2 truncate">
-          <span aria-hidden="true">🏢</span>
+          <UsersRound className="w-3.5 h-3.5 flex-shrink-0 text-white/70" aria-hidden="true" />
           <span className="truncate">All Agents</span>
         </span>
         <ChevronDown
@@ -344,7 +346,7 @@ function SidebarContent({ user, role, onNavigate, onSignOut }) {
       <div className="px-4 pt-5 pb-4 border-b border-white/5">
         <Link to="/dashboard" onClick={onNavigate} className="flex items-center gap-2.5" data-testid="sidebar-brand">
           <div
-            className="w-9 h-9 rounded-lg grid place-items-center text-base font-bold text-white"
+            className="w-9 h-9 rounded-xl grid place-items-center text-base font-bold text-white elev-2"
             style={{
               background: `linear-gradient(135deg, ${ACCENT} 0%, #c84416 100%)`,
               fontFamily: "Outfit",
@@ -409,8 +411,11 @@ function SidebarContent({ user, role, onNavigate, onSignOut }) {
       {/* HIPAA + user */}
       <div className="px-3 pb-4">
         <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-300 mb-3">
-          <ShieldCheck className="w-3.5 h-3.5 flex-shrink-0" />
-          <span className="truncate">HIPAA-aligned · AWS Bedrock</span>
+          <span className="relative flex h-2 w-2 flex-shrink-0">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
+          </span>
+          <span className="truncate">Audit log · live · HIPAA-aligned</span>
         </div>
 
         <div className="flex items-center gap-2.5 px-2 py-2 rounded-md bg-white/5">

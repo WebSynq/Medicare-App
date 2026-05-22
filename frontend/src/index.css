@@ -93,10 +93,46 @@ body {
         letter-spacing: -0.02em;
     }
     body {
+        /* Subtle dot-grid texture replaces the dated radial gradient wash.
+           Stays out of the way on dense screens (dashboard) but adds quiet
+           depth on marketing surfaces. */
+        background-color: hsl(var(--background));
         background-image:
-          radial-gradient(at 10% 0%, hsla(142,40%,90%,0.4) 0px, transparent 50%),
-          radial-gradient(at 90% 100%, hsla(28,50%,85%,0.3) 0px, transparent 50%);
+          radial-gradient(circle at 1px 1px, hsla(211, 32%, 18%, 0.045) 1px, transparent 0);
+        background-size: 22px 22px;
         background-attachment: fixed;
+    }
+}
+
+@layer utilities {
+    /* Elevation system — three named layers used across the app shell.
+       Replaces ad-hoc `shadow-sm` so depth feels coherent and matches
+       the brand navy hue rather than pure black. */
+    .elev-1 { box-shadow: 0 1px 2px -1px hsla(211, 32%, 18%, 0.06), 0 2px 6px -2px hsla(211, 32%, 18%, 0.06); }
+    .elev-2 { box-shadow: 0 2px 6px -2px hsla(211, 32%, 18%, 0.08), 0 8px 24px -12px hsla(211, 32%, 18%, 0.18); }
+    .elev-3 { box-shadow: 0 6px 18px -8px hsla(211, 32%, 18%, 0.12), 0 24px 48px -24px hsla(211, 32%, 18%, 0.28); }
+
+    /* Frosted glass surface for hero cards / floating proof badges.
+       Tuned for both light navy backgrounds and warm photographs. */
+    .glass-surface {
+        background-color: hsla(0, 0%, 100%, 0.82);
+        backdrop-filter: blur(14px) saturate(160%);
+        -webkit-backdrop-filter: blur(14px) saturate(160%);
+        border: 1px solid hsla(0, 0%, 100%, 0.65);
+    }
+    .glass-surface-dark {
+        background-color: hsla(211, 40%, 8%, 0.55);
+        backdrop-filter: blur(18px) saturate(160%);
+        -webkit-backdrop-filter: blur(18px) saturate(160%);
+        border: 1px solid hsla(0, 0%, 100%, 0.10);
+    }
+
+    /* Photographic hero overlay — navy-to-transparent gradient layered
+       over a background-image so the photo "grounds" the chrome without
+       fighting the text. Used by HomePortal + Login. */
+    .hero-photo-overlay {
+        background:
+          linear-gradient(135deg, hsla(211, 35%, 11%, 0.78) 0%, hsla(211, 35%, 18%, 0.62) 55%, hsla(20, 70%, 38%, 0.35) 130%);
     }
 }
 
@@ -117,6 +153,25 @@ body {
     }
     .text-balance { text-wrap: balance; }
     .tight { letter-spacing: -0.025em; }
+
+    /* Press-state on primary CTAs — tiny scale + faster easing reads as
+       higher-quality SaaS. Apply via the .btn-press class. */
+    .btn-press {
+        transition: transform 120ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 200ms ease;
+    }
+    .btn-press:active { transform: scale(0.98); }
+
+    /* Section eyebrow — small uppercase label used above section titles.
+       Standardises the brand orange + spacing so we stop redefining it
+       inline on every marketing block. */
+    .eyebrow {
+        font-size: 11px;
+        line-height: 1;
+        font-weight: 600;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: hsl(20 73% 45%);
+    }
 }
 
 @layer base {
