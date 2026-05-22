@@ -140,6 +140,27 @@ COMPLIANCE_ROLES = (
 )
 
 
+def resolve_agent_key(user: dict) -> Optional[str]:
+    """Canonical name used to look up an agent's commission/production records.
+
+    Returns ``user.agent_name`` when set, otherwise falls back to
+    ``user.full_name`` for legacy users whose ``agent_name`` field hasn't
+    been backfilled yet. Returns ``None`` when neither is set so the caller
+    can fail closed.
+
+    Use this everywhere a commission endpoint needs to join the
+    authenticated user to upstream/production data — ComTrack lookups,
+    production_records scoping, leaderboard is_self matching. Keeping the
+    rule in one place prevents the per-endpoint drift this helper was
+    introduced to eliminate (see CLAUDE.md migration note).
+    """
+    name = (user.get("agent_name") or "").strip()
+    if name:
+        return name
+    name = (user.get("full_name") or "").strip()
+    return name or None
+
+
 def agent_filter(current_user: dict,
                  override_agent_id: Optional[str] = None) -> dict:
     """Build a Mongo filter that scopes results to one agent's data.

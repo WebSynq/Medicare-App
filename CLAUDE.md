@@ -31,11 +31,15 @@
 - Tests: 18 passing (mongomock-motor + TestClient)
 
 ## Known Drift to Fix
-- /commissions/summary keys ComTrack by current_user["full_name"]
-- /commissions/live keys by users.agent_name (DB row)
-- These must be unified to users.agent_name before new commission work
 - agent_name is empty for existing users — needs backfill migration
 - Bearer-header auth path still active (deprecate before new routes)
+
+## Commission Endpoint Keying (Wave 1)
+agent_name unified across all commission endpoints — /commissions/summary,
+/commissions/live, /commission/audit (`_scope_filter`), and /leaderboard
+(`is_self`) all resolve the lookup key through `deps.resolve_agent_key`.
+Rule: `agent_name` primary, `full_name` fallback for legacy records only.
+Endpoints fail closed (400) when neither field is set.
 
 ## Env Vars Required (Render)
 MONGO_URL, DB_NAME, JWT_SECRET, CORS_ORIGINS, SEED_ADMIN_PASSWORD

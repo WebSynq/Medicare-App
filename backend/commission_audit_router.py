@@ -27,7 +27,14 @@ from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from deps import get_client_ip, get_current_user, get_db, require_roles, write_audit
+from deps import (
+    get_client_ip,
+    get_current_user,
+    get_db,
+    require_roles,
+    resolve_agent_key,
+    write_audit,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -123,17 +130,18 @@ def _gap(record: dict) -> float:
 def _scope_filter(current_user: dict) -> dict:
     """Mongo filter restricting an agent to their own records.
 
-    We match by agent_name (canonical identity field — see Task 1) and
-    fall back to agent_email when agent_name isn't set on the user row,
-    so legacy users whose agent_name isn't backfilled still see their
-    own data instead of an empty list.
+    Matches a production record's ``agent_name`` field against the user's
+    canonical agent key (``resolve_agent_key``: agent_name → full_name),
+    and additionally matches the record's ``agent_email`` against the
+    user's email so legacy records keyed only by email still resolve.
     """
     role = current_user.get("role")
     if role in ("admin", "compliance"):
         return {}
     filters = []
-    if current_user.get("agent_name"):
-        filters.append({"agent_name": current_user["agent_name"]})
+    key = resolve_agent_key(current_user)
+    if key:
+        filters.append({"agent_name": key})
     if current_user.get("email"):
         filters.append({"agent_email": current_user["email"].lower()})
     if not filters:

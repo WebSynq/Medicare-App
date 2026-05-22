@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from comtrack_client import ComtrackClient
-from deps import get_client_ip, get_current_user, get_db, write_audit
+from deps import get_client_ip, get_current_user, get_db, resolve_agent_key, write_audit
 
 logger = logging.getLogger(__name__)
 
@@ -151,15 +151,17 @@ async def get_commission_summary(
     Return aggregated commission stats for the current agent.
     Queries Comtrack /api/reference by users.agent_name.
 
-    agent_name is the canonical identity source for ComTrack lookups.
-    Falls back to full_name (then email) for legacy users whose row hasn't
-    been backfilled yet — drop this fallback once backfill is complete.
+    Resolution rule (shared with /live, /commission/audit, /leaderboard via
+    ``resolve_agent_key``): agent_name primary, full_name fallback for
+    legacy users whose agent_name hasn't been backfilled. Fails 400 if
+    neither is set rather than silently returning empty results.
     """
-    agent_name = (
-        (current_user.get("agent_name") or "").strip()
-        or (current_user.get("full_name") or "").strip()
-        or current_user.get("email", "")
-    )
+    agent_name = resolve_agent_key(current_user)
+    if not agent_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Agent name not configured. Contact your administrator.",
+        )
     client = ComtrackClient()
 
     try:
@@ -310,7 +312,11 @@ async def get_live_commissions(
     if not fresh:
         # Token references a user that no longer exists.
         raise HTTPException(status_code=401, detail="User not found")
-    agent_name = (fresh.get("agent_name") or "").strip()
+    # Shared resolution rule — agent_name primary, full_name fallback for
+    # legacy users whose agent_name hasn't been backfilled. Fails closed
+    # (400) when both are empty so an unconfigured user can't trigger an
+    # unscoped upstream pull.
+    agent_name = resolve_agent_key(fresh)
     if not agent_name:
         raise HTTPException(
             status_code=400,

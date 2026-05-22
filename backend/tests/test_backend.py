@@ -193,15 +193,16 @@ def test_authenticated_lead_post_succeeds(client, db, admin_headers):
 # ── ComTrack live endpoint sources agent_name from DB ───────────────────────
 @pytest.mark.asyncio
 async def test_commissions_live_400_without_agent_name(client, db, admin_headers):
-    """When agent_name is missing the endpoint must 400.
+    """When the user has neither agent_name nor full_name, /live must 400.
 
-    The Phase 1 startup backfill stamps agent_name = full_name, so the
-    seeded test admin no longer has a null agent_name by default. We
-    explicitly null it here to exercise the missing-agent-name code path.
+    Post-Wave-1 the endpoint resolves the lookup key via
+    ``deps.resolve_agent_key`` (agent_name → full_name fallback), so we
+    null both fields here to exercise the truly-unconfigured path the
+    Phase 1 startup backfill is meant to prevent.
     """
     await db.users.update_one(
         {"email": os.environ["SEED_ADMIN_EMAIL"]},
-        {"$set": {"agent_name": None}},
+        {"$set": {"agent_name": None, "full_name": None}},
     )
     r = client.get("/api/commissions/live", headers=admin_headers)
     assert r.status_code == 400

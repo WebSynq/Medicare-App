@@ -23,7 +23,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from deps import get_current_user, get_db, write_audit
+from deps import get_current_user, get_db, resolve_agent_key, write_audit
 # Reuse the same _classify / _gap helpers the audit router uses so the
 # leaderboard's "audit_gap" math matches what /commission/audit/summary returns
 # for the same user. One classification function, one source of truth.
@@ -95,7 +95,10 @@ async def get_leaderboard(
         if _classify(r) != "resolved":
             bucket["audit_gap"] += _gap(r)
 
-    my_agent_name = (current_user.get("agent_name") or "").strip() or None
+    # Match self by the same canonical key the rest of the commission
+    # endpoints use — agent_name primary, full_name fallback for legacy
+    # users whose agent_name hasn't been backfilled.
+    my_agent_name = resolve_agent_key(current_user)
     rows = []
     for row in by_agent.values():
         rows.append({
