@@ -759,17 +759,310 @@ function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggle
   );
 }
 
+// ── Mobile bottom tab bar ──────────────────────────────────────────────────
+// Primary navigation on screens < md. Five direct-route tabs plus a
+// "More" button that opens the full nav as a bottom-sheet drawer.
+// /leads and /clients both render ClientsList — see the route alias
+// in App.js — so each tab's NavLink active state is independent.
+const MOBILE_TABS = [
+  { to: "/today", icon: Sparkles, label: "Today" },
+  { to: "/leads", icon: Users, label: "Leads" },
+  { to: "/appointments", icon: CalendarClock, label: "Appts" },
+  { to: "/calendar", icon: CalendarDays, label: "Calendar" },
+  { to: "/clients", icon: UserCheck, label: "Clients" },
+];
+
+const MOBILE_TAB_PATHS = new Set(MOBILE_TABS.map((t) => t.to));
+
+function MobileTabBar({ onMoreClick }) {
+  return (
+    <nav
+      className="md:hidden fixed bottom-0 left-0 right-0 z-50 h-16 border-t"
+      style={{
+        background: SIDEBAR_BG,
+        borderTopColor: "rgba(255,255,255,0.08)",
+        paddingBottom: "env(safe-area-inset-bottom)",
+      }}
+      data-testid="mobile-tab-bar"
+      aria-label="Primary"
+    >
+      <div className="grid grid-cols-6 h-full">
+        {MOBILE_TABS.map((t) => {
+          const Icon = t.icon;
+          return (
+            <NavLink
+              key={t.to}
+              to={t.to}
+              end={t.to === "/today"}
+              className={({ isActive }) =>
+                [
+                  "flex flex-col items-center justify-center gap-0.5 transition-colors px-1",
+                  isActive
+                    ? "text-[#e85d2f]"
+                    : "text-white/55 hover:text-white",
+                ].join(" ")
+              }
+              data-testid={`mobile-tab-${t.to.slice(1)}`}
+            >
+              <Icon className="w-5 h-5 flex-shrink-0" aria-hidden="true" />
+              <span className="text-[10px] font-medium leading-tight truncate max-w-full">
+                {t.label}
+              </span>
+            </NavLink>
+          );
+        })}
+        <button
+          type="button"
+          onClick={onMoreClick}
+          className="flex flex-col items-center justify-center gap-0.5 text-white/55 hover:text-white transition-colors px-1"
+          aria-label="More navigation"
+          data-testid="mobile-tab-more"
+        >
+          <Menu className="w-5 h-5 flex-shrink-0" aria-hidden="true" />
+          <span className="text-[10px] font-medium leading-tight">More</span>
+        </button>
+      </div>
+    </nav>
+  );
+}
+
+// ── Mobile "More" drawer ───────────────────────────────────────────────────
+// Slides up from the bottom (full-screen) when the More tab is tapped.
+// Lists the sidebar's nav items NOT already in the bottom tab bar plus
+// the Agent Switcher (admin/compliance), Settings, search, and sign-out.
+function MobileMoreDrawer({
+  open,
+  onClose,
+  user,
+  role,
+  onSignOut,
+  onOpenSearch,
+}) {
+  const isAdmin = role === "admin";
+  const isAdminOrCompliance =
+    role === "admin" || COMPLIANCE_LIKE_ROLES.has(role);
+  const displayName = user?.full_name || user?.email || "Agent";
+
+  if (!open) return null;
+
+  // Same definitions as the desktop sidebar's Main section, minus the
+  // five paths that already live in the bottom tab bar.
+  const mainItems = [
+    { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard", testId: "mobile-more-dashboard" },
+    { to: "/leaderboard", icon: Trophy, label: "Leaderboard", testId: "mobile-more-leaderboard" },
+    { to: "/birthday-rule", icon: Cake, label: "Birthday Rule", testId: "mobile-more-birthday-rule" },
+    { to: "/renewals", icon: CalendarClock, label: "Renewals", testId: "mobile-more-renewals" },
+    { to: "/applications", icon: FileText, label: "Applications", testId: "mobile-more-applications" },
+    { to: "/commissions", icon: DollarSign, label: "Commissions", testId: "mobile-more-commissions" },
+  ].filter((i) => !MOBILE_TAB_PATHS.has(i.to));
+
+  return (
+    <div
+      className="md:hidden fixed inset-0 z-[60]"
+      role="dialog"
+      aria-modal="true"
+      aria-label="More navigation"
+      data-testid="mobile-more-drawer"
+    >
+      <button
+        type="button"
+        className="absolute inset-0 bg-black/50"
+        aria-label="Close menu"
+        onClick={onClose}
+      />
+      <div
+        className="absolute inset-0 flex flex-col text-white shadow-2xl animate-in slide-in-from-bottom duration-200"
+        style={{ background: SIDEBAR_BG }}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
+          <div className="flex items-center gap-2">
+            <div
+              className="w-8 h-8 rounded-md grid place-items-center text-sm font-bold text-white"
+              style={{
+                background: `linear-gradient(135deg, ${ACCENT} 0%, #c84416 100%)`,
+                fontFamily: "Outfit",
+              }}
+            >
+              G
+            </div>
+            <h2
+              className="text-base font-semibold tracking-tight"
+              style={{ fontFamily: "Outfit" }}
+            >
+              Navigation
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-2 -mr-2 text-white/70 hover:text-white"
+            aria-label="Close"
+            data-testid="mobile-more-close"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <nav className="flex-1 overflow-y-auto py-3 px-2">
+          {onOpenSearch && (
+            <div className="px-1 pb-3">
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenSearch();
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-md bg-white/5 hover:bg-white/10 text-xs text-white/70 hover:text-white transition-colors"
+                data-testid="mobile-more-search"
+              >
+                <SearchIcon className="w-3.5 h-3.5 flex-shrink-0" />
+                <span className="flex-1 text-left">Quick search…</span>
+              </button>
+            </div>
+          )}
+
+          {mainItems.length > 0 && (
+            <>
+              <SectionLabel>Main</SectionLabel>
+              <div className="space-y-0.5">
+                {mainItems.map((i) => (
+                  <NavItem
+                    key={i.to}
+                    to={i.to}
+                    icon={i.icon}
+                    label={i.label}
+                    onClick={onClose}
+                    testId={i.testId}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+
+          <SectionLabel>Reports</SectionLabel>
+          <div className="space-y-0.5">
+            <NavItem
+              to="/reports/lead-sources"
+              icon={PieIcon}
+              label="Lead Sources"
+              onClick={onClose}
+              testId="mobile-more-lead-sources"
+            />
+          </div>
+
+          {isAdminOrCompliance && (
+            <>
+              <SectionLabel>Admin</SectionLabel>
+              <div className="space-y-0.5">
+                {isAdmin && (
+                  <NavItem
+                    to="/agency"
+                    icon={Building2}
+                    label="Agency"
+                    onClick={onClose}
+                    testId="mobile-more-agency"
+                  />
+                )}
+                <NavItem
+                  to="/admin/commissions"
+                  icon={UserCheck}
+                  label="Agent Commissions"
+                  onClick={onClose}
+                  testId="mobile-more-admin-commissions"
+                />
+                {isAdmin && (
+                  <NavItem
+                    to="/admin/accounting"
+                    icon={Calculator}
+                    label="Accounting"
+                    onClick={onClose}
+                    testId="mobile-more-accounting"
+                  />
+                )}
+                <NavItem
+                  to="/agents"
+                  icon={Users}
+                  label="Team"
+                  onClick={onClose}
+                  testId="mobile-more-agents"
+                />
+                {isAdmin && (
+                  <NavItem
+                    to="/admin/import"
+                    icon={Upload}
+                    label="Data Import"
+                    onClick={onClose}
+                    testId="mobile-more-data-import"
+                  />
+                )}
+              </div>
+            </>
+          )}
+
+          {isAdminOrCompliance && (
+            <div className="mt-5">
+              <AgentSwitcher role={role} onNavigate={onClose} />
+            </div>
+          )}
+
+          <div className="space-y-0.5 mt-5">
+            <NavItem
+              to="/settings"
+              icon={SettingsIcon}
+              label="Settings"
+              onClick={onClose}
+              testId="mobile-more-settings"
+            />
+          </div>
+        </nav>
+
+        <div className="border-t border-white/5 p-3">
+          <div className="flex items-center gap-2.5 px-2 py-2 rounded-md bg-white/5 mb-2">
+            <div
+              className="w-8 h-8 rounded-full grid place-items-center text-xs font-bold text-white flex-shrink-0"
+              style={{ background: `linear-gradient(135deg, ${ACCENT} 0%, #c84416 100%)` }}
+              aria-hidden="true"
+            >
+              {initials(user)}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-medium text-white truncate">
+                {displayName}
+              </div>
+              <div className="text-[10px] uppercase tracking-wider text-white/45 truncate">
+                {role || "agent"}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              onSignOut();
+            }}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs text-white/65 hover:text-white hover:bg-white/5 rounded-md transition-colors"
+            data-testid="mobile-more-signout"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            Sign out
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── AppLayout ──────────────────────────────────────────────────────────────
 // Fixed sidebar on the left (collapsible 64px ↔ 220px on desktop),
 // scrollable main content on the right. On <md screens the sidebar is
-// hidden by default and opens as an overlay (always full-width inside
-// the drawer regardless of the desktop collapse preference).
+// hidden entirely; primary nav lives in the fixed bottom tab bar, with
+// secondary items reachable through the "More" bottom-sheet drawer.
 export function AppLayout({ children }) {
   const user = auth.getUser();
   const role = user?.role;
   const navigate = useNavigate();
   const location = useLocation();
-  const [mobileOpen, setMobileOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
 
   // Persisted desktop sidebar collapse preference. Read synchronously
   // from localStorage on first render so we don't get a layout-shift
@@ -808,9 +1101,11 @@ export function AppLayout({ children }) {
     });
   };
 
-  // Close the mobile drawer whenever the route changes.
+  // Close the More drawer whenever the route changes (e.g. tapping a
+  // NavLink inside the drawer — onClose fires too, this is the belt &
+  // braces version that covers back/forward and external navigation).
   useEffect(() => {
-    setMobileOpen(false);
+    setMoreOpen(false);
   }, [location.pathname]);
 
   function handleSignOut() {
@@ -840,22 +1135,13 @@ export function AppLayout({ children }) {
         />
       </aside>
 
-      {/* Mobile top bar */}
+      {/* Mobile top bar — brand + search only; nav lives in the bottom
+          tab bar. Hidden on md+ where the sidebar takes over. */}
       <header
         className="md:hidden sticky top-0 z-30 flex items-center justify-between h-12 px-3 border-b border-border bg-surface/90 backdrop-blur-md"
         data-testid="mobile-topbar"
       >
-        <button
-          type="button"
-          onClick={() => setMobileOpen(true)}
-          className="p-2 -ml-2 text-foreground"
-          aria-label="Open menu"
-          aria-expanded={mobileOpen}
-          data-testid="mobile-menu-toggle"
-        >
-          <Menu className="w-5 h-5" />
-        </button>
-        <Link to="/dashboard" className="flex items-center gap-2" data-testid="mobile-brand">
+        <Link to="/today" className="flex items-center gap-2" data-testid="mobile-brand">
           <div
             className="w-6 h-6 rounded-md grid place-items-center text-[11px] font-bold text-white"
             style={{
@@ -880,56 +1166,28 @@ export function AppLayout({ children }) {
         </button>
       </header>
 
-      {/* Mobile drawer + backdrop */}
-      {mobileOpen && (
-        <div className="md:hidden fixed inset-0 z-50" data-testid="mobile-menu">
-          <button
-            type="button"
-            className="absolute inset-0 bg-black/50"
-            aria-label="Close menu"
-            onClick={() => setMobileOpen(false)}
-          />
-          <aside className="absolute inset-y-0 left-0 w-[260px] max-w-[80vw] shadow-xl">
-            <div className="flex justify-end absolute top-2 right-2 z-10">
-              <button
-                type="button"
-                onClick={() => setMobileOpen(false)}
-                className="p-2 text-white/70 hover:text-white"
-                aria-label="Close menu"
-                data-testid="mobile-menu-close"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <SidebarContent
-              user={user}
-              role={role}
-              isMobile
-              onNavigate={() => setMobileOpen(false)}
-              onOpenSearch={() => {
-                setMobileOpen(false);
-                openPalette();
-              }}
-              onSignOut={() => {
-                setMobileOpen(false);
-                handleSignOut();
-              }}
-            />
-          </aside>
-        </div>
-      )}
-
-      {/* Main content — left padding mirrors the (animated) sidebar
-          width so content reflows smoothly when collapsing/expanding.
-          Both class strings are written literally below so Tailwind JIT
-          can detect and compile them. */}
+      {/* Main content — desktop reserves left padding equal to the
+          (animated) sidebar width; mobile reserves bottom padding for
+          the fixed tab bar so scrollable content isn't hidden behind it. */}
       <main
-        className={`min-h-screen transition-[padding] duration-200 ease-out ${
+        className={`min-h-screen pb-16 md:pb-0 transition-[padding] duration-200 ease-out ${
           collapsed ? "md:pl-[64px]" : "md:pl-[220px]"
         }`}
       >
         {children}
       </main>
+
+      {/* Mobile-only bottom tab bar + More drawer. Hidden on md+ where
+          the sidebar is the primary nav surface. */}
+      <MobileTabBar onMoreClick={() => setMoreOpen(true)} />
+      <MobileMoreDrawer
+        open={moreOpen}
+        onClose={() => setMoreOpen(false)}
+        user={user}
+        role={role}
+        onSignOut={handleSignOut}
+        onOpenSearch={openPalette}
+      />
 
       {/* Global keyboard-driven launcher. Single instance lives in the
           chrome so every authenticated page gets it for free. */}

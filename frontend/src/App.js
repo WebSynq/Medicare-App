@@ -97,6 +97,11 @@ export default function App() {
         <Route path="/leads/:id" element={<Protected><LeadDetail /></Protected>} />
         <Route path="/clients" element={<Protected><ClientsList /></Protected>} />
         <Route path="/clients/:leadId" element={<Protected><ClientProfile /></Protected>} />
+        {/* /leads exists as a parallel entry point to the client list so the
+            mobile bottom-tab bar's "Leads" tab can NavLink-match its own URL
+            independently of the "Clients" tab. Same page either way until we
+            split out a dedicated leads-only view. */}
+        <Route path="/leads" element={<Protected><ClientsList /></Protected>} />
         <Route path="/leaderboard" element={<Protected forbid={["client_success"]}><Leaderboard /></Protected>} />
         <Route path="/birthday-rule" element={<Protected><BirthdayRule /></Protected>} />
         <Route path="/renewals" element={<Protected><RenewalCalendar /></Protected>} />
