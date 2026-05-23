@@ -215,14 +215,22 @@ async def register(
     # InviteRequest prevents "admin" from ever landing on an invite, so
     # this fallback is safe.
     assigned_role = invite.get("role") or "agent"
+    # Auto-activate on register. The invite token is itself the
+    # admin's approval gate — once a user redeems a valid token they
+    # can sign in immediately. Previous behaviour stamped status=
+    # "pending" + is_active=False and required a second
+    # /auth/users/{id}/approve call, which left agents stuck on the
+    # "Account pending admin approval" 403 indefinitely if the admin
+    # never followed up. approve_agent still works (idempotent on
+    # already-active accounts) for any pre-existing pending rows.
     user_doc = {
         "id": new_user_id,
         "agent_id": new_user_id,
         "email": email,
         "full_name": full_name,
         "role": assigned_role,
-        "is_active": False,
-        "status": "pending",
+        "is_active": True,
+        "status": "active",
         "agency_name": body.agency_name.strip(),
         "agent_name": full_name,
         "agent_npn": agent_npn,

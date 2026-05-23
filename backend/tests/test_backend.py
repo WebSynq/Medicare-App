@@ -70,8 +70,16 @@ def test_open_registration_blocked(client, db):
     assert "invite" in r.json()["detail"].lower()
 
 
-def test_full_invite_flow_creates_pending_agent(client, db, admin_headers):
-    """Admin invites → agent registers with token → agent is pending."""
+def test_full_invite_flow_creates_active_agent(client, db, admin_headers):
+    """Admin invites → agent registers with token → agent is active.
+
+    The invite token IS the admin's approval gate (single-use, 24h
+    TTL, admin-issued). Once redeemed the user is immediately active
+    — no separate /auth/users/{id}/approve dance — so the new agent
+    can sign in right after registration instead of getting stuck
+    on the "Account pending admin approval" 403 forever if the
+    admin forgets the follow-up step.
+    """
     invite_resp = client.post("/api/auth/invite", headers=admin_headers, json={
         "email": "new.agent@example.com",
         "full_name": "Jane Agent",
@@ -111,10 +119,10 @@ def test_full_invite_flow_creates_pending_agent(client, db, admin_headers):
     })
     assert reg.status_code == 201, reg.text
     user = reg.json()
-    assert user["status"] == "pending"
+    assert user["status"] == "active"
     assert user["agent_npn"] == "12345678"
     assert user["agent_name"] == "Jane Agent"
-    assert user["is_active"] is False
+    assert user["is_active"] is True
 
 
 def test_invite_token_single_use(client, db, admin_headers):

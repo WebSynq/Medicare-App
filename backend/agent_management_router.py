@@ -161,6 +161,16 @@ async def update_agent_status(
     prev_state = bool(target.get("is_active", True))
 
     updates: dict = {"is_active": new_state}
+    # On reactivation also flip status → "active" so a previously
+    # pending or admin-deactivated user can actually log in. Login
+    # rejects status in {pending, rejected} with a 403 regardless of
+    # is_active, so without this clear-up the Reactivate button
+    # silently no-op'd against pending accounts. We don't touch
+    # status on deactivation — deactivated accounts keep their
+    # status so the admin can see why they were originally rejected
+    # if applicable.
+    if new_state:
+        updates["status"] = "active"
     # Bump token_version on deactivation so any active JWT for the
     # target user fails the deps.get_current_user check on next
     # request — they're booted from every device immediately.
