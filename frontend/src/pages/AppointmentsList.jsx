@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { format } from "date-fns";
 import {
   CalendarClock,
@@ -252,7 +252,7 @@ function ClientTypeahead({ selected, onSelect }) {
   );
 }
 
-function NewAppointmentSheet({ open, onOpenChange, onCreated }) {
+function NewAppointmentSheet({ open, onOpenChange, onCreated, prefillLeadId }) {
   // clientName is always present; linkedLead is the (optional) CRM
   // record we're attaching the appointment to. Booking against a
   // walk-in prospect who isn't in the system yet sends just
@@ -284,6 +284,30 @@ function NewAppointmentSheet({ open, onOpenChange, onCreated }) {
       setSaving(false);
     }
   }, [open]);
+
+  // Pre-fill from a Pipeline "Book Appointment" deep-link. When the
+  // sheet opens with a prefillLeadId, fetch the lead row + warm up the
+  // typeahead chip so the agent just picks date/time. Fails silently —
+  // the agent can still pick a client manually.
+  useEffect(() => {
+    if (!open || !prefillLeadId || linkedLead?.id === prefillLeadId) return;
+    let alive = true;
+    (async () => {
+      try {
+        const res = await api.get(`/leads/${prefillLeadId}`);
+        if (!alive) return;
+        const lead = res.data;
+        setLinkedLead(lead);
+        const full = `${lead.first_name || ""} ${lead.last_name || ""}`.trim();
+        setClientName(full || lead.email || "");
+      } catch {
+        // Lead not found / not owned — leave the form blank.
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [open, prefillLeadId, linkedLead?.id]);
 
   // When a lead is picked, ask the backend for the same commission
   // estimate it would stamp on save. Skipped for walk-ins (no lead).
@@ -617,6 +641,21 @@ export default function AppointmentsList() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [rangeFilter, setRangeFilter] = useState("week");
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const prefillLeadId = searchParams.get("lead_id");
+
+  // Auto-open the booking sheet when the page is navigated to with
+  // ?lead_id=X (e.g. from the Pipeline "Book Appointment" CTA). Strip
+  // the param afterwards so refreshing the page doesn't reopen the
+  // sheet over and over.
+  useEffect(() => {
+    if (prefillLeadId) {
+      setSheetOpen(true);
+      searchParams.delete("lead_id");
+      setSearchParams(searchParams, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const load = async () => {
     setLoading(true);
@@ -898,6 +937,7 @@ export default function AppointmentsList() {
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         onCreated={refreshAll}
+        prefillLeadId={prefillLeadId}
       />
     </div>
   );

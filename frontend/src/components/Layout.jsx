@@ -13,6 +13,7 @@ import {
   FileText,
   DollarSign,
   ClipboardList,
+  LayoutGrid,
   PieChart as PieIcon,
   Shield,
   UserCheck,
@@ -611,6 +612,7 @@ function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggle
         <SectionLabel collapsed={c}>Main</SectionLabel>
         <div className="space-y-0.5">
           <NavItem to="/today" icon={Sparkles} label="Today" onClick={onNavigate} testId="nav-today" collapsed={c} />
+          <NavItem to="/pipeline" icon={LayoutGrid} label="Pipeline" onClick={onNavigate} testId="nav-pipeline" collapsed={c} />
           <NavItem to="/appointments" icon={CalendarClock} label="Appointments" onClick={onNavigate} testId="nav-appointments" collapsed={c} />
           <NavItem to="/calendar" icon={CalendarDays} label="Calendar" onClick={onNavigate} testId="nav-calendar" collapsed={c} />
           <NavItem to="/dashboard" icon={LayoutDashboard} label="Dashboard" onClick={onNavigate} testId="nav-dashboard" collapsed={c} />

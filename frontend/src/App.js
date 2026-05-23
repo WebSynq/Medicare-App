@@ -13,6 +13,7 @@ import MfaSetup from "@/pages/MfaSetup";
 import AgentDashboard from "@/pages/AgentDashboard";
 import TodayPage from "@/pages/TodayPage";
 import AppointmentsList from "@/pages/AppointmentsList";
+import Pipeline from "@/pages/Pipeline";
 import CalendarPage from "@/pages/CalendarPage";
 import LeadSourceReport from "@/pages/LeadSourceReport";
 import LeadDetail from "@/pages/LeadDetail";
@@ -82,6 +83,7 @@ export default function App() {
         <Route path="/security" element={<SecurityPage />} />
         <Route path="/mfa-setup" element={<Protected noLayout><MfaSetup /></Protected>} />
         <Route path="/today" element={<Protected><TodayPage /></Protected>} />
+        <Route path="/pipeline" element={<Protected><Pipeline /></Protected>} />
         <Route path="/appointments" element={<Protected><AppointmentsList /></Protected>} />
         <Route path="/calendar" element={<Protected><CalendarPage /></Protected>} />
         <Route path="/reports/lead-sources" element={<Protected><LeadSourceReport /></Protected>} />
