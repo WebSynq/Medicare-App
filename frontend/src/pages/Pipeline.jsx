@@ -2,6 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { format } from "date-fns";
 import {
+  DragDropContext,
+  Draggable,
+  Droppable,
+} from "@hello-pangea/dnd";
+import {
   LayoutGrid,
   Phone,
   Mail,
@@ -79,14 +84,9 @@ function timeAgo(iso) {
   return `${months} months ago`;
 }
 
-function LeadCard({ card, onClick, showAgent }) {
+function LeadCardBody({ card, showAgent }) {
   return (
-    <button
-      type="button"
-      onClick={() => onClick(card)}
-      className="w-full text-left rounded-md border border-border bg-surface px-3 py-2.5 hover:border-[#e85d2f]/40 hover:shadow-sm transition-all"
-      data-testid={`pipeline-card-${card.lead_id}`}
-    >
+    <>
       <div className="font-medium text-sm truncate">{card.full_name}</div>
       <div className="mt-1 flex flex-col gap-0.5 text-[11px] text-muted-foreground">
         {card.phone && (
@@ -134,7 +134,50 @@ function LeadCard({ card, onClick, showAgent }) {
           @ {card.agent_name}
         </div>
       )}
-    </button>
+    </>
+  );
+}
+
+function LeadCard({ card, index, onClick, showAgent }) {
+  // Each card is a Draggable. The native button's spacebar/enter
+  // semantics conflict with hello-pangea's keyboard sensor, so the
+  // outer element is a div with explicit onClick + role=button +
+  // tabIndex. hello-pangea applies its own accessibility props via
+  // dragHandleProps.
+  return (
+    <Draggable draggableId={card.lead_id} index={index}>
+      {(provided, snapshot) => (
+        <div
+          ref={provided.innerRef}
+          {...provided.draggableProps}
+          {...provided.dragHandleProps}
+          role="button"
+          tabIndex={0}
+          onClick={() => onClick(card)}
+          onKeyDown={(e) => {
+            // Spacebar is reserved by the keyboard drag sensor; only
+            // Enter triggers the click handler so we don't fight it.
+            if (e.key === "Enter") onClick(card);
+          }}
+          className={`w-full text-left rounded-md border bg-surface px-3 py-2.5 transition-all ${
+            snapshot.isDragging
+              ? "border-[#e85d2f] shadow-lg scale-[1.02]"
+              : "border-border hover:border-[#e85d2f]/40 hover:shadow-sm cursor-pointer"
+          }`}
+          style={{
+            ...provided.draggableProps.style,
+            // Override the library's default transition during settle
+            // so the card-shadow we layer on top doesn't flicker.
+            transition: snapshot.isDragging
+              ? provided.draggableProps.style?.transition
+              : "all 120ms ease-out",
+          }}
+          data-testid={`pipeline-card-${card.lead_id}`}
+        >
+          <LeadCardBody card={card} showAgent={showAgent} />
+        </div>
+      )}
+    </Draggable>
   );
 }
 
@@ -169,30 +212,46 @@ function StageColumn({ stage, onCardClick, showAgent }) {
           </span>
         )}
       </div>
-      <Card
-        className="bg-surface flex-1 overflow-hidden"
-        style={{ borderTop: `2px solid ${stage.color}` }}
-      >
-        <CardContent
-          className="p-2 space-y-2 overflow-y-auto"
-          style={{ maxHeight: "calc(100vh - 320px)" }}
-        >
-          {stage.leads.length === 0 ? (
-            <div className="text-center text-[11px] text-muted-foreground py-8">
-              No leads in this stage
-            </div>
-          ) : (
-            stage.leads.map((card) => (
-              <LeadCard
-                key={card.lead_id}
-                card={card}
-                onClick={onCardClick}
-                showAgent={showAgent}
-              />
-            ))
-          )}
-        </CardContent>
-      </Card>
+      <Droppable droppableId={stage.id}>
+        {(provided, snapshot) => (
+          <Card
+            className="bg-surface flex-1 overflow-hidden transition-colors"
+            style={{
+              borderTop: `2px solid ${stage.color}`,
+              // Light wash on the destination column while a drag is
+              // hovering — uses the stage's own colour at low alpha so
+              // it stays on-theme without a hard-coded shade.
+              background: snapshot.isDraggingOver
+                ? `${stage.color}0d`
+                : undefined,
+            }}
+          >
+            <CardContent
+              ref={provided.innerRef}
+              {...provided.droppableProps}
+              className="p-2 space-y-2 overflow-y-auto"
+              style={{ maxHeight: "calc(100vh - 320px)" }}
+            >
+              {stage.leads.length === 0 ? (
+                <div className="text-center text-[11px] text-muted-foreground py-8">
+                  No leads in this stage
+                </div>
+              ) : (
+                stage.leads.map((card, idx) => (
+                  <LeadCard
+                    key={card.lead_id}
+                    card={card}
+                    index={idx}
+                    onClick={onCardClick}
+                    showAgent={showAgent}
+                  />
+                ))
+              )}
+              {provided.placeholder}
+            </CardContent>
+          </Card>
+        )}
+      </Droppable>
     </div>
   );
 }
@@ -303,8 +362,7 @@ function CardSheet({ open, onOpenChange, card, stages, onStageChange, saving }) 
               </SelectContent>
             </Select>
             <p className="text-[10px] text-muted-foreground mt-1">
-              Drag-and-drop coming soon — picking a stage moves the card
-              now.
+              Drag cards between columns or use the dropdown below.
             </p>
           </div>
 
@@ -480,6 +538,46 @@ export default function Pipeline() {
     }
   }
 
+  // hello-pangea/dnd onDragEnd. Mirrors moveCardToStage for cross-
+  // column drops, and reorders in place for same-column drops (purely
+  // local — backend doesn't track per-column ordering yet).
+  function handleDragEnd(result) {
+    const { source, destination, draggableId } = result;
+    if (!destination) return;                 // dropped outside any column
+    if (
+      source.droppableId === destination.droppableId &&
+      source.index === destination.index
+    ) {
+      return;                                  // no-op move
+    }
+
+    if (source.droppableId === destination.droppableId) {
+      // Same-column reorder: shuffle the array locally and keep the
+      // server out of it. data has the canonical reference, stages
+      // is a derived view, so update data directly.
+      const stageIdx = data.stages.findIndex(
+        (s) => s.id === source.droppableId,
+      );
+      if (stageIdx < 0) return;
+      const stage = data.stages[stageIdx];
+      const reordered = [...stage.leads];
+      const [removed] = reordered.splice(source.index, 1);
+      reordered.splice(destination.index, 0, removed);
+      const nextStages = [...data.stages];
+      nextStages[stageIdx] = { ...stage, leads: reordered };
+      setData({ ...data, stages: nextStages });
+      return;
+    }
+
+    // Cross-column drop — route through the existing optimistic
+    // mover. Look up the card from the source column so we have the
+    // full object (the draggableId is just the lead_id).
+    const sourceStage = data.stages.find((s) => s.id === source.droppableId);
+    const card = sourceStage?.leads.find((c) => c.lead_id === draggableId);
+    if (!card) return;
+    moveCardToStage(card, destination.droppableId);
+  }
+
   return (
     <div className="p-6 md:p-8">
       <main className="max-w-[1600px] mx-auto w-full">
@@ -512,8 +610,8 @@ export default function Pipeline() {
               )}
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Drag-style Kanban — pick a card and move it through the
-              stages with the Move to Stage selector.
+              Drag cards between columns, or open one for full details
+              and quick actions.
             </p>
             <ImpersonationBanner />
           </div>
@@ -552,16 +650,18 @@ export default function Pipeline() {
             ))}
           </div>
         ) : (
-          <div className="flex md:flex-row flex-col gap-4 md:overflow-x-auto pb-4">
-            {stages.map((stage) => (
-              <StageColumn
-                key={stage.id}
-                stage={stage}
-                onCardClick={openCard}
-                showAgent={showAgent}
-              />
-            ))}
-          </div>
+          <DragDropContext onDragEnd={handleDragEnd}>
+            <div className="flex md:flex-row flex-col gap-4 md:overflow-x-auto pb-4">
+              {stages.map((stage) => (
+                <StageColumn
+                  key={stage.id}
+                  stage={stage}
+                  onCardClick={openCard}
+                  showAgent={showAgent}
+                />
+              ))}
+            </div>
+          </DragDropContext>
         )}
       </main>
 
