@@ -739,6 +739,26 @@ async def on_startup():
     # Stamp agent_id / agent_name on any pre-existing user rows that pre-date
     # workspace-isolation scoping. Idempotent — no-op once everyone is stamped.
     await backfill_agent_identity(db)
+
+    # One-shot migration: any user row stuck on status="pending" while
+    # is_active=True is a leftover from the pre-auto-activate flow.
+    # The login endpoint rejects status=pending with 403 regardless of
+    # is_active, so admins who tried to "Reactivate" those rows ended
+    # up with users that LOOKED active in the UI but still couldn't
+    # sign in. Idempotent — once everyone is flipped to "active" this
+    # update_many matches zero docs and logs "fixed 0".
+    try:
+        _migrate = await db.users.update_many(
+            {"is_active": True, "status": "pending"},
+            {"$set": {"status": "active"}},
+        )
+        logger.info(
+            "Migration: fixed %d pending-but-active users",
+            _migrate.modified_count,
+        )
+    except Exception as e:
+        logger.warning("pending-but-active migration failed: %s", e)
+
     logger.info("Startup complete. Admin seeded if missing.")
 
     # Boot background schedulers. Gated by DISABLE_SCHEDULER=1 (set in
