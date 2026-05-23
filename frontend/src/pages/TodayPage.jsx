@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Sparkles,
@@ -7,12 +7,15 @@ import {
   Snowflake,
   CalendarDays,
   ArrowUpRight,
+  Cake,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import { Card, CardContent } from "@/components/ui/card";
+import { api, auth, COMMAND_CENTER_ROLES } from "@/lib/api";
+import { useAgent } from "@/context/AgentContext";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import ScrollableCard from "@/components/ScrollableCard";
 
@@ -119,7 +122,21 @@ export default function TodayPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Privileged-role + not-impersonating = agency view. When impersonating
+  // an agent we fall back to the regular Today page so leadership can
+  // see exactly what their agent sees.
+  const { selectedAgent } = useAgent();
+  const me = auth.getUser();
+  const isAgencyView =
+    !selectedAgent && COMMAND_CENTER_ROLES.has(me?.role || "");
+
   useEffect(() => {
+    // Skip the per-agent /today/actions fetch in agency view — the
+    // summary cards pull from /agency-dashboard endpoints instead.
+    if (isAgencyView) {
+      setLoading(false);
+      return;
+    }
     let alive = true;
     (async () => {
       try {
@@ -135,7 +152,11 @@ export default function TodayPage() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [isAgencyView]);
+
+  if (isAgencyView) {
+    return <AgencyTodaySummary />;
+  }
 
   const summary = data?.summary || {
     urgent_count: 0,
@@ -342,5 +363,249 @@ export default function TodayPage() {
         </div>
       </main>
     </div>
+  );
+}
+
+// ── Agency summary view ──────────────────────────────────────────────────
+// What leadership sees when they hit /today WITHOUT impersonating an
+// agent. Four summary cards — no merged client lists, no individual
+// task items. Each card deep-links into the Command Center drill-down
+// or the Calendar so they can investigate from there.
+
+function AgencyTodaySummary() {
+  const [kpis, setKpis] = useState(null);
+  const [alerts, setAlerts] = useState(null);
+  const [todaysAppts, setTodaysAppts] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        // KPIs power the count-side of each card; /alerts gives us the
+        // distinct-agents-affected count for stale + birthday windows;
+        // /appointments filtered to today gives us today's roll-up
+        // (admins / owners / coaches see all rows by virtue of being
+        // in FULL_AGENCY_SCOPE_ROLES, no override header needed).
+        const [kRes, alRes, apRes] = await Promise.allSettled([
+          api.get("/agency-dashboard/kpis?period=mtd"),
+          api.get("/agency-dashboard/alerts"),
+          api.get("/appointments"),
+        ]);
+        if (!alive) return;
+        if (kRes.status === "fulfilled") setKpis(kRes.value.data);
+        if (alRes.status === "fulfilled") setAlerts(alRes.value.data);
+        if (apRes.status === "fulfilled") {
+          const todayIso = new Date().toISOString().slice(0, 10);
+          const list = (apRes.value.data?.appointments || []).filter(
+            (a) =>
+              a.appointment_date === todayIso && a.status === "scheduled",
+          );
+          setTodaysAppts(list);
+        }
+      } catch (err) {
+        toast.error(
+          err?.response?.data?.detail || "Failed to load agency summary",
+        );
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const mtdCommission = Number(kpis?.revenue?.this_period) || 0;
+  const mtdCommissionLabel = new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(mtdCommission);
+
+  const bdayOpen = kpis?.birthday_windows?.open_now ?? 0;
+  const bdayAgentCount = useMemo(() => {
+    const set = new Set();
+    (alerts?.birthday_windows || []).forEach((b) =>
+      b.agent_name && set.add(b.agent_name),
+    );
+    return set.size;
+  }, [alerts]);
+
+  const renewals30 = kpis?.renewals?.due_30_days ?? 0;
+
+  const staleAgents = (alerts?.stale_leads || []).length;
+  const staleLeadCount = (alerts?.stale_leads || []).reduce(
+    (acc, r) => acc + (r.count || 0),
+    0,
+  );
+
+  const todayAppointmentCount = todaysAppts.length;
+  const todayAppointmentAgentCount = new Set(
+    todaysAppts.map((a) => a.agent_id),
+  ).size;
+
+  return (
+    <div className="p-6 md:p-8">
+      <main className="max-w-[1100px] mx-auto w-full">
+        <div className="mb-6">
+          <div className="flex items-center gap-2 mb-1">
+            <Sparkles className="w-4 h-4 text-[#e85d2f]" />
+            <p className="text-xs uppercase tracking-widest text-muted-foreground">
+              Agency Today
+            </p>
+          </div>
+          <h1
+            className="text-2xl font-bold tracking-tight"
+            style={{ fontFamily: "Outfit" }}
+          >
+            Today
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Agency-wide summary of what needs attention right now.
+          </p>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            {mtdCommission > 0 && (
+              <span
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tabular-nums"
+                style={{ background: "rgba(22,163,74,0.15)", color: "#166534" }}
+                data-testid="today-pill-mtd-commission"
+              >
+                <span className="font-bold">{mtdCommissionLabel}</span>
+                Est. Agency MTD
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3" data-testid="today-agency-summary">
+          <SummaryCard
+            icon={Cake}
+            iconBg="bg-red-100"
+            iconColor="text-red-700"
+            title="Urgent Birthday Windows"
+            body={
+              loading
+                ? "Loading…"
+                : bdayOpen === 0
+                ? "No open windows today."
+                : `${bdayOpen} client${bdayOpen === 1 ? "" : "s"}${
+                    bdayAgentCount > 0
+                      ? ` across ${bdayAgentCount} agent${
+                          bdayAgentCount === 1 ? "" : "s"
+                        }`
+                      : ""
+                  } have open windows`
+            }
+            linkLabel="View All in Command Center"
+            linkTo="/agency-dashboard"
+          />
+          <SummaryCard
+            icon={CalendarClock}
+            iconBg="bg-amber-100"
+            iconColor="text-amber-700"
+            title="Renewals Due This Month"
+            body={
+              loading
+                ? "Loading…"
+                : renewals30 === 0
+                ? "No renewals due in the next 30 days."
+                : `${renewals30} policies renewing in the next 30 days`
+            }
+            linkLabel="View All in Command Center"
+            linkTo="/agency-dashboard"
+          />
+          <SummaryCard
+            icon={Snowflake}
+            iconBg="bg-blue-100"
+            iconColor="text-blue-700"
+            title="Stale Leads Needing Contact"
+            body={
+              loading
+                ? "Loading…"
+                : staleLeadCount === 0
+                ? "No backlog — every agent is current."
+                : `${staleLeadCount} lead${
+                    staleLeadCount === 1 ? "" : "s"
+                  } not contacted in 7+ days`
+            }
+            subline={
+              staleAgents > 0
+                ? `${staleAgents} agent${
+                    staleAgents === 1 ? "" : "s"
+                  } need follow-up`
+                : null
+            }
+            linkLabel="View All in Command Center"
+            linkTo="/agency-dashboard"
+          />
+          <SummaryCard
+            icon={CalendarDays}
+            iconBg="bg-emerald-100"
+            iconColor="text-emerald-700"
+            title="Today's Appointments (Agency-Wide)"
+            body={
+              loading
+                ? "Loading…"
+                : todayAppointmentCount === 0
+                ? "No appointments scheduled for today."
+                : `${todayAppointmentCount} appointment${
+                    todayAppointmentCount === 1 ? "" : "s"
+                  }${
+                    todayAppointmentAgentCount > 0
+                      ? ` scheduled today across ${todayAppointmentAgentCount} agent${
+                          todayAppointmentAgentCount === 1 ? "" : "s"
+                        }`
+                      : ""
+                  }`
+            }
+            linkLabel="View in Calendar"
+            linkTo="/calendar"
+          />
+        </div>
+
+        <p className="mt-6 text-xs text-muted-foreground italic">
+          Switch to an agent's view using the Agent Switcher to see their
+          individual Today page.
+        </p>
+      </main>
+    </div>
+  );
+}
+
+function SummaryCard({
+  icon: Icon,
+  iconBg,
+  iconColor,
+  title,
+  body,
+  subline,
+  linkLabel,
+  linkTo,
+}) {
+  return (
+    <Card>
+      <CardContent className="p-5 flex items-start gap-4">
+        <div
+          className={`w-10 h-10 rounded-lg ${iconBg} ${iconColor} grid place-items-center flex-shrink-0`}
+        >
+          <Icon className="w-5 h-5" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <h3 className="font-semibold text-foreground">{title}</h3>
+          <p className="text-sm text-muted-foreground mt-1">{body}</p>
+          {subline ? (
+            <p className="text-xs text-muted-foreground mt-1">{subline}</p>
+          ) : null}
+          <Link
+            to={linkTo}
+            className="inline-flex items-center gap-1 mt-2 text-xs font-medium text-[#e85d2f] hover:underline"
+          >
+            {linkLabel} <ArrowUpRight className="w-3 h-3" />
+          </Link>
+        </div>
+      </CardContent>
+    </Card>
   );
 }

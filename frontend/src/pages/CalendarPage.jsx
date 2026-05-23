@@ -21,7 +21,8 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
-import { api } from "@/lib/api";
+import { api, auth, COMMAND_CENTER_ROLES } from "@/lib/api";
+import { useAgent } from "@/context/AgentContext";
 
 // react-big-calendar's stylesheet. Imported here only — its class names
 // (.rbc-*) are unique enough that they don't bleed onto pages that
@@ -46,6 +47,7 @@ const COLORS = {
   appointmentMuted: "#9ca3af", // gray-400 for completed/cancelled/no-show
   renewal: "#d97706",          // amber-600
   birthday: "#dc2626",         // red-600
+  agencyEvent: "#94a3b8",      // slate-400 — AEP / OEP background bands
 };
 
 const TYPE_LABEL = {
@@ -202,9 +204,42 @@ function DetailRow({ label, value, multiline, capitalize }) {
   );
 }
 
+// Two CMS enrollment windows we surface as background events all
+// year. The next future occurrence of each is added to the calendar
+// so leadership has a constant visual reminder of when they're open.
+function nextWindowOccurrences(today) {
+  const year = today.getFullYear();
+  const windows = [];
+  function pick(name, startMonth, startDay, endMonth, endDay) {
+    let start = new Date(year, startMonth, startDay);
+    let end = new Date(year, endMonth, endDay);
+    if (today > end) {
+      start = new Date(year + 1, startMonth, startDay);
+      end = new Date(year + 1, endMonth, endDay);
+    }
+    windows.push({ name, start, end });
+  }
+  // AEP: Oct 15 – Dec 7. OEP: Jan 1 – Mar 31.
+  pick("AEP", 9, 15, 11, 7);
+  pick("OEP", 0, 1, 2, 31);
+  return windows;
+}
+
 export default function CalendarPage() {
   const isMobile = useIsMobile();
+  const me = auth.getUser();
+  const { selectedAgent } = useAgent();
+  const isAgencyView =
+    !selectedAgent && COMMAND_CENTER_ROLES.has(me?.role || "");
+
   const [events, setEvents] = useState([]);
+  // Pre-filter appointment list so the summary widget can report
+  // agency-wide counts before we drop other-agent events from the
+  // grid in agency view.
+  const [todaySummary, setTodaySummary] = useState({
+    count: 0,
+    agentCount: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState("month");
   const [date, setDate] = useState(new Date());
@@ -227,7 +262,27 @@ export default function CalendarPage() {
         const out = [];
 
         if (apptRes.status === "fulfilled") {
-          const list = apptRes.value.data?.appointments || [];
+          const rawList = apptRes.value.data?.appointments || [];
+          // Today summary uses the unfiltered roll-up so the widget
+          // reflects the whole agency, even when we hide other agents'
+          // events from the grid below.
+          if (isAgencyView) {
+            const todayIso = new Date().toISOString().slice(0, 10);
+            const todays = rawList.filter(
+              (a) =>
+                a.appointment_date === todayIso && a.status === "scheduled",
+            );
+            setTodaySummary({
+              count: todays.length,
+              agentCount: new Set(todays.map((a) => a.agent_id)).size,
+            });
+          }
+          // Agency view hides other agents' appointments so the grid
+          // doesn't turn into a merged dump — leadership pulls cross-
+          // agent scheduling from the Command Center, not from here.
+          const list = isAgencyView
+            ? rawList.filter((a) => a.agent_id === me?.id)
+            : rawList;
           for (const a of list) {
             const start = parseDateTime(a.appointment_date, a.appointment_time);
             if (!start) continue;
@@ -283,6 +338,22 @@ export default function CalendarPage() {
           }
         }
 
+        // CMS enrollment windows (AEP + OEP) — multi-day grey background
+        // bands so leadership always sees when the next window opens.
+        for (const w of nextWindowOccurrences(new Date())) {
+          out.push({
+            id: `agency-${w.name}-${w.start.toISOString().slice(0, 10)}`,
+            title: `${w.name} · ${w.name === "AEP"
+              ? "Annual Enrollment Period"
+              : "Open Enrollment Period"}`,
+            start: w.start,
+            end: endOfAllDay(w.end),
+            allDay: true,
+            color: COLORS.agencyEvent,
+            resource: { kind: "agency_event", window: w.name },
+          });
+        }
+
         if (!alive) return;
         setEvents(out);
         if (
@@ -299,7 +370,7 @@ export default function CalendarPage() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [isAgencyView, me?.id]);
 
   const eventPropGetter = useCallback((event) => {
     return {
@@ -347,7 +418,9 @@ export default function CalendarPage() {
               Calendar
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Appointments, renewals, and birthday windows in one view.
+              {isAgencyView
+                ? "Your appointments + agency-wide renewals, birthday windows, and CMS enrollment periods."
+                : "Appointments, renewals, and birthday windows in one view."}
             </p>
             <ImpersonationBanner />
           </div>
@@ -355,8 +428,39 @@ export default function CalendarPage() {
             <LegendDot color={COLORS.appointment} label="Appointment" />
             <LegendDot color={COLORS.renewal} label="Renewal" />
             <LegendDot color={COLORS.birthday} label="Birthday window" />
+            <LegendDot color={COLORS.agencyEvent} label="AEP / OEP" />
           </div>
         </div>
+
+        {isAgencyView && (
+          <Card className="mb-4 border-l-4" style={{ borderLeftColor: COLORS.appointment }}>
+            <CardContent className="p-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm">
+                <span className="font-semibold">
+                  {todaySummary.count} appointment{todaySummary.count === 1 ? "" : "s"} today
+                </span>
+                {todaySummary.agentCount > 0 && (
+                  <span className="text-muted-foreground">
+                    {" "}across {todaySummary.agentCount} agent
+                    {todaySummary.agentCount === 1 ? "" : "s"}
+                  </span>
+                )}
+                <span className="text-muted-foreground"> · agency-wide</span>
+              </div>
+              <Button
+                asChild
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs"
+              >
+                <Link to="/agency-dashboard">
+                  View in Command Center
+                  <ArrowUpRight className="w-3 h-3 ml-1" />
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
         <Card className="bg-surface">
           <CardContent className="p-3 md:p-4">

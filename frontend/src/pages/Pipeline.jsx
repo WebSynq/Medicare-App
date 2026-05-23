@@ -33,9 +33,18 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { api, auth } from "@/lib/api";
+import { api, auth, COMMAND_CENTER_ROLES } from "@/lib/api";
+import { useAgent } from "@/context/AgentContext";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import LeadNotesPanel from "@/components/LeadNotesPanel";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 // Period filter — applied client-side against card.created_at so we
 // avoid an extra backend round-trip when the user flips the toggle.
@@ -405,6 +414,7 @@ function CardSheet({ open, onOpenChange, card, stages, onStageChange, saving }) 
 }
 
 export default function Pipeline() {
+  const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState("all");
@@ -413,6 +423,9 @@ export default function Pipeline() {
   const [savingStage, setSavingStage] = useState(false);
 
   const user = auth.getUser();
+  const { selectedAgent, setSelectedAgent } = useAgent();
+  const isAgencyView =
+    !selectedAgent && COMMAND_CENTER_ROLES.has(user?.role || "");
   const showAgent =
     user?.role === "admin" ||
     user?.role === "owner" ||
@@ -650,6 +663,15 @@ export default function Pipeline() {
               />
             ))}
           </div>
+        ) : isAgencyView ? (
+          <AgentPipelineSummary
+            stages={stages}
+            onSelectAgent={(agent) => {
+              setSelectedAgent(agent);
+              toast.success(`Viewing as ${agent.name}`);
+              navigate("/pipeline");
+            }}
+          />
         ) : (
           <DragDropContext onDragEnd={handleDragEnd}>
             <div className="flex md:flex-row flex-col gap-4 md:overflow-x-auto pb-4">
@@ -678,5 +700,124 @@ export default function Pipeline() {
         saving={savingStage}
       />
     </div>
+  );
+}
+
+// ── Agency pipeline summary ──────────────────────────────────────────────
+// Per-agent stage counts. Pivoted client-side from the same
+// /leads/pipeline response that the kanban uses — admins / coaches see
+// every lead because they fall in FULL_AGENCY_SCOPE_ROLES, so we already
+// have everything we need without an extra round trip. Row click swaps
+// the AgentContext to that agent so leadership lands in the agent's own
+// kanban view with the impersonation banner on.
+function AgentPipelineSummary({ stages, onSelectAgent }) {
+  // Build {agentName → {agentId, totalsByStage, total}}. The pipeline
+  // response stamps agent_id + agent_name on every lead card so the
+  // pivot is straightforward.
+  const rows = useMemo(() => {
+    const byAgent = new Map();
+    for (const stage of stages) {
+      for (const card of stage.leads || []) {
+        const key = card.agent_id || card.agent_name || "Unassigned";
+        if (!byAgent.has(key)) {
+          byAgent.set(key, {
+            agent_id: card.agent_id || null,
+            agent_name: card.agent_name || "Unassigned",
+            agent_email: card.agent_email || null,
+            stages: {},
+            total: 0,
+          });
+        }
+        const row = byAgent.get(key);
+        row.stages[stage.id] = (row.stages[stage.id] || 0) + 1;
+        row.total += 1;
+      }
+    }
+    return Array.from(byAgent.values()).sort((a, b) => b.total - a.total);
+  }, [stages]);
+
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <div className="flex items-center justify-between px-5 pt-5 pb-3">
+          <div>
+            <h3 className="text-sm font-semibold">Agent Pipeline Summary</h3>
+            <p className="text-xs text-muted-foreground italic">
+              Click an agent row to view their pipeline
+            </p>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Agent</TableHead>
+                {stages.map((s) => (
+                  <TableHead key={s.id} className="text-right whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span
+                        className="w-2 h-2 rounded-full"
+                        style={{ background: s.color }}
+                      />
+                      {s.label}
+                    </span>
+                  </TableHead>
+                ))}
+                <TableHead className="text-right">Total</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.length === 0 ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={stages.length + 2}
+                    className="text-center text-muted-foreground py-8"
+                  >
+                    No leads in the pipeline.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                rows.map((row) => (
+                  <TableRow
+                    key={row.agent_id || row.agent_name}
+                    onClick={() => {
+                      if (!row.agent_id) return;
+                      onSelectAgent({
+                        id: row.agent_id,
+                        name: row.agent_name,
+                        email: row.agent_email,
+                      });
+                    }}
+                    className={
+                      row.agent_id
+                        ? "cursor-pointer hover:bg-secondary/60"
+                        : "opacity-60"
+                    }
+                    data-testid={`pipeline-summary-row-${row.agent_id || "unassigned"}`}
+                  >
+                    <TableCell>
+                      <div className="font-medium text-sm">{row.agent_name}</div>
+                      {row.agent_email && (
+                        <div className="text-[11px] text-muted-foreground">
+                          {row.agent_email}
+                        </div>
+                      )}
+                    </TableCell>
+                    {stages.map((s) => (
+                      <TableCell key={s.id} className="text-right tabular-nums">
+                        {row.stages[s.id] || 0}
+                      </TableCell>
+                    ))}
+                    <TableCell className="text-right font-semibold tabular-nums">
+                      {row.total}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
