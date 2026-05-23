@@ -74,8 +74,8 @@ from security import (
     validate_password_strength,
 )
 from deps import (
-    get_db, get_current_user, get_frontend_url, require_roles, write_audit,
-    is_account_locked, check_and_record_login_attempt,
+    get_agency_id, get_db, get_current_user, get_frontend_url, require_roles,
+    write_audit, is_account_locked, check_and_record_login_attempt,
 )
 
 
@@ -234,13 +234,18 @@ async def register(
         "agency_name": body.agency_name.strip(),
         "agent_name": full_name,
         "agent_npn": agent_npn,
+        # Passive multi-tenant stamp — see deps.get_agency_id.
+        "agency_id": get_agency_id(),
         "hashed_password": hash_password(body.password),
         "mfa_secret": None,
         "mfa_enabled": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.users.insert_one(user_doc)
-    await write_audit(db, "agent_registration_requested", actor_email=email,
+    # Renamed from "agent_registration_requested" — the invite token
+    # is the approval gate, so registration completion IS the event,
+    # not a request for a follow-up step.
+    await write_audit(db, "agent_registered", actor_email=email,
                       target_type="user", target_id=user_doc["id"], request=request,
                       metadata={"agency_name": user_doc["agency_name"],
                                 "full_name": user_doc["full_name"],
