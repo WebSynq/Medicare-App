@@ -110,7 +110,7 @@ export default function SecurityPage() {
             icon="🛡️"
             items={[
               "JWT (JSON Web Token) authentication on every API request",
-              "Multi-factor authentication (TOTP) available for all agents",
+              "Passwordless magic-link sign-in as the primary auth path — possession of the registered inbox is the second factor",
               "Role-based access — agents see only their own clients",
               "Invite-only agent registration — no unauthorized account creation",
               "Brute force protection — accounts locked after 5 failed attempts",
@@ -160,7 +160,7 @@ export default function SecurityPage() {
               "Minimum 12-character passwords enforced at the system level",
               "Passwords must include uppercase, lowercase, number, and special character",
               "Passwords are hashed using bcrypt — never stored in plaintext",
-              "MFA via authenticator app adds a second layer of protection",
+              "Magic-link sign-in adds inbox-possession as a second factor on top of the password",
               "Credentials never transmitted in URL parameters",
               "API keys stored in environment variables — never in source code",
             ]}

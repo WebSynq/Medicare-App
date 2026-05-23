@@ -44,7 +44,7 @@ export default function Landing() {
             <div className="mt-10 grid grid-cols-3 gap-5 max-w-md">
               {[
                 {n: "AES-256", l: "in transit"},
-                {n: "TOTP", l: "MFA for agents"},
+                {n: "Magic link", l: "passwordless sign-in"},
                 {n: "Audit", l: "trail per action"},
               ].map((s) => (
                 <div key={s.n}>
@@ -150,7 +150,7 @@ export default function Landing() {
               {[
                 "TLS 1.2+ enforced for every request; HSTS and strict CSP at the edge.",
                 "AES encryption at rest for PHI documents using a dedicated key (rotatable).",
-                "Role-based access — agent, admin, compliance officer — with TOTP MFA enrollment.",
+                "Role-based access — agent, admin, compliance officer — secured by passwordless magic-link sign-in.",
                 "Audit log captures every login, document touch, SOA signature, and GHL sync.",
                 "Production deploy plan: AWS w/ signed BAA, KMS-managed keys, VPC endpoints, MongoDB Atlas (HIPAA tier).",
               ].map((t) => (
@@ -198,7 +198,7 @@ function WhyUpgradeSection() {
       capability: "Multi-Factor Authentication",
       regulation: "HIPAA Security Rule · 45 CFR §164.308(a)(5)(ii)(D) + NIST 800-63B AAL2",
       n8n: { ok: false, text: "Whoever has the n8n password — or a leaked Google Workspace cookie — can read every Medicare card uploaded." },
-      new: { ok: true, text: "TOTP MFA enforced on every agent / admin / compliance account. JWT carries an explicit mfa_verified claim." },
+      new: { ok: true, text: "Passwordless magic-link sign-in (15-min single-use token) enforced on every agent / admin / compliance account. Possession of the registered inbox is the second factor. Email + password kept as Option B." },
     },
     {
       capability: "Audit log of access to PHI",
@@ -246,7 +246,7 @@ function WhyUpgradeSection() {
           </div>
           <div className="space-y-4 text-foreground/85 leading-relaxed">
             <p>The n8n workflow you have today moves data — and that's all it does. It does not document consent, doesn't restrict who can read PHI, doesn't prove who looked at which Medicare card, and runs on infrastructure that won't sign a Business Associate Agreement.</p>
-            <p>For a Medicare FMO, that gap is not theoretical. CMS audits, OIG complaints, state DOI inquiries and beneficiary complaints all require evidence that you are following the same rules every carrier in your portfolio is contractually obligating you to follow. A working form is not evidence. A platform with audit, MFA, encryption, RBAC, and SOA capture is.</p>
+            <p>For a Medicare FMO, that gap is not theoretical. CMS audits, OIG complaints, state DOI inquiries and beneficiary complaints all require evidence that you are following the same rules every carrier in your portfolio is contractually obligating you to follow. A working form is not evidence. A platform with audit, magic-link sign-in, encryption, RBAC, and SOA capture is.</p>
             <p className="text-sm text-muted-foreground border-l-2 border-accent pl-4 italic">Translation for Gruening: today the agency carries personal liability for any beneficiary whose MBI is mishandled. Tomorrow it carries documented technical safeguards that satisfy HIPAA, HITECH, CMS Marketing Guidelines, and the carrier compliance agreements you already signed.</p>
           </div>
         </div>
@@ -292,7 +292,7 @@ function WhyUpgradeSection() {
           {[
             { h: "Carrier &amp; FMO trust", b: "Carriers increasingly require attestation that downstream agencies use HIPAA-aligned tooling. A documented platform is now table-stakes for retaining contracts with UHC, Humana, Aetna, and BCBS plans." },
             { h: "Enterprise valuation", b: "Agencies that get acquired trade at higher multiples when they can show signed BAAs, audit logs, and pen-test reports. Compliance infrastructure is operating leverage at exit." },
-            { h: "Lower insurance premiums", b: "Cyber-liability carriers underwrite based on technical safeguards. MFA, encryption at rest, and audit controls typically reduce premiums 20–35% vs an n8n-only setup." },
+            { h: "Lower insurance premiums", b: "Cyber-liability carriers underwrite based on technical safeguards. Magic-link sign-in, encryption at rest, and audit controls typically reduce premiums 20–35% vs an n8n-only setup." },
           ].map((c) => (
             <Card key={c.h} className="border-border bg-surface">
               <CardContent className="p-6">
@@ -326,9 +326,9 @@ function ScopeAndCostSection() {
         <div className="grid lg:grid-cols-3 gap-5 mb-12">
           {[
             {h: "Tech stack",
-             items: ["React + shadcn UI (HIPAA-aware components)", "FastAPI (Python) backend", "MongoDB Atlas — HIPAA tier", "AWS S3 (SSE-KMS) for documents", "GHL API v2 — Private Integration Token", "JWT + bcrypt + TOTP (pyotp)"]},
+             items: ["React + shadcn UI (HIPAA-aware components)", "FastAPI (Python) backend", "MongoDB Atlas — HIPAA tier", "AWS S3 (SSE-KMS) for documents", "GHL API v2 — Private Integration Token", "JWT + bcrypt + magic-link sign-in"]},
             {h: "HIPAA safeguards",
-             items: ["Signed BAA with AWS, MongoDB Atlas, GHL", "TLS 1.2+ enforced; HSTS + strict CSP", "AES encryption at rest (KMS managed)", "RBAC: agent / admin / compliance", "Immutable audit log (append-only)", "Automatic session timeout + MFA"]},
+             items: ["Signed BAA with AWS, MongoDB Atlas, GHL", "TLS 1.2+ enforced; HSTS + strict CSP", "AES encryption at rest (KMS managed)", "RBAC: agent / admin / compliance", "Immutable audit log (append-only)", "Automatic session timeout + magic-link sign-in"]},
             {h: "Operational",
              items: ["DPIA + risk assessment document", "Security awareness training (annual)", "Incident response runbook", "Quarterly access reviews", "Backups: encrypted, 90-day retention", "Vulnerability scans (monthly)"]},
           ].map((b) => (
@@ -393,7 +393,7 @@ function ScopeAndCostSection() {
               </table>
             </div>
             <p className="text-xs text-muted-foreground mt-5 leading-relaxed">
-              Add a one-time build investment of ~$28k–$55k depending on whether MFA, dashboard, and compliance panel are scoped together or in phases. Full cost analysis appears inside the Compliance panel after signing in.
+              Add a one-time build investment of ~$28k–$55k depending on whether magic-link sign-in, dashboard, and compliance panel are scoped together or in phases. Full cost analysis appears inside the Compliance panel after signing in.
             </p>
           </CardContent>
         </Card>

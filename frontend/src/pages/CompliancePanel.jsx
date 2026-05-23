@@ -18,7 +18,7 @@ export default function CompliancePanel() {
               {[
                 ["Frontend", "React + shadcn UI · Tailwind · framer-motion · react-dropzone"],
                 ["Backend", "FastAPI · Pydantic · Motor (async MongoDB) · httpx for GHL"],
-                ["Auth", "JWT (HS256) · bcrypt · TOTP (pyotp) · RBAC (admin / agent / compliance)"],
+                ["Auth", "JWT (HS256) · bcrypt · magic-link sign-in · RBAC (admin / agent / compliance)"],
                 ["Storage", "MongoDB (lead + audit) · AES-128 Fernet at rest for documents (MVP) → AWS S3 SSE-KMS in production"],
                 ["Sync", "GoHighLevel API v2 · Private Integration Token · upsert + tag + opportunity"],
                 ["Observability", "Structured audit log · per-action immutable record · request IPs / UA"],
@@ -34,7 +34,7 @@ export default function CompliancePanel() {
               {[
                 "TLS 1.2+ enforced; HSTS + strict CSP at ingress",
                 "AES encryption at rest for PHI (Fernet MVP → KMS-managed in prod)",
-                "TOTP MFA enrollable on every agent / admin / compliance account",
+                "Passwordless magic-link sign-in (15-min single-use token) as the primary auth path; email + password kept as Option B",
                 "Append-only audit log of auth, leads, documents, SOA, GHL sync",
                 "RBAC dependency on every admin/compliance route",
                 "PHI never appears in URLs, query strings, or log lines",

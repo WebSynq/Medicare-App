@@ -29,7 +29,7 @@ A HIPAA-aligned Medicare insurance intake platform that replaces fragile n8n for
 - **Agent dashboard** — Pipeline view with status filters, GHL sync indicators, search.
 - **Lead detail** — Full record with on-demand decrypted document download and SOA preview.
 - **GHL sync** — Upsert contact, apply tags, create opportunity in configured pipeline. Falls back to mock-mode when token absent.
-- **JWT auth + TOTP MFA** — RFC 6238 TOTP enrollment with QR code, six-digit verification.
+- **JWT auth + magic-link sign-in** — passwordless, single-use, 15-minute token emailed to the user. Email + password retained as Option B.
 - **Role-based access** — `admin`, `agent`, `compliance`.
 - **Audit log** — Append-only record of every login, lead create/update, document upload/download, SOA signature, and GHL sync. Filterable by event type, actor, target.
 - **Compliance panel** — Architecture, HIPAA safeguards, cost analysis available to admins.
@@ -42,7 +42,7 @@ A HIPAA-aligned Medicare insurance intake platform that replaces fragile n8n for
 |---|---|
 | Frontend | React 19, Tailwind, shadcn UI, framer-motion, react-dropzone |
 | Backend | FastAPI, Pydantic, Motor (async MongoDB), httpx |
-| Auth | JWT (HS256), bcrypt, pyotp (TOTP) |
+| Auth | JWT (HS256), bcrypt, magic-link sign-in |
 | Encryption | cryptography.fernet (AES-128) for documents at rest |
 | Storage | MongoDB collections (users, leads, documents, soa_records, audit_logs); local disk at `/app/backend/secure_storage/` for documents (MVP) → AWS S3 SSE-KMS for production |
 | Integrations | GoHighLevel API v2 (Private Integration Token) |
@@ -131,11 +131,11 @@ All endpoints prefixed `/api`.
 |---|---|---|---|
 | GET | `/` | — | App identity & HIPAA safeguards |
 | GET | `/health` | — | Mongo ping |
-| POST | `/auth/login` | — | Returns access token (optional MFA) |
-| POST | `/auth/register` | admin | Creates a new agent / compliance user |
+| POST | `/auth/login` | — | Email + password sign-in. Returns access token + plants session cookie |
+| POST | `/auth/magic-link` | — | Request a one-time sign-in link. Always 200 (no account enumeration) |
+| POST | `/auth/magic-link/verify` | — | Redeem the link token; returns access token + plants session cookie |
+| POST | `/auth/register` | invite | Creates a new agent / compliance user from a valid invite token |
 | GET | `/auth/me` | any | Current user |
-| POST | `/auth/mfa/enroll` | any | Returns QR + secret + otpauth URI |
-| POST | `/auth/mfa/verify` | any | Confirms TOTP code, enables MFA |
 | POST | `/leads` | — (public intake) | Submit Medicare lead |
 | GET | `/leads` | agent+ | List with `?status=` & `?q=` |
 | GET | `/leads/{id}` | agent+ | Detail |
@@ -221,9 +221,9 @@ This repo is structured for a **split deployment**: React frontend on a CDN, Fas
 
 - **TLS 1.2+** enforced at the edge (Vercel / App Runner / Render terminate TLS by default).
 - **Encryption at rest**: AES-128 Fernet on uploaded documents. **Replace with AWS S3 SSE-KMS** before processing real PHI.
-- **MFA** required for any account that can read PHI. Enrol it on first login.
+- **Magic-link sign-in** is the primary auth path — possession of the registered inbox is the second factor. Tokens are SHA-256-hashed in MongoDB; raw token only ever exists in the email link. Single-use, 15-minute expiry, opaque 200 response.
 - **Audit log** is append-only at the application layer. For tamper-evidence in production, ship logs to an immutable store (AWS CloudTrail / S3 Object Lock).
-- **Session lifetime**: 60 minutes. Tokens carry an explicit `mfa_verified` claim.
+- **Session lifetime**: 60 minutes. JWT carries a `tv` (token_version) claim bumped on password change / admin force-reset to invalidate every prior session.
 - **PHI minimisation**: PHI never appears in URLs, query strings, or log messages.
 - **Before live use**: sign Business Associate Agreements with AWS, MongoDB Atlas, GoHighLevel, your transactional email vendor (Postmark / Paubox), and any monitoring service you add (Sentry on-prem PHI scrubbing, etc.).
 

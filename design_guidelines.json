@@ -81,7 +81,7 @@
     "SOA E-Signature step MUST look like a formal document canvas. Provide clear 'Sign Here' indicators.",
     "Agent Dashboard must utilize Shadcn Data-Table with robust filtering (e.g., Lead Pipeline, GHL Sync Status).",
     "GHL Sync Status should be visually represented (e.g., green dot 'Synced', yellow dot 'Pending', red dot 'Error').",
-    "Implement TOTP MFA UI (QR code scanning screen) for agent logins using the already installed 'input-otp' library.",
+    "Implement passwordless magic-link sign-in UI on the Login screen — email input → 'Send Login Link' → 'Check your email' confirmation with a resend cooldown. Keep email + password as an Option B toggle.",
     "All interactive elements (buttons, inputs) MUST include a 'data-testid' attribute (e.g., 'data-testid=\"submit-intake-button\"').",
     "Do NOT use HTML-based components for complex interactions; use Shadcn equivalents heavily customized to match the spacing guidelines.",
     "Render the cost analysis and architectural breakdown as a simulated view inside the 'Admin/Compliance Panel' or present it in the README."

@@ -8,7 +8,7 @@
 - Features: full set (intake wizard, SOA e-sign, encrypted upload, agent dashboard, GHL sync, audit log)
 - GHL: API v2 with Private Integration Token (user will provide)
 - Hosting: MVP on Emergent + production HIPAA plan documented
-- Auth: email/password JWT + TOTP MFA
+- Auth: JWT + magic-link sign-in (primary) + email/password (Option B)
 
 ## User Personas
 - **Beneficiary (65+)**: Public intake form. Needs accessibility (large inputs, generous spacing, friendly tone).
@@ -19,7 +19,7 @@
 ## Architecture
 - **Frontend**: React 19 + Tailwind + shadcn UI + framer-motion + react-dropzone. Outfit (headings) / IBM Plex Sans (body).
 - **Backend**: FastAPI + Motor (async MongoDB) + httpx for GHL.
-- **Auth**: JWT (HS256) + bcrypt + pyotp TOTP MFA.
+- **Auth**: JWT (HS256) + bcrypt + magic-link sign-in (single-use, 15-min token, opaque 200 on request). Email + password retained as Option B.
 - **Storage**: MongoDB collections (users, leads, documents, soa_records, audit_logs). PHI documents encrypted with Fernet AES-128 stored at `/app/backend/secure_storage/{lead_id}/{doc_id}.enc`.
 - **GHL**: Private Integration Token auth, v2 API. Falls back to mock-mode when token absent.
 
@@ -29,7 +29,7 @@
 - `models.py` — Pydantic models (User, Lead, SOA, Document, Audit)
 - `security.py` — bcrypt, JWT, Fernet doc encryption
 - `deps.py` — DB, current-user, RBAC, audit helper
-- `auth_router.py` — register (admin only), login (with optional MFA), /me, mfa/enroll (returns QR PNG base64), mfa/verify
+- `auth_router.py` — register (invite-only), login (email + password, one-step), magic-link (request + verify), /me, invite/validate, approve/reject/unlock
 - `leads_router.py` — public POST, list, get, patch status, sync-to-GHL (mock-aware)
 - `documents_router.py` — public upload (encrypted), list by lead, authenticated download (decrypts on the fly)
 - `soa_router.py` — public sign endpoint (canvas data URL + plan types + consent), get by lead
@@ -41,8 +41,8 @@
 - `App.js` + protected routes
 - `pages/Landing.jsx` — hero, how-it-works, security, full scope/cost section
 - `pages/IntakeWizard.jsx` — 5 steps (Personal → Medicare → SOA canvas e-sign → Documents drag-drop → Review)
-- `pages/Login.jsx` — split-screen login with OTP slot when MFA required
-- `pages/MfaSetup.jsx` — QR code enrollment + 6-digit verify
+- `pages/Login.jsx` — split-screen login with magic-link form (default) + email/password toggle (Option B)
+- `pages/MagicLinkVerify.jsx` — `/auth/magic?token=…` redeem page with React 19 StrictMode-safe single-redeem gate
 - `pages/AgentDashboard.jsx` — stat cards, search, status filter, leads table with sync dot
 - `pages/LeadDetail.jsx` — full lead, status select, GHL sync button, encrypted doc download, SOA preview
 - `pages/AuditLog.jsx` — filter by event type/email, summary cards

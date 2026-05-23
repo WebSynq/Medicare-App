@@ -264,9 +264,9 @@ async def login(payload: LoginRequest, request: Request, response: Response,
     """Password login (Option B). The other path is magic-link below.
 
     Magic link is the agency's primary second factor — possession of
-    the registered inbox stands in for TOTP. Email + password is kept
-    as an alternative when the user prefers it. Either path issues a
-    full session cookie immediately."""
+    the registered inbox stands in for the old TOTP enrollment. Email
+    + password is kept as an alternative when the user prefers it.
+    Either path issues a full session cookie immediately."""
     email = payload.email.lower().strip()
 
     # 1. Check existing lockout BEFORE verifying password

@@ -4,7 +4,7 @@
 - Frontend: React CRA + Tailwind + shadcn/ui → Vercel
 - Backend: FastAPI (Python 3.11.9) → Render
 - Database: MongoDB (Atlas) — DB_NAME = `gruening_medicare`
-- Auth: JWT (HS256) + httpOnly cookie + CSRF middleware
+- Auth: JWT (HS256) + httpOnly cookie + CSRF middleware + magic-link sign-in
 - Repo: github.com/WebSynq/Medicare-App
 - Real GHW email domain: `grueninghealthwealth.com`
   (the `grueninghw.com` references in older docs/code are aliases —
@@ -20,7 +20,8 @@
 | Matt Monacelli (legacy) | admin@grueninghw.com             | admin  |
 
 ## What's Built
-- Auth: login, MFA, invite-only register, lockout, profile PATCH
+- Auth: magic-link sign-in (primary) + email/password (Option B),
+  invite-only register, lockout, profile PATCH
 - Leads: CRUD, GHL sync, PDF export, regex-safe search
 - SOA: digital signature capture
 - Documents: encrypted upload/download
@@ -33,6 +34,56 @@
 ## Known Drift to Fix
 - agent_name is empty for existing users — needs backfill migration
 - Bearer-header auth path still active (deprecate before new routes)
+
+## Auth Architecture (Magic Link)
+
+TOTP MFA was removed in favour of magic-link sign-in. The link IS
+the second factor — possession of the registered inbox stands in
+for TOTP. Two paths land in the same session:
+
+- **Option A (default)**: `POST /api/auth/magic-link {email}` →
+  15-min single-use token emailed → user clicks
+  `/auth/magic?token=...` → SPA POSTs to
+  `/api/auth/magic-link/verify {token}` → JWT cookie planted,
+  redirect to `/today`.
+- **Option B**: `POST /api/auth/login {email, password}` →
+  JWT cookie immediately. No second step.
+
+Collection: `magic_link_tokens` — stores SHA-256 `token_hash`
+(raw token only ever exists in the email link), `email`, `user_id`,
+BSON-Date `created_at` / `expires_at`, `used` flag, `used_at`, `ip`.
+Unique index on `token_hash`; TTL index on `expires_at` evicts
+rows ~1 hour after expiry.
+
+Security properties:
+- Opaque 200 response on `/magic-link` regardless of email
+  existence, rate-limit hit, or account status — never leaks
+  account enumeration.
+- Per-email cap 5/hour (silent) on top of slowapi IP cap 20/hour.
+- Verify endpoint: 10/hour per IP. Single-use enforced atomically
+  via `update_one(..., {"$set": {"used": true}})` with race-safe
+  modified_count check.
+- Magic link refuses pending/rejected/deactivated accounts (same
+  gates as password login).
+- Successful redeem clears any failed-login lockout for the email
+  (proof of inbox control == fresh password reset equivalent).
+
+Audit events: `magic_link_requested` (with sent / reason),
+`magic_link_used`, `magic_link_verify_failed`, `login_success`
+(with `method: "password" | "magic_link"`).
+
+Email template: `send_magic_link_email` in `email_service.py`.
+PHI-safe — first name + signed URL only. Both HTML (branded shell)
+and plain-text alternative sent via Resend.
+
+Frontend:
+- `pages/Login.jsx` + `pages/HomePortal.jsx` — magic-link form
+  default, "Sign in with password instead" toggle. After send,
+  shows "Check your email" card with 60s resend cooldown.
+- `pages/MagicLinkVerify.jsx` — route `/auth/magic`. `useRef`
+  gate prevents StrictMode double-redeem.
+- `pages/Settings.jsx` Security tab — sessions table only, no
+  per-account MFA toggle.
 
 ## Commission Endpoint Keying (Wave 1)
 agent_name unified across all commission endpoints — /commissions/summary,

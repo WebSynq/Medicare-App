@@ -327,8 +327,9 @@ function ProfileTab({ me, refresh }) {
 // Two-factor enforcement now lives at the login flow itself: magic
 // links are the second factor (possession of the inbox) for the
 // passwordless path, and the password path is gated by the same
-// brute-force lockout. There is no per-account TOTP toggle anymore,
-// so the Security tab is reduced to the session-history readout.
+// brute-force lockout. There is no per-account authenticator toggle
+// anymore, so the Security tab is reduced to the session-history
+// readout plus a one-liner explaining the sign-in model.
 function SecurityTab() {
   const [sessions, setSessions] = useState([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
