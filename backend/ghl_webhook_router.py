@@ -635,7 +635,7 @@ async def ghl_webhook(request: Request, db=Depends(get_db)):
 @router.get("/webhook/config")
 async def webhook_config(
     request: Request,
-    _admin: dict = Depends(require_roles("admin")),
+    _admin: dict = Depends(require_roles("admin", "owner")),
     db=Depends(get_db),
 ):
     """Returns the URL to paste into GHL and stats on inbound traffic.
@@ -671,7 +671,7 @@ async def webhook_config(
 @router.post("/sync")
 async def sync_contacts(
     request: Request,
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
     db=Depends(get_db),
 ):
     """Pull the current page of GHL contacts and reconcile against our

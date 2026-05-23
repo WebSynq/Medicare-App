@@ -76,7 +76,7 @@ function dayDiff(iso) {
 
 // ── Profile tab ──────────────────────────────────────────────────────────
 function ProfileTab({ me, refresh }) {
-  const isAdmin = me?.role === "admin";
+  const isAdmin = me?.role === "admin" || me?.role === "owner";
 
   const [profileForm, setProfileForm] = useState({
     full_name: me?.full_name || "",
@@ -606,7 +606,8 @@ function SecurityTab({ me, refresh }) {
 
 // ── Audit Log tab ────────────────────────────────────────────────────────
 function AuditLogTab({ me }) {
-  const isPrivileged = me?.role === "admin" || me?.role === "compliance";
+  const isPrivileged =
+    me?.role === "admin" || me?.role === "owner" || me?.role === "compliance";
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [action, setAction] = useState("");
@@ -1927,6 +1928,7 @@ const SETTINGS_TAB_IDS = new Set([
 // group on the backend so cyber_security / sales_manager get the same view.
 const COMPLIANCE_TAB_ROLES = new Set([
   "admin",
+  "owner",
   "compliance",
   "cyber_security",
   "sales_manager",
@@ -1936,7 +1938,8 @@ export default function Settings() {
   const [me, setMe] = useState(null);
   const cachedUser = auth.getUser();
   const role = me?.role || cachedUser?.role || "agent";
-  const isAdmin = role === "admin";
+  // Owner has admin-equivalent powers — same admin-tab visibility.
+  const isAdmin = role === "admin" || role === "owner";
   const canSeeCompliance = COMPLIANCE_TAB_ROLES.has(role);
   // Client Success is a support-only role with no need (or authorisation)
   // to see audit-log entries that span the whole agency. Keep the tab

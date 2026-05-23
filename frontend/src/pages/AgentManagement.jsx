@@ -118,7 +118,7 @@ export default function AgentManagement() {
   const currentUser = auth.getUser();
   const role = currentUser?.role;
   const myId = currentUser?.id;
-  const isAdmin = role === "admin";
+  const isAdmin = role === "admin" || role === "owner";
 
   const navigate = useNavigate();
   const { setSelectedAgent } = useAgent();

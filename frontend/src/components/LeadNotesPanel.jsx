@@ -70,6 +70,7 @@ export default function LeadNotesPanel({ leadId, compact = false, onChange }) {
   const me = auth.getUser();
   const isPrivileged =
     me?.role === "admin" ||
+    me?.role === "owner" ||
     me?.role === "compliance" ||
     me?.role === "coach" ||
     me?.role === "accounting" ||

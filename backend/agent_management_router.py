@@ -130,7 +130,7 @@ async def update_agent_status(
     agent_id: str,
     payload: AgentStatusUpdate,
     request: Request,
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
     db=Depends(get_db),
 ):
     """Activate / deactivate any team member.

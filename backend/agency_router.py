@@ -331,7 +331,7 @@ async def _recent_activity(db, limit: int = 50,
 # ── Routes ───────────────────────────────────────────────────────────────
 @router.get("/stats")
 async def agency_stats(
-    _admin: dict = Depends(require_roles("admin")),
+    _admin: dict = Depends(require_roles("admin", "owner")),
     db=Depends(get_db),
 ):
     """Single payload that powers the Agency command-center page.
@@ -372,7 +372,7 @@ async def agency_activity(
     limit: int = Query(100, le=500),
     agent_id: Optional[str] = None,
     event_type: Optional[str] = None,
-    _admin: dict = Depends(require_roles("admin")),
+    _admin: dict = Depends(require_roles("admin", "owner")),
     db=Depends(get_db),
 ):
     """Paginated agency-wide activity feed with optional filters."""

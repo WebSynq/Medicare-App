@@ -197,11 +197,13 @@ function AgentSwitcher({ role, onNavigate, collapsed, onToggleCollapse }) {
   const [query, setQuery] = useState("");
 
   // Roles authorised to impersonate an individual agent — mirrors the
-  // backend deps.IMPERSONATION_ROLES list. coach + accounting both
-  // need "view as agent" so they can review one rep's pipeline /
-  // commissions without leaving their own login.
+  // backend deps.IMPERSONATION_ROLES list. owner has admin-equivalent
+  // powers; coach + accounting both need "view as agent" so they can
+  // review one rep's pipeline / commissions without leaving their own
+  // login.
   const canSee =
     role === "admin" ||
+    role === "owner" ||
     role === "compliance" ||
     role === "coach" ||
     role === "accounting";
@@ -509,9 +511,9 @@ const COMPLIANCE_LIKE_ROLES = new Set([
 ]);
 
 function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggleCollapse, onOpenSearch, onOpenNotifications, notifUnread = 0, isMobile }) {
-  const isAdmin = role === "admin";
+  const isAdmin = role === "admin" || role === "owner";
   const isAdminOrCompliance =
-    role === "admin" || COMPLIANCE_LIKE_ROLES.has(role);
+    role === "admin" || role === "owner" || COMPLIANCE_LIKE_ROLES.has(role);
   const displayName = user?.full_name || user?.email || "Agent";
   // Mobile drawer is always full-width — collapsed mode only applies to
   // the persistent desktop sidebar.
@@ -909,9 +911,9 @@ function MobileMoreDrawer({
   onOpenNotifications,
   notifUnread = 0,
 }) {
-  const isAdmin = role === "admin";
+  const isAdmin = role === "admin" || role === "owner";
   const isAdminOrCompliance =
-    role === "admin" || COMPLIANCE_LIKE_ROLES.has(role);
+    role === "admin" || role === "owner" || COMPLIANCE_LIKE_ROLES.has(role);
   const displayName = user?.full_name || user?.email || "Agent";
 
   if (!open) return null;

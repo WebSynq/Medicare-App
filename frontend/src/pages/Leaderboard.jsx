@@ -80,7 +80,9 @@ export default function Leaderboard() {
   // field. We still consult the role here for the column header label.
   const currentUser = auth.getUser();
   const canSeeGross =
-    currentUser?.role === "admin" || currentUser?.role === "compliance";
+    currentUser?.role === "admin" ||
+    currentUser?.role === "owner" ||
+    currentUser?.role === "compliance";
 
   const load = useCallback(async () => {
     setLoading(true);

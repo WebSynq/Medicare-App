@@ -37,7 +37,7 @@ from deps import (
 )
 
 # Roles barred from every commission-audit and chat surface. Admin-only
-# endpoints below already use require_roles("admin") so they're covered.
+# endpoints below already use require_roles("admin", "owner") so they're covered.
 _COMMISSION_FORBIDDEN = ("client_success",)
 
 
@@ -311,7 +311,7 @@ async def audit_summary(
 async def commission_sync_status(
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
 ):
     """Latest run of the ComTrack daily sync (admin only)."""
     latest = await db.commission_sync_runs.find_one(
@@ -332,7 +332,7 @@ async def commission_sync_status(
 async def commission_sync_run_now(
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
 ):
     """Trigger an immediate ComTrack sync (admin only). Audited."""
     # Lazy import to avoid a circular import (comtrack_sync imports this module).
@@ -427,7 +427,7 @@ async def mark_resolved(
     request: Request,
     body: MarkResolvedBody = Body(...),
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
 ):
     """Admin-only: flag a record as resolved + attach notes.
 

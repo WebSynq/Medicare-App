@@ -24,7 +24,7 @@ router = APIRouter(prefix="/backup", tags=["backup"])
 @router.post("/run")
 async def run_backup_now(
     request: Request,
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
     db=Depends(get_db),
 ) -> Dict[str, Any]:
     """Trigger a manual backup right now. Returns the same shape the
@@ -45,7 +45,7 @@ async def run_backup_now(
 
 @router.get("/history")
 async def backup_history(
-    _admin: dict = Depends(require_roles("admin")),
+    _admin: dict = Depends(require_roles("admin", "owner")),
     db=Depends(get_db),
 ):
     """Last 30 backup audit log entries (both successes and failures).

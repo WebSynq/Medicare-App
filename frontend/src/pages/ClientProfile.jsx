@@ -417,7 +417,9 @@ export default function ClientProfile() {
   // ── Agent transfer (admin / coach) ─────────────────────────────────────
   const currentUser = auth.getUser();
   const canTransfer =
-    currentUser?.role === "admin" || currentUser?.role === "coach";
+    currentUser?.role === "admin" ||
+    currentUser?.role === "owner" ||
+    currentUser?.role === "coach";
   const [transferOpen, setTransferOpen] = useState(false);
   const [transferAgents, setTransferAgents] = useState([]);
   const [transferTargetId, setTransferTargetId] = useState("");

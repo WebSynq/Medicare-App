@@ -59,7 +59,7 @@ export default function CommandPalette({ onQuickAddLead }) {
   const [open, setOpen] = useState(false);
   const user = auth.getUser();
   const role = user?.role;
-  const isAdmin = role === "admin";
+  const isAdmin = role === "admin" || role === "owner";
   const isAdminOrCompliance = isAdmin || COMPLIANCE_LIKE_ROLES.has(role);
 
   // ── Keyboard binding ────────────────────────────────────────────────────

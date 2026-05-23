@@ -291,7 +291,7 @@ async def chat(
 # ── Diagnostic ────────────────────────────────────────────────────────────
 @router.get("/health")
 async def chat_health(
-    _admin: dict = Depends(require_roles("admin")),
+    _admin: dict = Depends(require_roles("admin", "owner")),
 ):
     """Admin-only Bedrock reachability probe.
 

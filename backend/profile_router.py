@@ -460,7 +460,7 @@ async def update_agency_settings(
     payload: AgencySettingsPatch,
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
 ):
     sent = payload.model_dump(exclude_unset=True)
     if not sent:
@@ -491,7 +491,7 @@ async def update_agency_settings(
 @router.get("/profile/team")
 async def list_team(
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
 ):
     cursor = db.users.find(
         {},
@@ -516,7 +516,7 @@ async def admin_credential_change(
     payload: AdminCredentialPatch,
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
 ):
     """Admin force-update of another user's credentials. No
     current_password required because the admin is the policy authority for

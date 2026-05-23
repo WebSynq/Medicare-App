@@ -571,6 +571,7 @@ export default function AgentDashboard() {
   // the KPI row).
   const isAgencyViewRole =
     role === "admin" ||
+    role === "owner" ||
     role === "compliance" ||
     role === "coach" ||
     role === "accounting";
@@ -696,7 +697,7 @@ export default function AgentDashboard() {
               >
                 + New Lead
               </button>
-              {role === "admin" && (
+              {(role === "admin" || role === "owner") && (
                 <button
                   type="button"
                   onClick={() => setShowInvite(true)}

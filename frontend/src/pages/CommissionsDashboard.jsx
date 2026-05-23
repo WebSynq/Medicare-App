@@ -188,7 +188,9 @@ export default function CommissionsDashboard() {
 
   const user = auth.getUser();
   const isAdminOrCompliance =
-    user?.role === "admin" || user?.role === "compliance";
+    user?.role === "admin" ||
+    user?.role === "owner" ||
+    user?.role === "compliance";
 
   const [summary, setSummary] = useState(null);
   const [history, setHistory] = useState([]);

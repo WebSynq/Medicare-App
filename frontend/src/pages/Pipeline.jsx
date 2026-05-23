@@ -415,6 +415,7 @@ export default function Pipeline() {
   const user = auth.getUser();
   const showAgent =
     user?.role === "admin" ||
+    user?.role === "owner" ||
     user?.role === "compliance" ||
     user?.role === "coach" ||
     user?.role === "accounting" ||

@@ -117,7 +117,7 @@ export default function App() {
         <Route
           path="/admin/commissions"
           element={
-            <Protected roles={["admin", "compliance"]}>
+            <Protected roles={["admin", "owner", "compliance"]}>
               <AdminCommissions />
             </Protected>
           }
@@ -125,7 +125,7 @@ export default function App() {
         <Route
           path="/admin/accounting"
           element={
-            <Protected roles={["admin", "compliance"]}>
+            <Protected roles={["admin", "owner", "compliance"]}>
               <AccountingDashboard />
             </Protected>
           }
@@ -133,7 +133,7 @@ export default function App() {
         <Route
           path="/admin/import"
           element={
-            <Protected roles={["admin"]}>
+            <Protected roles={["admin", "owner"]}>
               <DataImport />
             </Protected>
           }
@@ -141,7 +141,7 @@ export default function App() {
         <Route
           path="/agents"
           element={
-            <Protected roles={["admin", "compliance"]}>
+            <Protected roles={["admin", "owner", "compliance"]}>
               <AgentManagement />
             </Protected>
           }
@@ -149,7 +149,7 @@ export default function App() {
         <Route
           path="/agency"
           element={
-            <Protected roles={["admin"]}>
+            <Protected roles={["admin", "owner"]}>
               <AgencyAdmin />
             </Protected>
           }

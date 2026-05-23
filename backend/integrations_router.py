@@ -95,7 +95,7 @@ async def _check_comtrack() -> Dict[str, Any]:
 @router.get("/status")
 async def integrations_status(
     db=Depends(get_db),
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
 ):
     """Per-integration status for the Settings → Integrations tab.
 
