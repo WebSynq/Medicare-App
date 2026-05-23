@@ -57,6 +57,7 @@ import {
 import { toast } from "sonner";
 import { api, auth } from "@/lib/api";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
+import LeadNotesPanel from "@/components/LeadNotesPanel";
 
 const STATUS_BADGE = {
   new: "bg-blue-100 text-blue-900",
@@ -1312,10 +1313,11 @@ export default function ClientProfile() {
 
           {/* Tab 5: Notes & Activity */}
           <TabsContent value="notes" className="mt-4 space-y-4">
+            <LeadNotesPanel leadId={leadId} />
             <Card>
               <CardContent className="p-5 space-y-2">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold">Notes</h3>
+                  <h3 className="text-sm font-semibold">Client Notes (legacy)</h3>
                   <span className="text-[11px] text-muted-foreground">
                     {notesSavedAt
                       ? `Saved ${notesSavedAt.toLocaleTimeString()}`
@@ -1323,12 +1325,17 @@ export default function ClientProfile() {
                   </span>
                 </div>
                 <Textarea
-                  rows={8}
+                  rows={6}
                   value={notesDraft}
                   onChange={(e) => onNotesChange(e.target.value)}
-                  placeholder="Add notes about this client…"
+                  placeholder="Free-text notes about this client…"
                   data-testid="notes-textarea"
                 />
+                <p className="text-[11px] text-muted-foreground">
+                  Use the entries above for structured calls / emails /
+                  tasks; this free-text field stays available for
+                  pre-existing notes captured before that feature shipped.
+                </p>
               </CardContent>
             </Card>
             <Card>

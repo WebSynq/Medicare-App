@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/sheet";
 import { api, auth } from "@/lib/api";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
+import LeadNotesPanel from "@/components/LeadNotesPanel";
 
 // Period filter — applied client-side against card.created_at so we
 // avoid an extra backend round-trip when the user flips the toggle.
@@ -305,6 +306,10 @@ function CardSheet({ open, onOpenChange, card, stages, onStageChange, saving }) 
               Drag-and-drop coming soon — picking a stage moves the card
               now.
             </p>
+          </div>
+
+          <div className="pt-3 border-t border-border">
+            <LeadNotesPanel leadId={card.lead_id} compact />
           </div>
 
           <div className="flex flex-col gap-2 pt-2">
