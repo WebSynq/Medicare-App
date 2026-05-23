@@ -98,10 +98,13 @@ async def _audit_send(db, event_type: str, to_email: str, ok: bool,
         logger.warning("audit_send failed (%s): %s", event_type, e)
 
 
-def _send_html(subject: str, to_email: str, html: str) -> Dict[str, Any]:
+def _send_html(subject: str, to_email: str, html: str,
+               text: Optional[str] = None) -> Dict[str, Any]:
     """Synchronous resend.Emails.send call. Returns a small dict that
     callers can use to differentiate provider-not-configured vs.
-    upstream-failed vs. success."""
+    upstream-failed vs. success. ``text`` is the optional plain-text
+    fallback — Resend serves it to clients that have HTML disabled
+    and uses it as the snippet rendered in some preview panes."""
     client = _resend_client()
     if client is None:
         logger.warning(
@@ -110,13 +113,16 @@ def _send_html(subject: str, to_email: str, html: str) -> Dict[str, Any]:
         )
         return {"ok": False, "reason": "not_configured"}
     from_addr = _from_email()
+    payload: Dict[str, Any] = {
+        "from": from_addr,
+        "to": [to_email],
+        "subject": subject,
+        "html": html,
+    }
+    if text:
+        payload["text"] = text
     try:
-        resp = client.Emails.send({
-            "from": from_addr,
-            "to": [to_email],
-            "subject": subject,
-            "html": html,
-        })
+        resp = client.Emails.send(payload)
         # Resend's Python SDK historically returns a dict on both success
         # AND certain 4xx responses (e.g. unverified-domain). Treat
         # anything that doesn't carry an `id` as a soft failure so the
@@ -272,6 +278,29 @@ async def send_password_reset_email(
     return res
 
 
+def _format_expires_utc(expires_at: Any) -> Optional[str]:
+    """Render a datetime / ISO-string as 'HH:MM UTC' for the email
+    footer. Returns None when the input isn't usable so the caller can
+    omit the line rather than print 'None UTC'."""
+    if not expires_at:
+        return None
+    try:
+        if hasattr(expires_at, "strftime"):
+            dt = expires_at
+        else:
+            from datetime import datetime as _dt
+            s = str(expires_at)
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            dt = _dt.fromisoformat(s)
+        from datetime import timezone as _tz
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_tz.utc)
+        return dt.astimezone(_tz.utc).strftime("%H:%M UTC")
+    except Exception:
+        return None
+
+
 async def send_magic_link_email(
     db,
     to_email: str,
@@ -279,24 +308,72 @@ async def send_magic_link_email(
     magic_url: str,
     expires_at: Any = None,
 ) -> Dict[str, Any]:
-    """Sign-in link email (Option A, primary path).
+    """Sign-in link email (Option A, the primary auth path).
 
-    Task 1 places a basic body here so the auth flow works end-to-end;
-    Task 2 swaps in the polished template. The function signature is
-    final — only the rendered HTML changes."""
-    subject = "Your GHW Portal Login Link"
+    Branded shell + big CTA + copy-the-URL fallback + plain-text
+    alternative. Carries zero PHI: only the first name from the user
+    row, plus the single-use signed URL the user is about to click.
+    No password, no MBI, no PII. The expiry-time line uses the
+    deterministic mint datetime from auth_router so the footer matches
+    what the verify endpoint actually accepts."""
+    subject = "Your GHW Agent Portal Login Link"
     first = (full_name or to_email.split("@")[0] or "there").split(" ")[0]
-    body = (
-        f"<p>Hi <strong style=\"color:#ffffff;\">{first}</strong>,</p>"
-        "<p>Click the button below to sign in to your "
-        "Gruening Health &amp; Wealth Agent Portal account.</p>"
-        f"{_button('Sign In Now', magic_url)}"
-        "<p style=\"color:#94a3b8;font-size:12px;\">"
-        "This link expires in 15 minutes and can only be used once.</p>"
-        "<p style=\"color:#94a3b8;font-size:12px;\">"
-        "If you didn&rsquo;t request this, you can safely ignore this email.</p>"
+    expires_line = _format_expires_utc(expires_at)
+    expires_html = (
+        f"<p style=\"color:#94a3b8;font-size:12px;margin-top:18px;\">"
+        f"This link expires at <strong style=\"color:#cbd5e1;\">"
+        f"{expires_line}</strong>.</p>"
+        if expires_line else ""
     )
-    res = _send_html(subject, to_email, _shell(body))
+
+    body = (
+        f"<p style=\"margin:0 0 8px 0;color:#94a3b8;\">Hi "
+        f"<strong style=\"color:#ffffff;\">{first}</strong>,</p>"
+        # Large heading — inline font-size so Gmail/Outlook render it.
+        f"<h1 style=\"margin:14px 0 6px 0;font-size:22px;line-height:28px;"
+        f"font-weight:700;color:#ffffff;font-family:Arial,Helvetica,"
+        f"sans-serif;\">Sign in to GHW Agent Portal</h1>"
+        f"<p style=\"margin:0 0 4px 0;color:#cbd5e1;\">"
+        f"Click the button below to sign in. This link expires in "
+        f"15 minutes and can only be used once.</p>"
+        f"{_button('Sign In Now', magic_url)}"
+        # Plain-text URL fallback for any client that strips buttons.
+        f"<p style=\"margin:8px 0 4px 0;font-size:12px;color:#94a3b8;\">"
+        f"Or copy this link:</p>"
+        f"<p style=\"margin:0;padding:10px 12px;border-radius:8px;"
+        f"background:rgba(255,255,255,0.04);border:1px solid "
+        f"rgba(255,255,255,0.08);font-family:'Courier New',Consolas,"
+        f"monospace;font-size:11px;color:#cbd5e1;word-break:break-all;\">"
+        f"{magic_url}</p>"
+        f"{expires_html}"
+        f"<p style=\"color:#94a3b8;font-size:12px;margin-top:18px;\">"
+        f"If you didn&rsquo;t request this link, you can safely ignore "
+        f"this email. Your account is secure.</p>"
+    )
+
+    text_lines = [
+        f"Hi {first},",
+        "",
+        "Sign in to GHW Agent Portal",
+        "",
+        "Click the link below to sign in. This link expires in "
+        "15 minutes and can only be used once.",
+        "",
+        magic_url,
+        "",
+    ]
+    if expires_line:
+        text_lines.append(f"This link expires at {expires_line}.")
+        text_lines.append("")
+    text_lines.extend([
+        "If you didn't request this link, you can safely ignore this "
+        "email. Your account is secure.",
+        "",
+        "— Gruening Health & Wealth",
+    ])
+    text = "\n".join(text_lines)
+
+    res = _send_html(subject, to_email, _shell(body), text=text)
     await _audit_send(db, "magic_link_email_sent", to_email,
                       res.get("ok", False))
     return res
