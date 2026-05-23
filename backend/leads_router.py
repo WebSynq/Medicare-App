@@ -19,6 +19,7 @@ from deps import (
     get_current_user,
     get_effective_agent,
     agent_filter,
+    get_agency_id,
     get_client_ip,
     write_audit,
     FULL_AGENCY_SCOPE_ROLES,
@@ -96,6 +97,7 @@ async def _auto_create_soa_for_medicare_lead(
             "signed_name": None,
             "signed_ip": None,
             "plan_types_discussed": [],
+            "agency_id": get_agency_id(),
         }
         await db.soa_records.insert_one(soa_doc.copy())
 
@@ -278,6 +280,10 @@ async def create_lead(
 
     lead = Lead(**lead_data)
     doc = lead.model_dump()
+    # Passive agency_id stamp — see deps.get_agency_id docstring.
+    # Single-tenant today; flips the multi-tenant cut into a filter
+    # change rather than a schema rebuild.
+    doc["agency_id"] = get_agency_id()
     await db.leads.insert_one(doc.copy())
     await write_audit(db, "lead_created", actor_email=current_user.get("email"),
                       actor_id=current_user.get("id"),

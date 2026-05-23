@@ -34,6 +34,7 @@ from commission_calculator import calculate_commission
 from deps import (
     FULL_AGENCY_SCOPE_ROLES,
     agent_filter,
+    get_agency_id,
     get_current_user,
     get_db,
     get_effective_agent,
@@ -370,6 +371,8 @@ async def create_appointment(
         "notes": (body.notes or "").strip() or None,
         "outcome": None,
         "estimated_commission": estimated_commission,
+        # Passive multi-tenant stamp — single-tenant today, future-proof.
+        "agency_id": get_agency_id(),
         "created_at": now_iso,
         "updated_at": now_iso,
     }

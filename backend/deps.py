@@ -202,6 +202,20 @@ def resolve_agent_key(user: dict) -> Optional[str]:
     return name or None
 
 
+def get_agency_id() -> str:
+    """Static tenant id stamped on every new record so we can flip on
+    agency-level filtering without a schema rebuild when a second
+    agency lands. Read from the AGENCY_ID env var; defaults to
+    ``ghw_001`` (Gruening Health & Wealth, the only tenant today).
+
+    Intentionally a passive stamp — no current read path filters on
+    this field. Existing records pre-dating this rollout will have
+    ``agency_id`` unset on disk and that's fine; the multi-tenant cut
+    will backfill them in a one-shot migration.
+    """
+    return os.getenv("AGENCY_ID", "ghw_001")
+
+
 async def resolve_lead_id_for_policy(
     db, scope: dict, policy: dict,
 ) -> Optional[str]:
