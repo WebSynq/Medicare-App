@@ -2143,6 +2143,141 @@ async def test_appointment_autocalc_returns_null_when_unmappable(client, db, adm
     assert r.json()["estimated_commission"] is None
 
 
+# ── Appointment revenue-stats endpoint ────────────────────────────────────
+def test_appointment_revenue_stats_requires_auth(client, db):
+    """Unauthenticated GET is rejected."""
+    r = client.get("/api/appointments/revenue-stats")
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_appointment_revenue_stats_aggregates(client, db, admin_headers):
+    """Three appointments (two with commission, one without) → counts +
+    sums + averages and a by_type breakdown match a manual count."""
+    from datetime import datetime, timezone
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    now_iso = datetime.now(timezone.utc).isoformat()
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    rows = [
+        # Two enrollments, both completed, both with commission.
+        {"appointment_id": "rs-1", "agent_id": admin["id"], "agent_name": "Admin",
+         "lead_id": None, "client_name": "Alpha",
+         "appointment_date": today_iso, "appointment_time": "09:00",
+         "duration_minutes": 30, "type": "enrollment",
+         "status": "completed", "estimated_commission": 93.90,
+         "created_at": now_iso, "updated_at": now_iso},
+        {"appointment_id": "rs-2", "agent_id": admin["id"], "agent_name": "Admin",
+         "lead_id": None, "client_name": "Bravo",
+         "appointment_date": today_iso, "appointment_time": "10:00",
+         "duration_minutes": 30, "type": "enrollment",
+         "status": "completed", "estimated_commission": 313.0,
+         "created_at": now_iso, "updated_at": now_iso},
+        # One plan_review, scheduled (not completed), no commission.
+        {"appointment_id": "rs-3", "agent_id": admin["id"], "agent_name": "Admin",
+         "lead_id": None, "client_name": "Charlie",
+         "appointment_date": today_iso, "appointment_time": "11:00",
+         "duration_minutes": 30, "type": "plan_review",
+         "status": "scheduled", "estimated_commission": None,
+         "created_at": now_iso, "updated_at": now_iso},
+    ]
+    await db.appointments.insert_many(rows)
+
+    r = client.get("/api/appointments/revenue-stats?period=mtd",
+                    headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["period"] == "mtd"
+    assert body["total_appointments"] == 3
+    assert body["completed_appointments"] == 2
+    assert body["appointments_with_commission"] == 2
+    assert body["total_estimated_commission"] == 406.90
+    # avg_per_appointment = 406.90 / 3 ≈ 135.63
+    assert body["avg_commission_per_appointment"] == 135.63
+    # avg_per_completed = 406.90 / 2 = 203.45
+    assert body["avg_commission_per_completed"] == 203.45
+    # by_type: enrollment (count=2, total=406.90, avg=203.45),
+    # plan_review (count=1, total=0, avg=0)
+    by_type = {row["type"]: row for row in body["by_type"]}
+    assert by_type["enrollment"]["count"] == 2
+    assert by_type["enrollment"]["total_commission"] == 406.90
+    assert by_type["enrollment"]["avg_commission"] == 203.45
+    assert by_type["plan_review"]["count"] == 1
+    assert by_type["plan_review"]["total_commission"] == 0.0
+    # Top appointment = highest commission (rs-2, $313)
+    assert body["top_appointment"]["client_name"] == "Bravo"
+    assert body["top_appointment"]["estimated_commission"] == 313.0
+
+
+@pytest.mark.asyncio
+async def test_appointment_revenue_stats_agent_scoped(client, db, admin_headers):
+    """An agent must only see their own appointment revenue."""
+    # Stand up a second agent.
+    inv = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": "rs.bob@example.com", "full_name": "Bob Stats",
+        "agency_name": "BR", "agent_name": "Bob Stats",
+    }).json()
+    reg = client.post("/api/auth/register", json={
+        "email": "rs.bob@example.com", "password": "Q9pl#aux!7zT",
+        "full_name": "Bob Stats", "agency_name": "BR",
+        "invite_token": inv["token"],
+    })
+    assert reg.status_code == 201, reg.text
+    client.post(f"/api/auth/users/{reg.json()['id']}/approve", headers=admin_headers)
+    bob_login = client.post("/api/auth/login", json={
+        "email": "rs.bob@example.com", "password": "Q9pl#aux!7zT",
+    })
+    bob_headers = {"Authorization": f"Bearer {bob_login.json()['access_token']}"}
+    bob_id = reg.json()["id"]
+
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    # Admin's appointment ($500) — Bob must NOT see this in his stats.
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    await db.appointments.insert_one({
+        "appointment_id": "rs-admin", "agent_id": admin["id"],
+        "lead_id": None, "client_name": "Admin Client",
+        "appointment_date": today_iso, "appointment_time": "09:00",
+        "duration_minutes": 30, "type": "enrollment",
+        "status": "completed", "estimated_commission": 500.0,
+        "created_at": now_iso, "updated_at": now_iso,
+    })
+    # Bob's own appointment ($93.90).
+    await db.appointments.insert_one({
+        "appointment_id": "rs-bob", "agent_id": bob_id,
+        "lead_id": None, "client_name": "Bob Client",
+        "appointment_date": today_iso, "appointment_time": "10:00",
+        "duration_minutes": 30, "type": "enrollment",
+        "status": "scheduled", "estimated_commission": 93.90,
+        "created_at": now_iso, "updated_at": now_iso,
+    })
+
+    bob_view = client.get("/api/appointments/revenue-stats?period=mtd",
+                            headers=bob_headers)
+    assert bob_view.status_code == 200
+    bob_body = bob_view.json()
+    assert bob_body["total_appointments"] == 1
+    assert bob_body["total_estimated_commission"] == 93.90
+    assert bob_body["top_appointment"]["client_name"] == "Bob Client"
+
+    # Admin sees both — agent_filter returns {} for admin.
+    admin_view = client.get("/api/appointments/revenue-stats?period=mtd",
+                             headers=admin_headers)
+    admin_body = admin_view.json()
+    assert admin_body["total_appointments"] == 2
+    assert admin_body["total_estimated_commission"] == 593.90
+
+
+@pytest.mark.asyncio
+async def test_appointment_revenue_stats_audit(client, db, admin_headers):
+    """Every revenue-stats fetch must drop an appointment_revenue_viewed
+    row in the audit log."""
+    client.get("/api/appointments/revenue-stats?period=ytd", headers=admin_headers)
+    entry = await db.audit_logs.find_one({"event_type": "appointment_revenue_viewed"})
+    assert entry is not None
+    assert entry["metadata"]["period"] == "ytd"
+
+
 @pytest.mark.asyncio
 async def test_appointment_create_walkin_without_lead(client, db, admin_headers):
     """Walk-in flow: omit lead_id, supply client_name → succeeds with

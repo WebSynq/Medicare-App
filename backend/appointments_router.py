@@ -20,7 +20,8 @@ and the row can still be referenced by past activity views.
 import logging
 import re
 import uuid
-from datetime import date, datetime, timezone
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -418,6 +419,134 @@ async def list_appointments(
     )
     rows = [d async for d in cursor]
     return {"appointments": rows, "total": len(rows)}
+
+
+# ── Revenue stats aggregator ─────────────────────────────────────────────
+# Registered BEFORE /{appointment_id} so FastAPI routes /revenue-stats
+# to this handler rather than treating "revenue-stats" as an id and
+# 404-ing through _fetch_or_idor.
+_VALID_PERIODS = ("mtd", "ytd", "last30", "last90", "all")
+
+
+def _revenue_period_start(period: str) -> Optional[datetime]:
+    """Match the dashboard router's _period_start semantics so the
+    Today / dashboard / appointments revenue views are all anchored to
+    the same window boundaries."""
+    now = datetime.now(timezone.utc)
+    if period == "mtd":
+        return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if period == "ytd":
+        return now.replace(month=1, day=1, hour=0, minute=0, second=0,
+                            microsecond=0)
+    if period == "last30":
+        return now - timedelta(days=30)
+    if period == "last90":
+        return now - timedelta(days=90)
+    return None
+
+
+@router.get("/revenue-stats")
+@limiter.limit("60/hour")
+async def revenue_stats(
+    request: Request,
+    period: str = Query("mtd", description="mtd|ytd|last30|last90|all"),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Per-agent appointment revenue roll-up.
+
+    Counts every appointment in scope for the period (used as the
+    denominator on avg-per-appointment); commission totals only include
+    rows where estimated_commission is non-null so an empty estimate
+    doesn't drag the average down. Cancelled rows are excluded from
+    the completed counter — completed means status == "completed".
+    """
+    if period not in _VALID_PERIODS:
+        period = "mtd"
+    start = _revenue_period_start(period)
+
+    query: Dict[str, Any] = dict(agent_filter(current_user))
+    if start is not None:
+        query["appointment_date"] = {"$gte": start.date().isoformat()}
+
+    proj = {
+        "_id": 0, "appointment_id": 1, "type": 1, "status": 1,
+        "estimated_commission": 1, "client_name": 1,
+        "appointment_date": 1, "lead_id": 1,
+    }
+    total_appointments = 0
+    completed_appointments = 0
+    appointments_with_commission = 0
+    total_commission = 0.0
+    by_type: Dict[str, Dict[str, Any]] = defaultdict(
+        lambda: {"count": 0, "total_commission": 0.0, "with_commission": 0}
+    )
+    top: Optional[Dict[str, Any]] = None
+
+    async for a in db.appointments.find(query, proj):
+        total_appointments += 1
+        if a.get("status") == "completed":
+            completed_appointments += 1
+        t = a.get("type") or "other"
+        bucket = by_type[t]
+        bucket["count"] += 1
+        comm = a.get("estimated_commission")
+        if comm is not None:
+            try:
+                comm_f = float(comm)
+            except (TypeError, ValueError):
+                continue
+            appointments_with_commission += 1
+            total_commission += comm_f
+            bucket["with_commission"] += 1
+            bucket["total_commission"] += comm_f
+            if top is None or comm_f > top["estimated_commission"]:
+                top = {
+                    "client_name": a.get("client_name"),
+                    "appointment_date": a.get("appointment_date"),
+                    "type": t,
+                    "estimated_commission": round(comm_f, 2),
+                    "lead_id": a.get("lead_id"),
+                }
+
+    def _avg(numer: float, denom: int) -> float:
+        return round(numer / denom, 2) if denom > 0 else 0.0
+
+    by_type_list = [
+        {
+            "type": t,
+            "count": v["count"],
+            "total_commission": round(v["total_commission"], 2),
+            "avg_commission": _avg(v["total_commission"], v["with_commission"]),
+        }
+        for t, v in by_type.items()
+    ]
+    by_type_list.sort(key=lambda r: r["count"], reverse=True)
+
+    await write_audit(
+        db,
+        "appointment_revenue_viewed",
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
+        request=request,
+        metadata={
+            "period": period,
+            "total_appointments": total_appointments,
+            "with_commission": appointments_with_commission,
+        },
+    )
+
+    return {
+        "period": period,
+        "total_appointments": total_appointments,
+        "completed_appointments": completed_appointments,
+        "appointments_with_commission": appointments_with_commission,
+        "total_estimated_commission": round(total_commission, 2),
+        "avg_commission_per_appointment": _avg(total_commission, total_appointments),
+        "avg_commission_per_completed": _avg(total_commission, completed_appointments),
+        "by_type": by_type_list,
+        "top_appointment": top,
+    }
 
 
 @router.get("/{appointment_id}")
