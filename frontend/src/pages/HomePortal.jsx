@@ -15,7 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { api, auth } from "@/lib/api";
+import { api, auth, landingForUser } from "@/lib/api";
 
 const ACCENT = "#e85d2f";
 const ACCENT_HOVER = "#d04d22";
@@ -98,7 +98,7 @@ export default function HomePortal() {
       const res = await api.post("/auth/login", { email, password });
       auth.saveSession(res.data.access_token, res.data.user);
       toast.success("Welcome back");
-      nav("/today");
+      nav(landingForUser(res.data.user));
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Login failed");
     } finally {

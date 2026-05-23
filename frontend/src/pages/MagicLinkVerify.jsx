@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { api, auth } from "@/lib/api";
+import { api, auth, landingForUser } from "@/lib/api";
 
 const ACCENT = "#e85d2f";
 
@@ -42,8 +42,9 @@ export default function MagicLinkVerify() {
         const res = await api.post("/auth/magic-link/verify", { token });
         auth.saveSession(res.data.access_token, res.data.user);
         setState("ok");
+        const landing = landingForUser(res.data.user);
         // Brief success flash so the user sees the confirm — then go.
-        setTimeout(() => nav("/today"), 700);
+        setTimeout(() => nav(landing), 700);
       } catch (e) {
         setErrorMsg(
           e?.response?.data?.detail ||

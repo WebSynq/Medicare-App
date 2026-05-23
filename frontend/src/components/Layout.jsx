@@ -4,6 +4,7 @@ import {
   Lock,
   ShieldCheck,
   LayoutDashboard,
+  BarChart2,
   Building2,
   Cake,
   CalendarClock,
@@ -510,10 +511,18 @@ const COMPLIANCE_LIKE_ROLES = new Set([
   "sales_manager",
 ]);
 
+// Roles that see the Agency Command Center nav entry. Mirrors the
+// backend AGENCY_ROLES in agency_dashboard_router.py and the
+// COMMAND_CENTER_ROLES export in lib/api.js — keep all three in sync.
+const COMMAND_CENTER_ROLES_SET = new Set([
+  "owner", "admin", "coach", "sales_manager", "compliance", "accounting",
+]);
+
 function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggleCollapse, onOpenSearch, onOpenNotifications, notifUnread = 0, isMobile }) {
   const isAdmin = role === "admin" || role === "owner";
   const isAdminOrCompliance =
     role === "admin" || role === "owner" || COMPLIANCE_LIKE_ROLES.has(role);
+  const showCommandCenter = COMMAND_CENTER_ROLES_SET.has(role);
   const displayName = user?.full_name || user?.email || "Agent";
   // Mobile drawer is always full-width — collapsed mode only applies to
   // the persistent desktop sidebar.
@@ -616,6 +625,16 @@ function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggle
       <nav className={`flex-1 overflow-y-auto py-3 ${c ? "px-2" : "px-2"}`}>
         <SectionLabel collapsed={c}>Main</SectionLabel>
         <div className="space-y-0.5">
+          {showCommandCenter && (
+            <NavItem
+              to="/agency-dashboard"
+              icon={BarChart2}
+              label="Command Center"
+              onClick={onNavigate}
+              testId="nav-command-center"
+              collapsed={c}
+            />
+          )}
           <NavItem to="/today" icon={Sparkles} label="Today" onClick={onNavigate} testId="nav-today" collapsed={c} />
           <NavItem to="/pipeline" icon={LayoutGrid} label="Pipeline" onClick={onNavigate} testId="nav-pipeline" collapsed={c} />
           <NavItem to="/appointments" icon={CalendarClock} label="Appointments" onClick={onNavigate} testId="nav-appointments" collapsed={c} />
@@ -914,6 +933,7 @@ function MobileMoreDrawer({
   const isAdmin = role === "admin" || role === "owner";
   const isAdminOrCompliance =
     role === "admin" || role === "owner" || COMPLIANCE_LIKE_ROLES.has(role);
+  const showCommandCenter = COMMAND_CENTER_ROLES_SET.has(role);
   const displayName = user?.full_name || user?.email || "Agent";
 
   if (!open) return null;
@@ -921,6 +941,14 @@ function MobileMoreDrawer({
   // Same definitions as the desktop sidebar's Main section, minus the
   // five paths that already live in the bottom tab bar.
   const mainItems = [
+    ...(showCommandCenter
+      ? [{
+          to: "/agency-dashboard",
+          icon: BarChart2,
+          label: "Command Center",
+          testId: "mobile-more-command-center",
+        }]
+      : []),
     { to: "/dashboard", icon: LayoutDashboard, label: "Dashboard", testId: "mobile-more-dashboard" },
     { to: "/leaderboard", icon: Trophy, label: "Leaderboard", testId: "mobile-more-leaderboard" },
     { to: "/birthday-rule", icon: Cake, label: "Birthday Rule", testId: "mobile-more-birthday-rule" },

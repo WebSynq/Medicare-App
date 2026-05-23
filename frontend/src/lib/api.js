@@ -161,3 +161,24 @@ export const auth = {
     auth.logout();
   },
 };
+
+// Roles that should land on the Command Center after sign-in instead
+// of the agent-flavoured /today page. Mirrors backend
+// AGENCY_ROLES in agency_dashboard_router.py — keep them in sync.
+const COMMAND_CENTER_ROLES = new Set([
+  "owner",
+  "admin",
+  "coach",
+  "sales_manager",
+  "compliance",
+  "accounting",
+]);
+
+export function landingForUser(user) {
+  if (!user) return "/login";
+  return COMMAND_CENTER_ROLES.has(user.role)
+    ? "/agency-dashboard"
+    : "/today";
+}
+
+export { COMMAND_CENTER_ROLES };

@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { api, auth } from "@/lib/api";
+import { api, auth, landingForUser } from "@/lib/api";
 
 const ACCENT = "#e85d2f";
 
@@ -103,7 +103,7 @@ export default function Login() {
       const res = await api.post("/auth/login", { email, password });
       auth.saveSession(res.data.access_token, res.data.user);
       toast.success("Welcome back");
-      nav("/today");
+      nav(landingForUser(res.data.user));
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Login failed");
     } finally {

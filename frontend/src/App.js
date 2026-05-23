@@ -33,13 +33,26 @@ import RenewalCalendar from "@/pages/RenewalCalendar";
 import Settings from "@/pages/Settings";
 import PrivacyPolicy from "@/pages/PrivacyPolicy";
 import SecurityPage from "@/pages/SecurityPage";
-import { auth } from "@/lib/api";
+import AgencyCommandCenter from "@/pages/AgencyCommandCenter";
+import { auth, COMMAND_CENTER_ROLES } from "@/lib/api";
 import { AppLayout } from "@/components/Layout";
 import { AgentProvider } from "@/context/AgentContext";
 
 // Compliance-bucket roles — see the same screens as legacy "compliance".
 // Kept in sync with backend deps.COMPLIANCE_ROLES.
 const COMPLIANCE_BUCKET = ["compliance", "cyber_security", "sales_manager"];
+
+// Exact-role gate (no bucket expansion). Used for routes where the
+// allowlist must match the backend's gate verbatim — e.g. the
+// Agency Command Center, which intentionally excludes cyber_security
+// from the compliance bucket.
+function ProtectedExact({ children, roleSet, noLayout }) {
+  const user = auth.getUser();
+  if (!user) return <Navigate to="/login" replace />;
+  if (!roleSet.has(user.role)) return <Navigate to="/today" replace />;
+  if (noLayout) return children;
+  return <AppLayout>{children}</AppLayout>;
+}
 
 function Protected({ children, roles, forbid, noLayout }) {
   const user = auth.getUser();
@@ -85,6 +98,14 @@ export default function App() {
         {/* Magic-link verification — public route. Reads ?token from
             the URL, exchanges for a session, then redirects to /today. */}
         <Route path="/auth/magic" element={<MagicLinkVerify />} />
+        <Route
+          path="/agency-dashboard"
+          element={
+            <ProtectedExact roleSet={COMMAND_CENTER_ROLES}>
+              <AgencyCommandCenter />
+            </ProtectedExact>
+          }
+        />
         <Route path="/today" element={<Protected><TodayPage /></Protected>} />
         <Route path="/pipeline" element={<Protected><Pipeline /></Protected>} />
         <Route path="/import" element={<Protected><ImportLeads /></Protected>} />
