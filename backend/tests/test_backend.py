@@ -1920,6 +1920,142 @@ def test_aep_countdown_calculation(client, db, admin_headers):
     assert "is_active" in oep
 
 
+# ── Pipeline (Kanban) ──────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_pipeline_grouped_by_stage(client, db, admin_headers):
+    """All seven stages come back in fixed order, with leads grouped
+    correctly and counts matching a manual tally."""
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    now_iso = "2026-05-01T10:00:00+00:00"
+    seeds = [
+        ("pipe-1", "new"),
+        ("pipe-2", "new"),
+        ("pipe-3", "contacted"),
+        ("pipe-4", "qualified"),
+        ("pipe-5", "appointment_set"),
+        ("pipe-6", "enrolled"),
+        ("pipe-7", "lost"),
+    ]
+    for lid, status in seeds:
+        await db.leads.insert_one({
+            "id": lid,
+            "first_name": "Pipe", "last_name": lid.split("-")[1],
+            "agent_id": admin["id"], "agent_name": "Admin",
+            "status": status,
+            "created_at": now_iso, "updated_at": now_iso,
+        })
+    r = client.get("/api/leads/pipeline", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Fixed stage ordering
+    assert [s["id"] for s in body["stages"]] == [
+        "new", "contacted", "qualified", "appointment_set",
+        "enrolled", "not_interested", "lost",
+    ]
+    by_id = {s["id"]: s for s in body["stages"]}
+    assert by_id["new"]["count"] == 2
+    assert by_id["contacted"]["count"] == 1
+    assert by_id["qualified"]["count"] == 1
+    assert by_id["appointment_set"]["count"] == 1
+    assert by_id["enrolled"]["count"] == 1
+    assert by_id["not_interested"]["count"] == 0
+    assert by_id["lost"]["count"] == 1
+    assert body["summary"]["total_leads"] == 7
+    # Cards carry the slim projection.
+    card = by_id["new"]["leads"][0]
+    assert card["lead_id"] in ("pipe-1", "pipe-2")
+    assert "full_name" in card
+    assert "phone" in card
+
+
+@pytest.mark.asyncio
+async def test_pipeline_unknown_status_rolls_up_to_new(client, db, admin_headers):
+    """A lead with a status outside the seven pipeline ids must surface
+    under "new" rather than silently vanish."""
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    await db.leads.insert_one({
+        "id": "pipe-legacy",
+        "first_name": "Legacy", "last_name": "Status",
+        "agent_id": admin["id"], "agent_name": "Admin",
+        "status": "needs_review",  # not a pipeline id
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    body = client.get("/api/leads/pipeline", headers=admin_headers).json()
+    new_ids = [c["lead_id"] for c in next(
+        s["leads"] for s in body["stages"] if s["id"] == "new"
+    )]
+    assert "pipe-legacy" in new_ids
+
+
+@pytest.mark.asyncio
+async def test_stage_update_success(client, db, admin_headers):
+    """Happy-path PATCH moves the lead and returns the card-shaped doc."""
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    await db.leads.insert_one({
+        "id": "stage-1",
+        "first_name": "Move", "last_name": "Me",
+        "agent_id": admin["id"], "agent_name": "Admin",
+        "status": "new",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    r = client.patch(
+        "/api/leads/stage-1/stage",
+        headers=admin_headers,
+        json={"status": "contacted"},
+    )
+    assert r.status_code == 200, r.text
+    card = r.json()
+    assert card["lead_id"] == "stage-1"
+    # Confirm the persisted status flipped + audit row written.
+    stored = await db.leads.find_one({"id": "stage-1"}, {"_id": 0})
+    assert stored["status"] == "contacted"
+    entry = await db.audit_logs.find_one({"event_type": "lead_stage_changed"})
+    assert entry is not None
+    assert entry["metadata"]["from_status"] == "new"
+    assert entry["metadata"]["to_status"] == "contacted"
+
+
+def test_stage_update_invalid_status(client, db, admin_headers):
+    """Statuses outside the seven-stage enum 422 before touching Mongo."""
+    r = client.patch(
+        "/api/leads/any-id/stage",
+        headers=admin_headers,
+        json={"status": "interested-maybe"},
+    )
+    assert r.status_code == 422
+    assert "Invalid stage" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_stage_update_idor(client, db, admin_headers):
+    """Agents can't move another agent's lead — 403 from _idor_or_403."""
+    # Stand up agent A who owns the lead, and agent B who'll try.
+    a_id, _ = await _make_agent_with_token(
+        client, db, admin_headers, "stage.alice@example.com", "Alice S",
+        password="Q9pl#aux!7zT",
+    )
+    _, b_headers = await _make_agent_with_token(
+        client, db, admin_headers, "stage.bob@example.com", "Bob S",
+        password="Q9pl#aux!7zS",
+    )
+    await db.leads.insert_one({
+        "id": "stage-idor",
+        "first_name": "Owned", "last_name": "ByAlice",
+        "agent_id": a_id, "agent_name": "Alice S",
+        "status": "new",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    r = client.patch(
+        "/api/leads/stage-idor/stage",
+        headers=b_headers,
+        json={"status": "qualified"},
+    )
+    assert r.status_code == 403
+
+
 # ── Agent transfer ─────────────────────────────────────────────────────────
 @pytest.mark.asyncio
 async def _make_agent_with_token(client, db, admin_headers, email, name,

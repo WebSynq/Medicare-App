@@ -5,7 +5,7 @@ import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Query
 from fastapi.responses import StreamingResponse
@@ -413,6 +413,130 @@ async def _fire_speed_to_lead_sms(
                        lead.get("id"), e)
 
 
+# ── Pipeline (Kanban) ────────────────────────────────────────────────────
+# Fixed stage ordering + display metadata. Frontend reads the colors /
+# labels from the response rather than hard-coding them, so a future
+# "add a stage" reshuffle is a single server-side change. Order matches
+# the natural lead lifecycle, terminal states last.
+_PIPELINE_STAGES = [
+    {"id": "new",              "label": "New",            "color": "#6366f1"},
+    {"id": "contacted",        "label": "Contacted",      "color": "#f59e0b"},
+    {"id": "qualified",        "label": "Qualified",      "color": "#3b82f6"},
+    {"id": "appointment_set",  "label": "Appt Set",       "color": "#8b5cf6"},
+    {"id": "enrolled",         "label": "Enrolled",       "color": "#10b981"},
+    {"id": "not_interested",   "label": "Not Interested", "color": "#94a3b8"},
+    {"id": "lost",             "label": "Lost",           "color": "#ef4444"},
+]
+_VALID_STAGE_IDS = {s["id"] for s in _PIPELINE_STAGES}
+
+
+class LeadStageUpdate(BaseModel):
+    status: str = Field(..., min_length=1, max_length=32)
+
+
+def _pipeline_card(lead: dict) -> dict:
+    """Light-weight projection for Kanban cards. Drops PHI-heavy fields
+    (MBI, DOB, prescriptions) the board doesn't render."""
+    fn = (lead.get("first_name") or "").strip()
+    ln = (lead.get("last_name") or "").strip()
+    full = f"{fn} {ln}".strip() or lead.get("email") or "Unknown"
+    return {
+        "lead_id": lead.get("id"),
+        "full_name": full,
+        "phone": lead.get("phone"),
+        "email": lead.get("email"),
+        "carrier": lead.get("current_carrier"),
+        "product_type": lead.get("product_interest") or lead.get("plan_type_premium"),
+        "state": lead.get("state"),
+        "created_at": lead.get("created_at"),
+        "updated_at": lead.get("updated_at"),
+        "agent_name": lead.get("agent_name"),
+        "client_success_rep": lead.get("client_success_rep"),
+        # No estimated_commission on leads today — the field lives on
+        # appointments. Leaving the key null keeps the response shape
+        # stable so the frontend doesn't branch on its absence.
+        "estimated_commission": None,
+    }
+
+
+@router.get("/pipeline")
+@limiter.limit("60/hour")
+async def get_pipeline(
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Lead pipeline grouped by status, optimized for the Kanban board.
+
+    Returns the same stage list in the same order every time so the
+    frontend can render seven columns without sorting. Each stage
+    carries its own count + commission roll-up so the column header
+    doesn't have to recompute on every render. Scoped through
+    agent_filter — agents see their own pipeline, admin / compliance /
+    coach / accounting / client_success see the agency (or impersonated
+    agent's view via X-Agent-ID).
+    """
+    scope = agent_filter(current_user)
+    # Pull a slim projection — Kanban cards don't need PHI-heavy fields.
+    proj = {
+        "_id": 0, "id": 1, "first_name": 1, "last_name": 1,
+        "email": 1, "phone": 1, "status": 1, "state": 1,
+        "current_carrier": 1, "current_plan": 1,
+        "product_interest": 1, "plan_type_premium": 1,
+        "created_at": 1, "updated_at": 1,
+        "agent_name": 1, "client_success_rep": 1,
+    }
+    buckets: Dict[str, List[dict]] = {s["id"]: [] for s in _PIPELINE_STAGES}
+    total_leads = 0
+    async for ld in db.leads.find(scope, proj).sort("updated_at", -1):
+        status = (ld.get("status") or "new").lower()
+        if status not in buckets:
+            # Unknown / legacy statuses roll up under "new" so they're
+            # visible — better than silently dropping the lead.
+            status = "new"
+        buckets[status].append(_pipeline_card(ld))
+        total_leads += 1
+
+    stages = []
+    total_pipeline_value = 0.0
+    for meta in _PIPELINE_STAGES:
+        leads_in_stage = buckets[meta["id"]]
+        # estimated_commission is always None on cards today, so this
+        # roll-up is 0 until the commission-on-lead work lands. Keep
+        # the field so the SPA contract doesn't churn later.
+        stage_total = sum(
+            (c.get("estimated_commission") or 0.0) for c in leads_in_stage
+        )
+        total_pipeline_value += stage_total
+        stages.append({
+            "id": meta["id"],
+            "label": meta["label"],
+            "color": meta["color"],
+            "leads": leads_in_stage,
+            "count": len(leads_in_stage),
+            "total_commission": round(stage_total, 2),
+        })
+
+    await write_audit(
+        db, "pipeline_viewed",
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
+        request=request,
+        metadata={
+            "total_leads": total_leads,
+            "role": current_user.get("role"),
+        },
+    )
+
+    return {
+        "stages": stages,
+        "summary": {
+            "total_leads": total_leads,
+            "total_pipeline_value": round(total_pipeline_value, 2),
+        },
+    }
+
+
 @router.get("", response_model=List[Lead])
 async def list_leads(
     status: Optional[str] = None,
@@ -681,6 +805,63 @@ async def transfer_lead(
 
     fresh = await db.leads.find_one({"id": lead_id}, {"_id": 0})
     return Lead(**fresh)
+
+
+@router.patch("/{lead_id}/stage")
+@limiter.limit("120/hour")
+async def update_lead_stage(
+    lead_id: str,
+    request: Request,
+    body: LeadStageUpdate = Body(...),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Move a lead between Kanban stages. Higher rate limit than the
+    generic PATCH because agents drag cards across columns rapidly —
+    a 60/hour ceiling tripped a typical batch-touch session.
+
+    IDOR-checked the same way as PATCH /leads/{id}: fetch first, then
+    let _idor_or_403 raise 404 (missing) / 403 (not owned). Status
+    enum is validated against the seven pipeline stages — anything
+    else 422s before we touch Mongo.
+    """
+    status = (body.status or "").strip().lower()
+    if status not in _VALID_STAGE_IDS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Invalid stage. Allowed values: "
+                + ", ".join(sorted(_VALID_STAGE_IDS))
+            ),
+        )
+
+    existing = await db.leads.find_one(
+        {"id": lead_id}, {"_id": 0, "id": 1, "agent_id": 1, "status": 1},
+    )
+    _idor_or_403(existing, current_user)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.leads.update_one(
+        {"id": lead_id},
+        {"$set": {"status": status, "updated_at": now_iso}},
+    )
+    await write_audit(
+        db, "lead_stage_changed",
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
+        target_type="lead", target_id=lead_id,
+        request=request,
+        metadata={
+            "from_status": existing.get("status"),
+            "to_status": status,
+        },
+    )
+
+    fresh = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    # Same projection the pipeline endpoint uses so the SPA can drop
+    # the returned dict straight into its column-cards state without
+    # mapping fields a second time.
+    return _pipeline_card(fresh)
 
 
 @router.get("/{lead_id}/pdf")
