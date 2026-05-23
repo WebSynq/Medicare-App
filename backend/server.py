@@ -322,6 +322,18 @@ _CSRF_EXEMPT_PATHS = {
     # exempting matches the pattern used by every other admin write that
     # talks to an external provider (apps/submit, commission/sync/run).
     "/api/ghl/sync",
+    # Admin user-management writes. Each is JWT-authenticated +
+    # require_roles("admin", "owner") inside the route — that role check
+    # is what a CSRF attacker can't forge, so the cookie double-submit
+    # is redundant. Matches the rationale used for /api/ghl/sync and
+    # /api/commission/sync/* above. /resend, /deactivate, /reactivate
+    # are listed for the same reason even though only /invite is in
+    # the current bug report — keeps the security profile uniform for
+    # the whole admin-user-management surface.
+    "/api/auth/invite",
+    "/api/auth/invite/resend",
+    "/api/auth/users/deactivate",
+    "/api/auth/users/reactivate",
     # Resource roots — POST creates only. Sub-paths (PATCH/DELETE on
     # /{id}, action verbs like /sync-ghl) are covered by the prefix
     # block below. Auth is enforced by get_current_user / IDOR checks
