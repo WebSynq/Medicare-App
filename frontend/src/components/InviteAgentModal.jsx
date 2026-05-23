@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { X as XIcon } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 
@@ -64,157 +65,190 @@ export default function InviteAgentModal({ onClose }) {
     toast.success("Invite link copied to clipboard");
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: "rgba(0,0,0,0.5)" }}
-      onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="w-full max-w-md rounded-xl p-6"
-        style={{ background: "var(--color-background-primary)", border: "1px solid var(--color-border-tertiary)" }}>
+  // Shared styling for form inputs/selects so every control matches
+  // the rest of the app's shadcn chrome.
+  const inputCls =
+    "w-full px-3 py-2 rounded-lg text-sm outline-none border border-border bg-background text-foreground focus:ring-2 focus:ring-[#e85d2f]/40";
+  const labelCls =
+    "block text-xs font-medium mb-1.5 uppercase tracking-[0.08em] text-muted-foreground";
 
+  return (
+    // Outer backdrop — semi-opaque black layer over the whole viewport.
+    // The inner card uses solid shadcn surface tokens (bg-card / border)
+    // so the modal is fully opaque regardless of theme. The previous
+    // version pointed every surface at undefined CSS variables
+    // (--color-background-primary, etc.) which silently resolved to
+    // transparent and made the modal invisible.
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Invite a new agent"
+    >
+      <div
+        className="w-full max-w-md rounded-xl p-6 bg-card text-card-foreground border border-border shadow-xl max-h-[90vh] overflow-y-auto"
+        data-testid="invite-agent-modal"
+      >
         <div className="flex items-center justify-between mb-6">
-          <h2 className="font-semibold text-lg" style={{ color: "var(--color-text-primary)", letterSpacing: "-0.02em" }}>
+          <h2
+            className="font-semibold text-lg text-foreground"
+            style={{ letterSpacing: "-0.02em" }}
+          >
             Invite New Agent
           </h2>
-          <button onClick={onClose} className="text-xl leading-none" style={{ color: "var(--color-text-secondary)" }}>✕</button>
+          <button
+            onClick={onClose}
+            className="p-1 -mr-1 text-muted-foreground hover:text-foreground rounded transition-colors"
+            aria-label="Close"
+          >
+            <XIcon className="w-5 h-5" />
+          </button>
         </div>
 
         {!inviteUrl ? (
           <div className="space-y-4">
             <div>
-              <label className="block text-xs font-medium mb-1.5 uppercase" style={{ letterSpacing: "0.08em", color: "var(--color-text-secondary)" }}>
-                Email Address *
-              </label>
+              <label className={labelCls}>Email Address *</label>
               <input
                 type="email"
                 placeholder="agent@agency.com"
                 value={form.email}
-                onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                style={{ background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", color: "var(--color-text-primary)" }}
+                onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                className={inputCls}
               />
             </div>
             <div>
-              <label className="block text-xs font-medium mb-1.5 uppercase" style={{ letterSpacing: "0.08em", color: "var(--color-text-secondary)" }}>
-                Role
-              </label>
+              <label className={labelCls}>Role</label>
               <select
                 value={form.role}
-                onChange={e => setForm(f => ({ ...f, role: e.target.value }))}
-                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                style={{ background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", color: "var(--color-text-primary)" }}
+                onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
+                className={inputCls}
               >
-                {INVITABLE_ROLES.map(r => (
-                  <option key={r.value} value={r.value}>{r.label}</option>
+                {INVITABLE_ROLES.map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.label}
+                  </option>
                 ))}
               </select>
-              <p className="text-[11px] mt-1" style={{ color: "var(--color-text-secondary)" }}>
+              <p className="text-[11px] mt-1 text-muted-foreground">
                 {form.role === "client_success"
                   ? "Client Success sees all agents' clients but never commission data."
                   : "Controls which screens the invited user can access."}
               </p>
             </div>
             <div>
-              <label className="block text-xs font-medium mb-1.5 uppercase" style={{ letterSpacing: "0.08em", color: "var(--color-text-secondary)" }}>
-                Full Name
-              </label>
+              <label className={labelCls}>Full Name</label>
               <input
                 type="text"
                 placeholder="Jane Smith"
                 value={form.full_name}
-                onChange={e => setForm(f => ({ ...f, full_name: e.target.value }))}
-                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                style={{ background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", color: "var(--color-text-primary)" }}
+                onChange={(e) => setForm((f) => ({ ...f, full_name: e.target.value }))}
+                className={inputCls}
               />
             </div>
             <div>
-              <label className="block text-xs font-medium mb-1.5 uppercase" style={{ letterSpacing: "0.08em", color: "var(--color-text-secondary)" }}>
-                Agency Name
-              </label>
+              <label className={labelCls}>Agency Name</label>
               <input
                 type="text"
                 placeholder="Smith Insurance Group"
                 value={form.agency_name}
-                onChange={e => setForm(f => ({ ...f, agency_name: e.target.value }))}
-                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                style={{ background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", color: "var(--color-text-primary)" }}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, agency_name: e.target.value }))
+                }
+                className={inputCls}
               />
             </div>
             <div>
-              <label className="block text-xs font-medium mb-1.5 uppercase" style={{ letterSpacing: "0.08em", color: "var(--color-text-secondary)" }}>
+              <label className={labelCls}>
                 Full Name (as it appears on carrier statements) *
               </label>
               <input
                 type="text"
                 placeholder="Name as it appears on carrier commission statements"
                 value={form.agent_name}
-                onChange={e => setForm(f => ({ ...f, agent_name: e.target.value }))}
+                onChange={(e) => setForm((f) => ({ ...f, agent_name: e.target.value }))}
                 maxLength={100}
                 required
-                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                style={{ background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", color: "var(--color-text-primary)" }}
+                className={inputCls}
               />
-              <p className="text-[11px] mt-1" style={{ color: "var(--color-text-secondary)" }}>
-                Used to look up this agent's commissions. Must match carrier statements exactly.
+              <p className="text-[11px] mt-1 text-muted-foreground">
+                Used to look up this agent's commissions. Must match carrier
+                statements exactly.
               </p>
             </div>
             <div>
-              <label className="block text-xs font-medium mb-1.5 uppercase" style={{ letterSpacing: "0.08em", color: "var(--color-text-secondary)" }}>
-                NPN (National Producer Number)
-              </label>
+              <label className={labelCls}>NPN (National Producer Number)</label>
               <input
                 type="text"
                 inputMode="numeric"
                 pattern="\d{5,10}"
                 placeholder="5-10 digit National Producer Number"
                 value={form.agent_npn}
-                onChange={e => setForm(f => ({ ...f, agent_npn: e.target.value.replace(/\D/g, "").slice(0, 10) }))}
-                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                style={{ background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", color: "var(--color-text-primary)" }}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    agent_npn: e.target.value.replace(/\D/g, "").slice(0, 10),
+                  }))
+                }
+                className={inputCls}
               />
             </div>
             <div className="pt-2 flex gap-3">
-              <button onClick={onClose}
-                className="flex-1 py-2 rounded-lg text-sm font-medium"
-                style={{ background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", border: "1px solid var(--color-border-tertiary)" }}>
+              <button
+                onClick={onClose}
+                className="flex-1 py-2 rounded-lg text-sm font-medium border border-border bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors"
+              >
                 Cancel
               </button>
-              <button onClick={handleSubmit} disabled={loading}
-                className="flex-1 py-2 rounded-lg text-sm font-medium transition-opacity"
-                style={{ background: "#e85d2f", color: "white", opacity: loading ? 0.6 : 1 }}>
+              <button
+                onClick={handleSubmit}
+                disabled={loading}
+                className="flex-1 py-2 rounded-lg text-sm font-medium text-white bg-[#e85d2f] hover:bg-[#c84416] disabled:opacity-60 transition-opacity"
+              >
                 {loading ? "Creating..." : "Create Invite"}
               </button>
             </div>
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="rounded-lg p-3 text-center"
-              style={{ background: "rgba(26,107,60,0.1)", border: "1px solid rgba(26,107,60,0.2)" }}>
-              <p className="text-sm font-medium" style={{ color: "#1a6b3c" }}>✓ Invite created — expires in 24 hours</p>
+            <div
+              className="rounded-lg p-3 text-center"
+              style={{
+                background: "rgba(26,107,60,0.1)",
+                border: "1px solid rgba(26,107,60,0.2)",
+              }}
+            >
+              <p className="text-sm font-medium" style={{ color: "#1a6b3c" }}>
+                ✓ Invite created — expires in 24 hours
+              </p>
             </div>
             <div>
-              <label className="block text-xs font-medium mb-1.5 uppercase" style={{ letterSpacing: "0.08em", color: "var(--color-text-secondary)" }}>
-                Invite Link
-              </label>
+              <label className={labelCls}>Invite Link</label>
               <div className="flex gap-2">
                 <input
                   readOnly
                   value={inviteUrl}
-                  className="flex-1 px-3 py-2 rounded-lg text-xs outline-none"
-                  style={{ background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", color: "var(--color-text-secondary)" }}
+                  className="flex-1 px-3 py-2 rounded-lg text-xs outline-none border border-border bg-background text-muted-foreground"
                 />
-                <button onClick={copyUrl}
-                  className="px-4 py-2 rounded-lg text-sm font-medium flex-shrink-0"
-                  style={{ background: "#1e2d3d", color: "white" }}>
+                <button
+                  onClick={copyUrl}
+                  className="px-4 py-2 rounded-lg text-sm font-medium flex-shrink-0 text-white"
+                  style={{ background: "#1e2d3d" }}
+                >
                   Copy
                 </button>
               </div>
             </div>
-            <p className="text-xs" style={{ color: "var(--color-text-secondary)" }}>
-              Send this link to the agent. It is single-use and expires in 24 hours. The agent must register using the email address you entered above.
+            <p className="text-xs text-muted-foreground">
+              Send this link to the agent. It is single-use and expires in 24
+              hours. The agent must register using the email address you
+              entered above.
             </p>
-            <button onClick={onClose}
-              className="w-full py-2 rounded-lg text-sm font-medium"
-              style={{ background: "#e85d2f", color: "white" }}>
+            <button
+              onClick={onClose}
+              className="w-full py-2 rounded-lg text-sm font-medium text-white bg-[#e85d2f] hover:bg-[#c84416] transition-colors"
+            >
               Done
             </button>
           </div>
