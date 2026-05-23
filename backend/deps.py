@@ -268,6 +268,11 @@ def agent_filter(current_user: dict,
                  override_agent_id: Optional[str] = None) -> dict:
     """Build a Mongo filter that scopes results to one agent's data.
 
+    - **Team members** (``parent_agent_id`` set) are scoped to the
+      parent agent's id. Checked FIRST so a team member can never
+      escape their parent's scope by virtue of their own role.
+      ``override_agent_id`` is silently ignored — a team-member VA
+      can't widen scope via a forged header.
     - Admin / compliance roles see everything by default (empty filter). If
       they pass ``override_agent_id`` (e.g. via the X-Agent-ID impersonation
       header), the filter narrows to that agent.
@@ -278,6 +283,9 @@ def agent_filter(current_user: dict,
     Pair with ``get_effective_agent`` (which does the impersonation check
     centrally) when you want both behaviors driven by the same header.
     """
+    parent_id = current_user.get("parent_agent_id")
+    if parent_id:
+        return {"agent_id": parent_id}
     role = current_user.get("role", "agent")
     if role in FULL_AGENCY_SCOPE_ROLES:
         if override_agent_id:
@@ -293,15 +301,36 @@ async def get_effective_agent(
 ) -> dict:
     """Resolve the user whose data should be returned for this request.
 
-    For agents this is always themselves (header is ignored). For admin /
-    compliance, an ``X-Agent-ID`` header swaps the effective user to the
-    target agent's DB row so the caller sees that agent's data — useful for
-    "view as agent" support and audit-trail debugging.
+    Resolution order:
+      1. **Team member** (``current_user.parent_agent_id`` set) →
+         returns the parent agent's DB row. The team member never
+         impersonates anyone else — they ARE the parent for write
+         purposes. The returned dict carries ``_impersonated_by`` /
+         ``_impersonated_by_id`` set to the team member, so audit
+         logs still record who actually fired the request.
+      2. **Privileged role + X-Agent-ID header** → returns the named
+         agent's row (admin/owner/compliance/coach/accounting only).
+      3. **Otherwise** → returns ``current_user`` unchanged.
 
-    The returned dict carries two metadata fields the caller can audit-log:
-      - ``_impersonated_by``     — caller's email
-      - ``_impersonated_by_id``  — caller's user id
+    The X-Agent-ID header is silently ignored for team members so a
+    leaked header can't widen scope past the parent.
     """
+    parent_id = current_user.get("parent_agent_id")
+    if parent_id:
+        parent = await db.users.find_one({"id": parent_id}, {"_id": 0})
+        if not parent:
+            # Parent removed out from under the team member. Fail
+            # closed — refuse the request rather than silently fall
+            # back to the team member's own (probably empty) scope.
+            raise HTTPException(
+                403,
+                "Your parent agent account is no longer accessible. "
+                "Contact your administrator.",
+            )
+        parent["_impersonated_by"] = current_user.get("email")
+        parent["_impersonated_by_id"] = current_user.get("id")
+        return parent
+
     target_id = request.headers.get("X-Agent-ID", "")
     if not target_id:
         return current_user
@@ -314,6 +343,32 @@ async def get_effective_agent(
     target["_impersonated_by"] = current_user.get("email")
     target["_impersonated_by_id"] = current_user.get("id")
     return target
+
+
+async def get_agent_team_members(db, agent_id: str) -> list:
+    """Return all users whose ``parent_agent_id`` is ``agent_id``.
+
+    Projection mirrors the /agents list view so the caller can render
+    the rows directly without a second lookup. Sorted oldest-first by
+    created_at so the team list stays stable as members are added /
+    removed.
+    """
+    cursor = db["users"].find(
+        {"parent_agent_id": agent_id},
+        {
+            "_id": 0,
+            "id": 1,
+            "full_name": 1,
+            "email": 1,
+            "agent_name": 1,
+            "role": 1,
+            "is_active": 1,
+            "status": 1,
+            "parent_agent_id": 1,
+            "created_at": 1,
+        },
+    ).sort("created_at", 1)
+    return await cursor.to_list(length=None)
 
 
 def get_client_ip(request: Request) -> Optional[str]:

@@ -79,6 +79,14 @@ class UserBase(BaseModel):
     # the new lead correctly. None means "no GHL mapping yet" — webhook
     # leads fall back to the first admin.
     ghl_location_id: Optional[str] = None
+    # Multi-user agent accounts. When set, this user works inside the
+    # parent agent's scope — all their reads and writes resolve to
+    # parent_agent_id (deps.agent_filter + get_effective_agent), and
+    # the parent's data is what they see. Audit logs still record the
+    # actual actor (their own id), so we never lose attribution of who
+    # actually did a thing. Only role=va or role=agent users are
+    # eligible — admin/owner/coach/compliance cannot be team members.
+    parent_agent_id: Optional[str] = None
     # Brute-force lockout mirror — `db.login_attempts` is the
     # authoritative tracker, but we surface counters on the user record
     # too so admin/compliance can see "X failed attempts in the last

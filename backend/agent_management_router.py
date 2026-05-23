@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from deps import (
     get_db,
     get_current_user,
+    get_agent_team_members,
     require_roles,
     write_audit,
     COMPLIANCE_ROLES,
@@ -26,9 +27,19 @@ from deps import (
 
 router = APIRouter(prefix="/agents", tags=["agent-management"])
 
+# Roles that may be assigned to another agent's team. Admin / owner /
+# compliance / coach / accounting / sales_manager all carry agency-wide
+# privileges of their own — pinning them inside an agent's scope would
+# silently demote them and lose audit visibility. Keep the list tight.
+_TEAM_MEMBER_ELIGIBLE_ROLES = ("va", "agent")
+
 
 class AgentStatusUpdate(BaseModel):
     is_active: bool
+
+
+class TeamAssignRequest(BaseModel):
+    user_id: str
 
 
 @router.get("")
@@ -95,10 +106,24 @@ async def list_agents(
             out[row["_id"]] = row.get("last")
         return out
 
+    async def _team_counts_by_parent() -> dict:
+        # Rolled up alongside the lead / policy aggregates so the agent
+        # roster can show "team_count" in one round-trip rather than
+        # N+1 lookups per row.
+        pipeline = [
+            {"$match": {"parent_agent_id": {"$ne": None}}},
+            {"$group": {"_id": "$parent_agent_id", "n": {"$sum": 1}}},
+        ]
+        out: dict = {}
+        async for row in db["users"].aggregate(pipeline):
+            out[row["_id"]] = row["n"]
+        return out
+
     lead_counts = await _count_by_agent("leads")
     policy_counts = await _count_by_agent("policies")
     revenue_totals = await _revenue_by_agent()
     last_submissions = await _last_submission_by_agent()
+    team_counts = await _team_counts_by_parent()
 
     agents = []
     for u in users:
@@ -120,9 +145,162 @@ async def list_agents(
             "policy_count": policy_counts.get(uid, 0),
             "production_revenue": round(revenue_totals.get(uid, 0.0), 2),
             "last_submission_date": last_submissions.get(uid),
+            # Number of users whose parent_agent_id == this user.id.
+            # Zero for everyone except agents who have VAs / teammates
+            # assigned to their account.
+            "team_count": team_counts.get(uid, 0),
         })
 
     return {"agents": agents, "count": len(agents)}
+
+
+# ----- Team member assignment (multi-user agent accounts) -----
+
+@router.post("/{agent_id}/team")
+async def assign_team_member(
+    agent_id: str,
+    payload: TeamAssignRequest,
+    request: Request,
+    current_user: dict = Depends(require_roles("admin", "owner")),
+    db=Depends(get_db),
+):
+    """Assign a VA / agent to work inside another agent's account scope.
+
+    Once stamped with ``parent_agent_id``, the target's
+    ``deps.agent_filter`` and ``deps.get_effective_agent`` resolve to
+    the parent — so reads / writes look like the parent's own
+    activity, but audit logs still record the team member as the
+    actor (``_impersonated_by_id``).
+
+    Validation:
+      - Parent agent must exist + be active.
+      - Target user must exist + be active.
+      - Target.role must be in _TEAM_MEMBER_ELIGIBLE_ROLES.
+      - Target can't be the parent themselves (no self-assignment).
+      - Target can't already be on someone else's team — the admin
+        must remove them first to make the move auditable.
+    """
+    if agent_id == payload.user_id:
+        raise HTTPException(400, "Cannot assign an agent to their own team")
+
+    parent = await db["users"].find_one(
+        {"id": agent_id},
+        {"_id": 0, "id": 1, "email": 1, "full_name": 1, "role": 1,
+         "is_active": 1},
+    )
+    if not parent:
+        raise HTTPException(404, "Parent agent not found")
+    if not parent.get("is_active", True):
+        raise HTTPException(400, "Parent agent is deactivated")
+
+    target = await db["users"].find_one(
+        {"id": payload.user_id},
+        {"_id": 0, "id": 1, "email": 1, "full_name": 1, "role": 1,
+         "is_active": 1, "parent_agent_id": 1},
+    )
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("role") not in _TEAM_MEMBER_ELIGIBLE_ROLES:
+        raise HTTPException(
+            400,
+            f"Only {'/'.join(_TEAM_MEMBER_ELIGIBLE_ROLES)} users can be "
+            "assigned as team members. Admin / owner / coach / "
+            "compliance roles operate at agency scope.",
+        )
+    existing_parent = target.get("parent_agent_id")
+    if existing_parent and existing_parent != agent_id:
+        raise HTTPException(
+            409,
+            "User is already assigned to a different agent's team. "
+            "Remove them from that team first.",
+        )
+
+    await db["users"].update_one(
+        {"id": payload.user_id},
+        {"$set": {"parent_agent_id": agent_id}},
+    )
+    await write_audit(
+        db, "team_member_assigned",
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
+        target_type="user", target_id=payload.user_id,
+        request=request,
+        metadata={
+            "parent_agent_id": agent_id,
+            "parent_agent_email": parent.get("email"),
+            "target_email": target.get("email"),
+            "target_role": target.get("role"),
+        },
+    )
+    return {
+        "success": True,
+        "user_id": payload.user_id,
+        "parent_agent_id": agent_id,
+    }
+
+
+@router.delete("/{agent_id}/team/{user_id}")
+async def remove_team_member(
+    agent_id: str,
+    user_id: str,
+    request: Request,
+    current_user: dict = Depends(require_roles("admin", "owner")),
+    db=Depends(get_db),
+):
+    """Remove a team member from an agent's account scope.
+
+    Sets ``parent_agent_id = None`` so the user reverts to their own
+    agent scope. Idempotent on already-unassigned users would 404 —
+    we 404 rather than 200 so the admin gets a visible signal if
+    they're acting on stale UI state.
+    """
+    target = await db["users"].find_one(
+        {"id": user_id},
+        {"_id": 0, "id": 1, "email": 1, "role": 1, "parent_agent_id": 1},
+    )
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("parent_agent_id") != agent_id:
+        raise HTTPException(
+            404,
+            "User is not on this agent's team",
+        )
+
+    await db["users"].update_one(
+        {"id": user_id},
+        {"$set": {"parent_agent_id": None}},
+    )
+    await write_audit(
+        db, "team_member_removed",
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
+        target_type="user", target_id=user_id,
+        request=request,
+        metadata={
+            "parent_agent_id": agent_id,
+            "target_email": target.get("email"),
+            "target_role": target.get("role"),
+        },
+    )
+    return {"success": True, "user_id": user_id, "parent_agent_id": None}
+
+
+@router.get("/{agent_id}/team")
+async def list_team_members(
+    agent_id: str,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """List the VAs / agents assigned to one agent's team.
+
+    Visible to admin / owner, or to the agent whose team it is. Other
+    agents can't enumerate someone else's team membership — 403.
+    """
+    role = current_user.get("role")
+    if role not in ("admin", "owner") and current_user.get("id") != agent_id:
+        raise HTTPException(403, "Insufficient permissions")
+    members = await get_agent_team_members(db, agent_id)
+    return {"members": members, "count": len(members)}
 
 
 @router.patch("/{agent_id}/status")

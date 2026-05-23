@@ -3512,3 +3512,169 @@ def test_password_login_still_works(client, db):
     assert body["user"]["email"] == os.environ["SEED_ADMIN_EMAIL"]
     # mfa_required must no longer be a field in the response.
     assert "mfa_required" not in body
+
+
+# ── Team-member assignment (multi-user agent accounts) ────────────────────
+
+async def _seed_user(db, email: str, role: str = "agent",
+                     full_name: str | None = None,
+                     parent_agent_id: str | None = None) -> dict:
+    """Helper: insert a synthetic active user directly into Mongo.
+
+    Bypasses the invite-token flow so the team-member tests stay
+    focused on parent_agent_id behaviour and don't need to drive
+    register / approve as side-effects."""
+    import uuid
+    from security import hash_password
+    from datetime import datetime, timezone
+    uid = str(uuid.uuid4())
+    doc = {
+        "id": uid,
+        "agent_id": uid,
+        "email": email,
+        "full_name": full_name or email.split("@")[0].title(),
+        "agent_name": full_name or email.split("@")[0].title(),
+        "role": role,
+        "is_active": True,
+        "status": "active",
+        "hashed_password": hash_password("Q9pl#aux!7zT-seed"),
+        "token_version": 0, "failed_attempts": 0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if parent_agent_id:
+        doc["parent_agent_id"] = parent_agent_id
+    await db.users.insert_one(doc)
+    return doc
+
+
+def _login_token(client, email: str) -> str:
+    """Log in as a synthetic user (seeded with the helper above) and
+    return the Bearer token so a test can issue authenticated calls
+    without sharing a cookie jar."""
+    r = client.post("/api/auth/login", json={
+        "email": email, "password": "Q9pl#aux!7zT-seed",
+    })
+    assert r.status_code == 200, r.text
+    return r.json()["access_token"]
+
+
+@pytest.mark.asyncio
+async def test_team_assign_success(client, db, admin_headers):
+    """Admin assigns a VA to an agent's team → parent_agent_id stamped,
+    team_member_assigned audit row written."""
+    parent = await _seed_user(db, "parent.agent@example.com", role="agent",
+                               full_name="Parent Agent")
+    va = await _seed_user(db, "va.helper@example.com", role="va",
+                          full_name="VA Helper")
+
+    r = client.post(f"/api/agents/{parent['id']}/team",
+                    headers=admin_headers,
+                    json={"user_id": va["id"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["parent_agent_id"] == parent["id"]
+
+    fresh = await db.users.find_one({"id": va["id"]}, {"_id": 0})
+    assert fresh["parent_agent_id"] == parent["id"]
+
+    audit = await db.audit_logs.find_one({
+        "event_type": "team_member_assigned",
+        "target_id": va["id"],
+    })
+    assert audit is not None
+    assert audit["metadata"]["parent_agent_id"] == parent["id"]
+
+
+@pytest.mark.asyncio
+async def test_team_assign_wrong_role_400(client, db, admin_headers):
+    """Assigning an admin / owner / compliance user as a team member
+    must 400 — those roles operate at agency scope and pinning them
+    inside another agent would silently demote them."""
+    parent = await _seed_user(db, "parent2@example.com", role="agent")
+    # Assigning a compliance-bucket role must be refused.
+    compliance = await _seed_user(db, "compliance.user@example.com",
+                                   role="compliance")
+    r = client.post(f"/api/agents/{parent['id']}/team",
+                    headers=admin_headers,
+                    json={"user_id": compliance["id"]})
+    assert r.status_code == 400, r.text
+    assert "va" in r.json()["detail"].lower() or \
+           "agent" in r.json()["detail"].lower()
+
+    fresh = await db.users.find_one({"id": compliance["id"]}, {"_id": 0})
+    assert fresh.get("parent_agent_id") in (None, "")
+
+
+@pytest.mark.asyncio
+async def test_team_remove_success(client, db, admin_headers):
+    """DELETE /agents/{id}/team/{user_id} clears parent_agent_id."""
+    parent = await _seed_user(db, "parent3@example.com", role="agent")
+    va = await _seed_user(db, "va2@example.com", role="va",
+                          parent_agent_id=parent["id"])
+
+    r = client.delete(f"/api/agents/{parent['id']}/team/{va['id']}",
+                      headers=admin_headers)
+    assert r.status_code == 200, r.text
+
+    fresh = await db.users.find_one({"id": va["id"]}, {"_id": 0})
+    assert fresh.get("parent_agent_id") is None
+
+    audit = await db.audit_logs.find_one({
+        "event_type": "team_member_removed",
+        "target_id": va["id"],
+    })
+    assert audit is not None
+
+
+@pytest.mark.asyncio
+async def test_team_scoped_reads_parent_data(client, db, admin_headers):
+    """A VA assigned to a parent agent must read the parent's leads,
+    not their own. Validates that agent_filter() honours
+    parent_agent_id ahead of role."""
+    parent = await _seed_user(db, "parent4@example.com", role="agent",
+                               full_name="Parent Four")
+    va = await _seed_user(db, "va3@example.com", role="va",
+                          parent_agent_id=parent["id"])
+
+    # Seed a lead owned by the parent. Use the admin-headers POST so
+    # the X-Agent-ID override stamps the parent's id.
+    r = client.post(
+        "/api/leads",
+        headers={**admin_headers, "X-Agent-ID": parent["id"]},
+        json={"first_name": "Owned", "last_name": "ByParent"},
+    )
+    assert r.status_code == 201, r.text
+    parent_lead_id = r.json()["id"]
+
+    # VA logs in (Bearer header) and lists leads — should see the
+    # parent's lead, NOT an empty list.
+    va_token = _login_token(client, "va3@example.com")
+    r2 = client.get("/api/leads",
+                    headers={"Authorization": f"Bearer {va_token}"})
+    assert r2.status_code == 200, r2.text
+    ids = [ld["id"] for ld in r2.json()]
+    assert parent_lead_id in ids, (
+        f"VA should see parent agent's leads via parent_agent_id "
+        f"scope, got {ids}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_team_member_cannot_assign_others(client, db, admin_headers):
+    """Team members (role=va) must not be allowed to call the team
+    assignment endpoint — only admin / owner. Confirms the
+    require_roles gate at the route level."""
+    parent = await _seed_user(db, "parent5@example.com", role="agent")
+    va = await _seed_user(db, "va.attacker@example.com", role="va",
+                          parent_agent_id=parent["id"])
+    other_va = await _seed_user(db, "va.target@example.com", role="va")
+
+    va_token = _login_token(client, "va.attacker@example.com")
+    r = client.post(
+        f"/api/agents/{parent['id']}/team",
+        headers={"Authorization": f"Bearer {va_token}"},
+        json={"user_id": other_va["id"]},
+    )
+    assert r.status_code == 403, r.text
+
+    fresh = await db.users.find_one({"id": other_va["id"]}, {"_id": 0})
+    assert fresh.get("parent_agent_id") in (None, "")

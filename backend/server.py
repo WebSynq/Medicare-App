@@ -615,6 +615,9 @@ _PROD_INDEXES = [
     ("users", "email", {"background": True, "unique": True}),
     ("users", "role", {"background": True}),
     ("users", "is_active", {"background": True}),
+    # parent_agent_id powers the team-member roster — sparse because
+    # only VAs / agents pinned to another agent carry the field.
+    ("users", "parent_agent_id", {"background": True, "sparse": True}),
 
     # invite_tokens (token field — distinct from the existing token_hash)
     ("invite_tokens", "token", {"background": True, "unique": True, "sparse": True}),
