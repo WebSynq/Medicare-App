@@ -99,7 +99,7 @@ export function Footer() {
             <li className="flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-primary" /> HIPAA-aligned safeguards</li>
             <li className="flex items-center gap-2"><Lock className="w-4 h-4 text-primary" /> 256-bit transport encryption</li>
             <li className="flex items-center gap-2"><Lock className="w-4 h-4 text-primary" /> Encryption at rest (AES)</li>
-            <li className="flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-primary" /> TOTP MFA for agents</li>
+            <li className="flex items-center gap-2"><ShieldCheck className="w-4 h-4 text-primary" /> Passwordless magic-link sign-in</li>
           </ul>
         </div>
         <div>

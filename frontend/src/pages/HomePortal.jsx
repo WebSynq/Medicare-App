@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -9,30 +9,33 @@ import {
   ShieldCheck,
   Star,
   CheckCircle2,
+  Mail,
+  KeyRound,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { toast } from "sonner";
 import { api, auth } from "@/lib/api";
 
 const ACCENT = "#e85d2f";
 const ACCENT_HOVER = "#d04d22";
 
-// Real photographic hero — golden-hour consultation office from the brand
-// asset bundle. Replaces the flat navy panel + colored block that read as
-// a placeholder. Image is loaded as a CSS background so we can layer a
-// gradient over it for legibility without an extra DOM node.
 const HERO_IMG =
   "https://static.prod-images.emergentagent.com/jobs/778a7dbc-8686-4d3e-87fc-fce3fac48f67/images/bcce0aae6e4600a7d511d4a7490ed04419512e890a959bd46527182b19272479.png";
 
+// Match Login.jsx — 60s between resend attempts.
+const RESEND_COOLDOWN_SECONDS = 60;
+
 export default function HomePortal() {
   const nav = useNavigate();
+  const [mode, setMode] = useState("magic"); // "magic" | "password"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [mfaCode, setMfaCode] = useState("");
-  const [needsMfa, setNeedsMfa] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [magicSent, setMagicSent] = useState(false);
+  const [sentToEmail, setSentToEmail] = useState("");
+  const [cooldown, setCooldown] = useState(0);
+  const cooldownTimer = useRef(null);
 
   useEffect(() => {
     const prev = document.title;
@@ -42,23 +45,60 @@ export default function HomePortal() {
     };
   }, []);
 
-  const submit = async (e) => {
+  useEffect(() => {
+    if (cooldown <= 0) {
+      if (cooldownTimer.current) {
+        clearInterval(cooldownTimer.current);
+        cooldownTimer.current = null;
+      }
+      return;
+    }
+    if (!cooldownTimer.current) {
+      cooldownTimer.current = setInterval(() => {
+        setCooldown((s) => (s > 0 ? s - 1 : 0));
+      }, 1000);
+    }
+    return () => {
+      if (cooldownTimer.current) {
+        clearInterval(cooldownTimer.current);
+        cooldownTimer.current = null;
+      }
+    };
+  }, [cooldown]);
+
+  async function sendMagicLink(targetEmail) {
+    setLoading(true);
+    try {
+      await api.post("/auth/magic-link", { email: targetEmail });
+      setMagicSent(true);
+      setSentToEmail(targetEmail);
+      setCooldown(RESEND_COOLDOWN_SECONDS);
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.detail || "Could not send link — try again.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const submitMagic = async (e) => {
+    e.preventDefault();
+    if (!email) {
+      toast.error("Enter your email.");
+      return;
+    }
+    await sendMagicLink(email.trim().toLowerCase());
+  };
+
+  const submitPassword = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const res = await api.post("/auth/login", {
-        email,
-        password,
-        mfa_code: mfaCode || undefined,
-      });
-      if (res.data.mfa_required) {
-        setNeedsMfa(true);
-        toast.message("Enter your 6-digit MFA code");
-      } else {
-        auth.saveSession(res.data.access_token, res.data.user);
-        toast.success("Welcome back");
-        nav("/today");
-      }
+      const res = await api.post("/auth/login", { email, password });
+      auth.saveSession(res.data.access_token, res.data.user);
+      toast.success("Welcome back");
+      nav("/today");
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Login failed");
     } finally {
@@ -73,8 +113,6 @@ export default function HomePortal() {
         className="relative flex flex-col justify-between px-8 py-10 md:px-12 lg:px-14 lg:py-14 text-white overflow-hidden"
         data-testid="home-brand-panel"
       >
-        {/* Photo background + gradient overlay (separate layers so the
-            overlay easing is independent of image quality). */}
         <div
           className="absolute inset-0 bg-cover bg-center"
           style={{ backgroundImage: `url(${HERO_IMG})` }}
@@ -82,9 +120,7 @@ export default function HomePortal() {
         />
         <div className="absolute inset-0 hero-photo-overlay" aria-hidden="true" />
 
-        {/* Content layer */}
         <div className="relative z-10 flex flex-col h-full justify-between">
-          {/* Logo wordmark */}
           <div className="flex items-center gap-3">
             <div
               className="w-11 h-11 rounded-xl grid place-items-center text-lg font-bold tracking-tight elev-2"
@@ -105,7 +141,6 @@ export default function HomePortal() {
             </div>
           </div>
 
-          {/* Tagline */}
           <motion.div
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
@@ -129,7 +164,6 @@ export default function HomePortal() {
               audit trails, and GoHighLevel sync in one place.
             </p>
 
-            {/* Live trust ticker */}
             <div className="mt-8 hidden md:flex items-center gap-3 text-xs text-white/70">
               <div className="flex items-center gap-1.5">
                 <span className="relative flex h-2 w-2">
@@ -141,11 +175,10 @@ export default function HomePortal() {
               <span className="text-white/30">·</span>
               <span>TLS 1.2+</span>
               <span className="text-white/30">·</span>
-              <span>TOTP MFA</span>
+              <span>Magic link</span>
             </div>
           </motion.div>
 
-          {/* Trust badges */}
           <div>
             <div className="flex flex-wrap gap-2.5" data-testid="trust-badges">
               <Badge icon={Star} label="200+ 5-Star Reviews" />
@@ -153,7 +186,6 @@ export default function HomePortal() {
               <Badge icon={Heart} label="Treat You Like Family" />
             </div>
 
-            {/* Public footer links */}
             <div className="mt-6 flex items-center gap-1">
               <Link to="/privacy" className="text-xs text-white/55 hover:text-white/85 hover:underline">
                 Privacy Policy
@@ -169,8 +201,6 @@ export default function HomePortal() {
 
       {/* ---------- Right: login form ---------- */}
       <section className="flex flex-col items-center justify-center bg-background px-6 py-12 sm:px-10 lg:px-14 relative">
-        {/* Soft brand-tinted accent in the corner — subtle warmth without
-            distracting from the form. */}
         <div
           className="absolute -top-32 -right-32 w-96 h-96 rounded-full opacity-[0.07] blur-3xl pointer-events-none"
           style={{ background: ACCENT }}
@@ -197,103 +227,162 @@ export default function HomePortal() {
               Welcome back
             </h2>
             <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
-              Sign in to access your dashboard, leads, and compliance tools.
+              {mode === "magic"
+                ? "Sign in with a one-time link — no password required."
+                : "Use your email and password to sign in."}
             </p>
           </div>
 
-          <form onSubmit={submit} className="space-y-4" data-testid="home-login-form">
-            <div>
-              <Label className="text-sm font-medium text-foreground">Email</Label>
-              <Input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@agency.com"
-                className="h-12 mt-1.5 text-[15px]"
-                data-testid="home-email"
-              />
-            </div>
-            <div>
-              <div className="flex items-center justify-between">
-                <Label className="text-sm font-medium text-foreground">Password</Label>
-                <Link
-                  to="/forgot-password"
-                  className="text-xs text-muted-foreground hover:text-foreground hover:underline"
-                  data-testid="home-forgot-link"
-                >
-                  Forgot password?
-                </Link>
-              </div>
-              <Input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="h-12 mt-1.5 text-[15px]"
-                data-testid="home-password"
-              />
-            </div>
-
-            {needsMfa && (
+          {magicSent && mode === "magic" ? (
+            <MagicSentCard
+              email={sentToEmail}
+              cooldown={cooldown}
+              loading={loading}
+              onResend={() => sendMagicLink(sentToEmail)}
+              onUseDifferentEmail={() => {
+                setMagicSent(false);
+                setSentToEmail("");
+                setCooldown(0);
+              }}
+            />
+          ) : mode === "magic" ? (
+            <form onSubmit={submitMagic} className="space-y-4" data-testid="home-login-form">
               <div>
-                <Label className="text-sm font-medium text-foreground mb-2 block">
-                  Authenticator code
-                </Label>
-                <InputOTP maxLength={6} value={mfaCode} onChange={setMfaCode} data-testid="home-mfa">
-                  <InputOTPGroup>
-                    {[0, 1, 2, 3, 4, 5].map((i) => (
-                      <InputOTPSlot key={i} index={i} />
-                    ))}
-                  </InputOTPGroup>
-                </InputOTP>
+                <Label className="text-sm font-medium text-foreground">Email</Label>
+                <Input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@agency.com"
+                  className="h-12 mt-1.5 text-[15px]"
+                  autoComplete="email"
+                  data-testid="home-email"
+                />
               </div>
-            )}
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="btn-press w-full h-12 rounded-full text-white font-semibold text-[15px] inline-flex items-center justify-center elev-2 disabled:opacity-60"
-              style={{ backgroundColor: ACCENT }}
-              onMouseEnter={(e) => {
-                if (!loading) e.currentTarget.style.backgroundColor = ACCENT_HOVER;
-              }}
-              onMouseLeave={(e) => {
-                if (!loading) e.currentTarget.style.backgroundColor = ACCENT;
-              }}
-              data-testid="home-submit"
-            >
-              {loading ? (
-                "Signing in..."
-              ) : (
-                <>
-                  Sign in <ArrowRight className="w-4 h-4 ml-2" />
-                </>
-              )}
-            </button>
-
-            <div className="flex items-center justify-between pt-1 text-xs text-muted-foreground">
-              <span className="inline-flex items-center gap-1.5">
-                <Lock className="w-3 h-3" /> Secured with TOTP MFA
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Audit-logged
-              </span>
-            </div>
-
-            <div className="border-t border-border pt-4 text-center text-sm text-muted-foreground">
-              New to the team?{" "}
-              <Link
-                to="/register"
-                className="font-semibold hover:underline"
-                style={{ color: ACCENT }}
-                data-testid="home-to-register"
+              <button
+                type="submit"
+                disabled={loading}
+                className="btn-press w-full h-12 rounded-full text-white font-semibold text-[15px] inline-flex items-center justify-center elev-2 disabled:opacity-60"
+                style={{ backgroundColor: ACCENT }}
+                onMouseEnter={(e) => {
+                  if (!loading) e.currentTarget.style.backgroundColor = ACCENT_HOVER;
+                }}
+                onMouseLeave={(e) => {
+                  if (!loading) e.currentTarget.style.backgroundColor = ACCENT;
+                }}
+                data-testid="home-magic-submit"
               >
-                Request Access
-              </Link>
-            </div>
-          </form>
+                {loading ? (
+                  "Sending..."
+                ) : (
+                  <>
+                    <Mail className="w-4 h-4 mr-2" /> Send Login Link
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setMode("password")}
+                className="w-full text-center text-xs text-muted-foreground hover:text-foreground hover:underline pt-1"
+                data-testid="home-show-password"
+              >
+                Sign in with password instead
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={submitPassword} className="space-y-4" data-testid="home-login-form">
+              <div>
+                <Label className="text-sm font-medium text-foreground">Email</Label>
+                <Input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@agency.com"
+                  className="h-12 mt-1.5 text-[15px]"
+                  autoComplete="email"
+                  data-testid="home-email"
+                />
+              </div>
+              <div>
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium text-foreground">Password</Label>
+                  <Link
+                    to="/forgot-password"
+                    className="text-xs text-muted-foreground hover:text-foreground hover:underline"
+                    data-testid="home-forgot-link"
+                  >
+                    Forgot password?
+                  </Link>
+                </div>
+                <Input
+                  type="password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="h-12 mt-1.5 text-[15px]"
+                  autoComplete="current-password"
+                  data-testid="home-password"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="btn-press w-full h-12 rounded-full text-white font-semibold text-[15px] inline-flex items-center justify-center elev-2 disabled:opacity-60"
+                style={{ backgroundColor: ACCENT }}
+                onMouseEnter={(e) => {
+                  if (!loading) e.currentTarget.style.backgroundColor = ACCENT_HOVER;
+                }}
+                onMouseLeave={(e) => {
+                  if (!loading) e.currentTarget.style.backgroundColor = ACCENT;
+                }}
+                data-testid="home-submit"
+              >
+                {loading ? (
+                  "Signing in..."
+                ) : (
+                  <>
+                    <KeyRound className="w-4 h-4 mr-2" /> Sign in
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setMode("magic")}
+                className="w-full text-center text-xs text-muted-foreground hover:text-foreground hover:underline pt-1"
+                data-testid="home-show-magic"
+              >
+                Email me a sign-in link instead
+              </button>
+            </form>
+          )}
+
+          <div className="flex items-center justify-between pt-4 text-xs text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5">
+              <Lock className="w-3 h-3" /> Encrypted in transit
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Audit-logged
+            </span>
+          </div>
+
+          <div className="border-t border-border pt-4 mt-4 text-center text-sm text-muted-foreground">
+            New to the team?{" "}
+            <Link
+              to="/register"
+              className="font-semibold hover:underline"
+              style={{ color: ACCENT }}
+              data-testid="home-to-register"
+            >
+              Request Access
+            </Link>
+          </div>
 
           <div className="mt-8 flex items-center justify-center gap-2 text-[11px] text-muted-foreground">
             <ShieldCheck className="w-3.5 h-3.5" />
@@ -301,6 +390,51 @@ export default function HomePortal() {
           </div>
         </motion.div>
       </section>
+    </div>
+  );
+}
+
+function MagicSentCard({ email, cooldown, loading, onResend, onUseDifferentEmail }) {
+  return (
+    <div className="space-y-4" data-testid="home-magic-sent">
+      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+        <div className="flex items-start gap-3">
+          <CheckCircle2 className="w-5 h-5 text-emerald-700 mt-0.5" />
+          <div>
+            <div className="text-sm font-semibold text-emerald-900">
+              Check your email!
+            </div>
+            <p className="text-sm text-emerald-800 mt-1 leading-relaxed">
+              We sent a login link to{" "}
+              <span className="font-medium">{email}</span>. It expires in 15
+              minutes.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        disabled={loading || cooldown > 0}
+        onClick={onResend}
+        className="w-full h-11 rounded-full text-sm font-medium border border-border bg-background hover:bg-secondary disabled:opacity-60"
+        data-testid="home-magic-resend"
+      >
+        {cooldown > 0
+          ? `Resend in ${cooldown}s`
+          : loading
+          ? "Sending..."
+          : "Resend link"}
+      </button>
+
+      <button
+        type="button"
+        onClick={onUseDifferentEmail}
+        className="w-full text-center text-xs text-muted-foreground hover:text-foreground hover:underline"
+        data-testid="home-magic-change-email"
+      >
+        Use a different email
+      </button>
     </div>
   );
 }

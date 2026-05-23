@@ -122,8 +122,7 @@ api.interceptors.response.use(
         path.startsWith("/audit") ||
         path.startsWith("/admin") ||
         path.startsWith("/commissions") ||
-        path.startsWith("/intake") ||
-        path.startsWith("/mfa-setup")
+        path.startsWith("/intake")
       ) {
         auth.logout();
         window.location.href = "/login?reason=session_expired";

@@ -124,7 +124,7 @@ export default function CommandPalette({ onQuickAddLead }) {
             <span>Quick add lead</span>
             <CommandShortcut>N</CommandShortcut>
           </CommandItem>
-          <CommandItem onSelect={() => go("/settings")} value="settings preferences profile mfa">
+          <CommandItem onSelect={() => go("/settings")} value="settings preferences profile">
             <SettingsIcon className="mr-2 h-4 w-4" />
             <span>Open settings</span>
           </CommandItem>
@@ -208,9 +208,9 @@ export default function CommandPalette({ onQuickAddLead }) {
             <Activity className="mr-2 h-4 w-4" />
             <span>Audit log</span>
           </CommandItem>
-          <CommandItem onSelect={() => go("/settings?tab=security")} value="security mfa totp">
+          <CommandItem onSelect={() => go("/settings?tab=security")} value="security sessions sign-in">
             <ShieldCheck className="mr-2 h-4 w-4" />
-            <span>Security &amp; MFA</span>
+            <span>Security &amp; sessions</span>
           </CommandItem>
           <CommandItem onSelect={() => go("/security")} value="public security page">
             <CircleHelp className="mr-2 h-4 w-4" />

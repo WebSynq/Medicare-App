@@ -29,8 +29,6 @@ import {
 } from "@/components/ui/select";
 import {
   ShieldCheck,
-  Lock,
-  KeyRound,
   Plug,
   Building2,
   Users2,
@@ -326,17 +324,14 @@ function ProfileTab({ me, refresh }) {
 }
 
 // ── Security tab ─────────────────────────────────────────────────────────
-function SecurityTab({ me, refresh }) {
+// Two-factor enforcement now lives at the login flow itself: magic
+// links are the second factor (possession of the inbox) for the
+// passwordless path, and the password path is gated by the same
+// brute-force lockout. There is no per-account TOTP toggle anymore,
+// so the Security tab is reduced to the session-history readout.
+function SecurityTab() {
   const [sessions, setSessions] = useState([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
-
-  const [mfaSetup, setMfaSetup] = useState(null);
-  const [mfaCode, setMfaCode] = useState("");
-  const [mfaModalOpen, setMfaModalOpen] = useState(false);
-  const [mfaBusy, setMfaBusy] = useState(false);
-
-  const [disablePassword, setDisablePassword] = useState("");
-  const [disableOpen, setDisableOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -351,64 +346,6 @@ function SecurityTab({ me, refresh }) {
       }
     })();
   }, []);
-
-  async function beginEnroll() {
-    try {
-      const { data } = await api.get("/profile/mfa/setup");
-      setMfaSetup(data);
-      setMfaCode("");
-      setMfaModalOpen(true);
-    } catch (err) {
-      toast.error(
-        err?.response?.data?.detail || err?.message || "MFA setup failed"
-      );
-    }
-  }
-
-  async function verifyEnroll() {
-    if (!mfaCode) {
-      toast.error("Enter the 6-digit code from your authenticator app.");
-      return;
-    }
-    setMfaBusy(true);
-    try {
-      await api.post("/profile/mfa/verify", { token: mfaCode });
-      toast.success("MFA enabled.");
-      setMfaModalOpen(false);
-      setMfaSetup(null);
-      setMfaCode("");
-      refresh();
-    } catch (err) {
-      toast.error(
-        err?.response?.data?.detail || err?.message || "Verification failed"
-      );
-    } finally {
-      setMfaBusy(false);
-    }
-  }
-
-  async function disableMfa() {
-    if (!disablePassword) {
-      toast.error("Confirm with your current password.");
-      return;
-    }
-    setMfaBusy(true);
-    try {
-      await api.delete("/profile/mfa", {
-        data: { current_password: disablePassword },
-      });
-      toast.success("MFA disabled.");
-      setDisableOpen(false);
-      setDisablePassword("");
-      refresh();
-    } catch (err) {
-      toast.error(
-        err?.response?.data?.detail || err?.message || "Disable failed"
-      );
-    } finally {
-      setMfaBusy(false);
-    }
-  }
 
   return (
     <div className="grid lg:grid-cols-2 gap-5">
@@ -468,138 +405,21 @@ function SecurityTab({ me, refresh }) {
       <Card>
         <CardContent className="p-5 space-y-3">
           <div className="flex items-center gap-2">
-            <Lock className="w-4 h-4 text-muted-foreground" />
-            <h3 className="text-sm font-semibold">Two-Factor Authentication</h3>
+            <ShieldCheck className="w-4 h-4 text-muted-foreground" />
+            <h3 className="text-sm font-semibold">Sign-in</h3>
           </div>
-          {me?.mfa_enabled ? (
-            <>
-              <Badge className="rounded-full bg-emerald-100 text-emerald-900 border-0">
-                <ShieldCheck className="w-3 h-3 mr-1" /> MFA Enabled
-              </Badge>
-              <p className="text-xs text-muted-foreground">
-                Authenticator codes are required at sign-in.
-              </p>
-              {disableOpen ? (
-                <div className="space-y-2 border-t border-border pt-3">
-                  <Label className="text-xs">Confirm with current password</Label>
-                  <Input
-                    type="password"
-                    value={disablePassword}
-                    onChange={(e) => setDisablePassword(e.target.value)}
-                    autoComplete="current-password"
-                    data-testid="mfa-disable-pw"
-                  />
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={disableMfa}
-                      disabled={mfaBusy}
-                      variant="destructive"
-                      data-testid="mfa-disable-confirm"
-                    >
-                      {mfaBusy ? "Disabling…" : "Disable MFA"}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={() => {
-                        setDisableOpen(false);
-                        setDisablePassword("");
-                      }}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <Button
-                  variant="outline"
-                  onClick={() => setDisableOpen(true)}
-                  data-testid="mfa-disable-btn"
-                >
-                  Disable MFA
-                </Button>
-              )}
-            </>
-          ) : (
-            <>
-              <p className="text-sm text-muted-foreground">
-                Two-factor authentication is not enabled.
-              </p>
-              <Button onClick={beginEnroll} data-testid="mfa-enable-btn">
-                <KeyRound className="w-3.5 h-3.5 mr-1.5" /> Enable MFA
-              </Button>
-            </>
-          )}
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            Your account uses passwordless <strong>magic-link sign-in</strong>
+            {" "}as the primary path — a one-time link is emailed to you at
+            sign-in time and expires in 15 minutes. You can also sign in
+            with your email and password.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Failed sign-in attempts are tracked per email and rate-limited
+            to prevent brute-force access.
+          </p>
         </CardContent>
       </Card>
-
-      {mfaModalOpen && mfaSetup && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
-          data-testid="mfa-setup-modal"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setMfaModalOpen(false);
-          }}
-        >
-          <div className="w-full max-w-md rounded-xl p-6 bg-white shadow-xl space-y-3">
-            <h2 className="text-lg font-semibold text-[#1e2d3d]">
-              Enable Two-Factor Authentication
-            </h2>
-            <ol className="text-xs text-muted-foreground space-y-1 list-decimal pl-4">
-              <li>Open your authenticator app (Google Authenticator, Authy, 1Password…)</li>
-              <li>Scan the QR code below, or paste the key manually</li>
-              <li>Enter the 6-digit code the app generates</li>
-            </ol>
-            <div className="flex justify-center">
-              {mfaSetup.qr_png_base64 ? (
-                <img
-                  src={`data:image/png;base64,${mfaSetup.qr_png_base64}`}
-                  alt="MFA QR code"
-                  width={192}
-                  height={192}
-                />
-              ) : (
-                <code className="block text-xs break-all bg-secondary p-3 rounded">
-                  {mfaSetup.qr_uri}
-                </code>
-              )}
-            </div>
-            <div>
-              <Label className="text-xs">Manual entry key</Label>
-              <Input value={mfaSetup.secret} readOnly className="font-mono text-xs" />
-            </div>
-            <div>
-              <Label className="text-xs">Verification code</Label>
-              <Input
-                value={mfaCode}
-                onChange={(e) => setMfaCode(e.target.value.trim())}
-                placeholder="123 456"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                data-testid="mfa-verify-code"
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setMfaModalOpen(false);
-                  setMfaSetup(null);
-                  setMfaCode("");
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={verifyEnroll}
-                disabled={mfaBusy}
-                data-testid="mfa-verify-btn"
-              >
-                {mfaBusy ? "Verifying…" : "Verify & Enable"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -2041,7 +1861,7 @@ export default function Settings() {
             <ProfileTab me={me} refresh={applyPatched} />
           </TabsContent>
           <TabsContent value="security" className="mt-4">
-            <SecurityTab me={me} refresh={loadMe} />
+            <SecurityTab />
           </TabsContent>
           <TabsContent value="audit" className="mt-4">
             {canSeeAudit && <AuditLogTab me={me} />}

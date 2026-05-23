@@ -9,7 +9,7 @@ import Register from "@/pages/Register";
 import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
 import SOAForm from "@/pages/SOAForm";
-import MfaSetup from "@/pages/MfaSetup";
+import MagicLinkVerify from "@/pages/MagicLinkVerify";
 import AgentDashboard from "@/pages/AgentDashboard";
 import TodayPage from "@/pages/TodayPage";
 import AppointmentsList from "@/pages/AppointmentsList";
@@ -82,7 +82,9 @@ export default function App() {
         <Route path="/soa/:token" element={<SOAForm />} />
         <Route path="/privacy" element={<PrivacyPolicy />} />
         <Route path="/security" element={<SecurityPage />} />
-        <Route path="/mfa-setup" element={<Protected noLayout><MfaSetup /></Protected>} />
+        {/* Magic-link verification — public route. Reads ?token from
+            the URL, exchanges for a session, then redirects to /today. */}
+        <Route path="/auth/magic" element={<MagicLinkVerify />} />
         <Route path="/today" element={<Protected><TodayPage /></Protected>} />
         <Route path="/pipeline" element={<Protected><Pipeline /></Protected>} />
         <Route path="/import" element={<Protected><ImportLeads /></Protected>} />

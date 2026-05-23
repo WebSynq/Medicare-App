@@ -41,6 +41,8 @@ export default function Register() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resent, setResent] = useState(false);
 
   // Invite flow
   const [inviteToken, setInviteToken] = useState("");
@@ -105,6 +107,21 @@ export default function Register() {
     }
   };
 
+  const resendMagic = async () => {
+    setResending(true);
+    try {
+      await api.post("/auth/magic-link", { email });
+      setResent(true);
+      toast.success("Sign-in link sent — check your email.");
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.detail || "Could not send link — try again.",
+      );
+    } finally {
+      setResending(false);
+    }
+  };
+
   const strength = getPasswordStrength(password);
 
   return (
@@ -140,13 +157,36 @@ export default function Register() {
                 <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-700 grid place-items-center mb-4">
                   <CheckCircle2 className="w-6 h-6" />
                 </div>
-                <h2 className="text-2xl font-bold tracking-tight mb-2" style={{ fontFamily: "Outfit" }}>Registration complete</h2>
-                <p className="text-sm text-muted-foreground leading-relaxed mb-6">
-                  Thanks, {fullName.split(" ")[0] || "there"}. Your account is pending administrator approval. You'll be able to sign in once it's approved.
+                <h2 className="text-2xl font-bold tracking-tight mb-2" style={{ fontFamily: "Outfit" }}>
+                  Account created!
+                </h2>
+                <p className="text-sm text-muted-foreground leading-relaxed mb-5">
+                  Thanks, {fullName.split(" ")[0] || "there"}. Check your
+                  email for a sign-in link, or go to the login page and use
+                  your password.
                 </p>
-                <Link to="/login" className="text-sm text-primary hover:underline inline-flex items-center" data-testid="register-back-to-login">
-                  Back to sign in <ArrowRight className="w-4 h-4 ml-1" />
-                </Link>
+                <div className="flex flex-col gap-2">
+                  <Link
+                    to="/login"
+                    className="inline-flex items-center justify-center h-11 rounded-full px-5 text-sm font-semibold text-primary-foreground bg-primary hover:opacity-95"
+                    data-testid="register-go-to-login"
+                  >
+                    Go to Login <ArrowRight className="w-4 h-4 ml-1.5" />
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={resendMagic}
+                    disabled={resending || resent}
+                    className="inline-flex items-center justify-center h-11 rounded-full px-5 text-sm font-medium border border-border bg-background hover:bg-secondary disabled:opacity-60"
+                    data-testid="register-resend-link"
+                  >
+                    {resending
+                      ? "Sending…"
+                      : resent
+                      ? "Link sent — check email"
+                      : "Resend Login Link"}
+                  </button>
+                </div>
               </div>
             ) : inviteState === "checking" ? (
               <div className="text-center py-6 text-sm text-muted-foreground" data-testid="register-invite-checking">

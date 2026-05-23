@@ -673,17 +673,6 @@ export default function AgentDashboard() {
                 : "Your production at a glance — pipeline, revenue, and what needs attention."}
             </p>
             <ImpersonationBanner />
-            {!user?.mfa_enabled && (
-              <button
-                type="button"
-                onClick={() => navigate("/mfa-setup")}
-                className="mt-3 flex items-center gap-2 text-sm text-[#1e2d3d] border border-[#1e2d3d]/20 rounded-lg px-3 py-2 hover:bg-[#1e2d3d]/5 transition-colors"
-                data-testid="mfa-banner"
-              >
-                <span>🛡️</span>
-                <span>Enable MFA on your account</span>
-              </button>
-            )}
           </div>
           <div className="flex flex-col items-end gap-2">
             <PeriodTabs value={period} onChange={setPeriod} />

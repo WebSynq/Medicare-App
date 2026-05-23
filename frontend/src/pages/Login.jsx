@@ -1,31 +1,43 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Lock, ShieldCheck, ArrowRight, CheckCircle2 } from "lucide-react";
+import {
+  Lock,
+  ShieldCheck,
+  ArrowRight,
+  CheckCircle2,
+  Mail,
+  KeyRound,
+} from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import { toast } from "sonner";
 import { api, auth } from "@/lib/api";
 
 const ACCENT = "#e85d2f";
 
-// Same hero photo as HomePortal — keeps the two sign-in entry points
-// visually unified rather than the previous "two different products" feel
-// (navy block vs. orange block).
 const HERO_IMG =
   "https://static.prod-images.emergentagent.com/jobs/778a7dbc-8686-4d3e-87fc-fce3fac48f67/images/bcce0aae6e4600a7d511d4a7490ed04419512e890a959bd46527182b19272479.png";
 
+// Resend cooldown — 60 seconds matches the email-provider rate-limit
+// guidance and keeps users from spam-clicking when delivery is just
+// slow. Matches the magic_link_tokens row a /magic-link request would
+// have minted on the backend.
+const RESEND_COOLDOWN_SECONDS = 60;
+
 export default function Login() {
   const nav = useNavigate();
+  const [mode, setMode] = useState("magic"); // "magic" | "password"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [mfaCode, setMfaCode] = useState("");
-  const [needsMfa, setNeedsMfa] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [magicSent, setMagicSent] = useState(false);
+  const [sentToEmail, setSentToEmail] = useState("");
+  const [cooldown, setCooldown] = useState(0);
   const [sessionExpired, setSessionExpired] = useState(false);
+  const cooldownTimer = useRef(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -34,19 +46,64 @@ export default function Login() {
     }
   }, []);
 
-  const submit = async (e) => {
+  // Drive the resend cooldown timer. Cleared on unmount so we don't
+  // leak intervals if the user navigates away mid-countdown.
+  useEffect(() => {
+    if (cooldown <= 0) {
+      if (cooldownTimer.current) {
+        clearInterval(cooldownTimer.current);
+        cooldownTimer.current = null;
+      }
+      return;
+    }
+    if (!cooldownTimer.current) {
+      cooldownTimer.current = setInterval(() => {
+        setCooldown((s) => (s > 0 ? s - 1 : 0));
+      }, 1000);
+    }
+    return () => {
+      if (cooldownTimer.current) {
+        clearInterval(cooldownTimer.current);
+        cooldownTimer.current = null;
+      }
+    };
+  }, [cooldown]);
+
+  async function sendMagicLink(targetEmail) {
+    setLoading(true);
+    try {
+      await api.post("/auth/magic-link", { email: targetEmail });
+      setMagicSent(true);
+      setSentToEmail(targetEmail);
+      setCooldown(RESEND_COOLDOWN_SECONDS);
+    } catch (e) {
+      // Backend returns 200 even on unknown email so this should be
+      // network-only. Surface a generic message either way.
+      toast.error(
+        e?.response?.data?.detail || "Could not send link — try again.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const submitMagic = async (e) => {
+    e.preventDefault();
+    if (!email) {
+      toast.error("Enter your email.");
+      return;
+    }
+    await sendMagicLink(email.trim().toLowerCase());
+  };
+
+  const submitPassword = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const res = await api.post("/auth/login", { email, password, mfa_code: mfaCode || undefined });
-      if (res.data.mfa_required) {
-        setNeedsMfa(true);
-        toast.message("Enter your 6-digit MFA code");
-      } else {
-        auth.saveSession(res.data.access_token, res.data.user);
-        toast.success("Welcome back");
-        nav("/today");
-      }
+      const res = await api.post("/auth/login", { email, password });
+      auth.saveSession(res.data.access_token, res.data.user);
+      toast.success("Welcome back");
+      nav("/today");
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Login failed");
     } finally {
@@ -106,7 +163,7 @@ export default function Login() {
             </h1>
             <p className="text-white/80 leading-relaxed max-w-md text-[15px]">
               Review encrypted intake submissions, audit every action, and push synchronized leads
-              into GoHighLevel — with TOTP-backed MFA on every agent account.
+              into GoHighLevel — passwordless magic-link sign-in on every agent account.
             </p>
           </motion.div>
 
@@ -121,7 +178,7 @@ export default function Login() {
             <span className="text-white/30">·</span>
             <span>TLS 1.2+</span>
             <span className="text-white/30">·</span>
-            <span>TOTP MFA</span>
+            <span>Magic link</span>
           </div>
         </div>
       </aside>
@@ -156,7 +213,9 @@ export default function Login() {
                   Welcome back
                 </h2>
                 <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
-                  Sign in to access your dashboard, leads, and compliance tools.
+                  {mode === "magic"
+                    ? "Sign in with a one-time link — no password required."
+                    : "Use your email and password to sign in."}
                 </p>
               </div>
 
@@ -168,98 +227,202 @@ export default function Login() {
                   Your session expired due to inactivity. Please sign in again.
                 </div>
               )}
-              <form onSubmit={submit} className="space-y-4">
-                <div>
-                  <Label className="text-sm font-medium text-foreground">Email</Label>
-                  <Input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="you@agency.com"
-                    className="h-12 mt-1.5 text-[15px]"
-                    data-testid="login-email"
-                  />
-                </div>
-                <div>
-                  <div className="flex items-center justify-between">
-                    <Label className="text-sm font-medium text-foreground">Password</Label>
-                    <Link
-                      to="/forgot-password"
-                      className="text-xs text-muted-foreground hover:text-foreground hover:underline"
-                      data-testid="login-forgot-link"
-                    >
-                      Forgot password?
-                    </Link>
-                  </div>
-                  <Input
-                    type="password"
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="h-12 mt-1.5 text-[15px]"
-                    data-testid="login-password"
-                  />
-                </div>
-                {needsMfa && (
+
+              {/* ---------- Magic-link sent confirmation ---------- */}
+              {magicSent && mode === "magic" ? (
+                <MagicSentCard
+                  email={sentToEmail}
+                  cooldown={cooldown}
+                  loading={loading}
+                  onResend={() => sendMagicLink(sentToEmail)}
+                  onUseDifferentEmail={() => {
+                    setMagicSent(false);
+                    setSentToEmail("");
+                    setCooldown(0);
+                  }}
+                />
+              ) : mode === "magic" ? (
+                /* ---------- Option A: magic-link form ---------- */
+                <form onSubmit={submitMagic} className="space-y-4" data-testid="login-magic-form">
                   <div>
-                    <Label className="text-sm font-medium text-foreground mb-2 block">
-                      Authenticator code
-                    </Label>
-                    <InputOTP maxLength={6} value={mfaCode} onChange={setMfaCode} data-testid="login-mfa">
-                      <InputOTPGroup>
-                        {[0, 1, 2, 3, 4, 5].map((i) => (
-                          <InputOTPSlot key={i} index={i} />
-                        ))}
-                      </InputOTPGroup>
-                    </InputOTP>
+                    <Label className="text-sm font-medium text-foreground">Email</Label>
+                    <Input
+                      type="email"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@agency.com"
+                      className="h-12 mt-1.5 text-[15px]"
+                      autoComplete="email"
+                      data-testid="login-email"
+                    />
                   </div>
-                )}
-                <Button
-                  type="submit"
-                  disabled={loading}
-                  className="btn-press w-full h-12 rounded-full text-base elev-2"
-                  style={{ backgroundColor: ACCENT, color: "white" }}
-                  data-testid="login-submit"
-                >
-                  {loading ? (
-                    "Signing in..."
-                  ) : (
-                    <>
-                      Sign in <ArrowRight className="w-4 h-4 ml-2" />
-                    </>
-                  )}
-                </Button>
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span className="flex items-center gap-1.5">
-                    <Lock className="w-3 h-3" /> Secured with TOTP MFA
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Audit-logged
-                  </span>
-                </div>
-                <div className="border-t border-border pt-4 text-center text-sm text-muted-foreground">
-                  New agent?{" "}
-                  <Link
-                    to="/register"
-                    className="font-semibold hover:underline"
-                    style={{ color: ACCENT }}
-                    data-testid="login-to-register"
+
+                  <Button
+                    type="submit"
+                    disabled={loading}
+                    className="btn-press w-full h-12 rounded-full text-base elev-2"
+                    style={{ backgroundColor: ACCENT, color: "white" }}
+                    data-testid="login-magic-submit"
                   >
-                    Request access
-                  </Link>
-                </div>
-                <div className="text-center pt-1">
-                  <Link to="/" className="text-xs text-muted-foreground hover:text-foreground hover:underline">
-                    ← Back to home
-                  </Link>
-                </div>
-              </form>
+                    {loading ? (
+                      "Sending..."
+                    ) : (
+                      <>
+                        <Mail className="w-4 h-4 mr-2" /> Send Login Link
+                      </>
+                    )}
+                  </Button>
+
+                  <button
+                    type="button"
+                    onClick={() => setMode("password")}
+                    className="w-full text-center text-xs text-muted-foreground hover:text-foreground hover:underline pt-1"
+                    data-testid="login-show-password"
+                  >
+                    Sign in with password instead
+                  </button>
+                </form>
+              ) : (
+                /* ---------- Option B: password form ---------- */
+                <form onSubmit={submitPassword} className="space-y-4" data-testid="login-password-form">
+                  <div>
+                    <Label className="text-sm font-medium text-foreground">Email</Label>
+                    <Input
+                      type="email"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@agency.com"
+                      className="h-12 mt-1.5 text-[15px]"
+                      autoComplete="email"
+                      data-testid="login-email"
+                    />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm font-medium text-foreground">Password</Label>
+                      <Link
+                        to="/forgot-password"
+                        className="text-xs text-muted-foreground hover:text-foreground hover:underline"
+                        data-testid="login-forgot-link"
+                      >
+                        Forgot password?
+                      </Link>
+                    </div>
+                    <Input
+                      type="password"
+                      required
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="h-12 mt-1.5 text-[15px]"
+                      autoComplete="current-password"
+                      data-testid="login-password"
+                    />
+                  </div>
+
+                  <Button
+                    type="submit"
+                    disabled={loading}
+                    className="btn-press w-full h-12 rounded-full text-base elev-2"
+                    style={{ backgroundColor: ACCENT, color: "white" }}
+                    data-testid="login-submit"
+                  >
+                    {loading ? (
+                      "Signing in..."
+                    ) : (
+                      <>
+                        <KeyRound className="w-4 h-4 mr-2" /> Sign In
+                      </>
+                    )}
+                  </Button>
+
+                  <button
+                    type="button"
+                    onClick={() => setMode("magic")}
+                    className="w-full text-center text-xs text-muted-foreground hover:text-foreground hover:underline pt-1"
+                    data-testid="login-show-magic"
+                  >
+                    Email me a sign-in link instead
+                  </button>
+                </form>
+              )}
+
+              <div className="flex items-center justify-between text-xs text-muted-foreground mt-5">
+                <span className="flex items-center gap-1.5">
+                  <Lock className="w-3 h-3" /> Encrypted in transit
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Audit-logged
+                </span>
+              </div>
+              <div className="border-t border-border pt-4 text-center text-sm text-muted-foreground mt-4">
+                New agent?{" "}
+                <Link
+                  to="/register"
+                  className="font-semibold hover:underline"
+                  style={{ color: ACCENT }}
+                  data-testid="login-to-register"
+                >
+                  Request access
+                </Link>
+              </div>
+              <div className="text-center pt-1">
+                <Link to="/" className="text-xs text-muted-foreground hover:text-foreground hover:underline">
+                  ← Back to home
+                </Link>
+              </div>
             </CardContent>
           </Card>
         </motion.div>
       </div>
+    </div>
+  );
+}
+
+function MagicSentCard({ email, cooldown, loading, onResend, onUseDifferentEmail }) {
+  return (
+    <div className="space-y-4" data-testid="login-magic-sent">
+      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+        <div className="flex items-start gap-3">
+          <CheckCircle2 className="w-5 h-5 text-emerald-700 mt-0.5" />
+          <div>
+            <div className="text-sm font-semibold text-emerald-900">
+              Check your email!
+            </div>
+            <p className="text-sm text-emerald-800 mt-1 leading-relaxed">
+              We sent a login link to{" "}
+              <span className="font-medium">{email}</span>. It expires in 15
+              minutes.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <Button
+        type="button"
+        variant="outline"
+        className="w-full h-11 rounded-full"
+        disabled={loading || cooldown > 0}
+        onClick={onResend}
+        data-testid="login-magic-resend"
+      >
+        {cooldown > 0
+          ? `Resend in ${cooldown}s`
+          : loading
+          ? "Sending..."
+          : "Resend link"}
+      </Button>
+
+      <button
+        type="button"
+        onClick={onUseDifferentEmail}
+        className="w-full text-center text-xs text-muted-foreground hover:text-foreground hover:underline"
+        data-testid="login-magic-change-email"
+      >
+        Use a different email
+      </button>
     </div>
   );
 }
