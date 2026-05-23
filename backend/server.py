@@ -184,40 +184,35 @@ app.include_router(notifications_router, prefix="/api")
 # site read authenticated responses. We require CORS_ORIGINS to be set
 # explicitly to a comma-separated list of fully-qualified origins.
 _raw_origins = os.environ.get("CORS_ORIGINS", "").strip()
+
+# Parse comma-separated origins, strip whitespace and
+# trailing slashes from each entry
 _cors_origins = [
     o.strip().rstrip("/")
     for o in _raw_origins.split(",")
     if o.strip() and o.strip() != "*"
 ]
 
-# Always include production domains regardless of env var formatting
-_production_origins = [
-    "https://app.ghwcrm.com",
-    "https://medicare-app-sandy-tau.vercel.app",
-]
-for _origin in _production_origins:
-    if _origin not in _cors_origins:
-        _cors_origins.append(_origin)
+# FRONTEND_URL is already required for invite links —
+# reuse it as a guaranteed CORS origin so the frontend
+# domain is always allowed without hardcoding it twice.
+# If someone updates FRONTEND_URL the CORS list updates
+# automatically with zero code changes.
+_frontend_url = os.environ.get("FRONTEND_URL", "").strip().rstrip("/")
+if _frontend_url and _frontend_url not in _cors_origins:
+    _cors_origins.append(_frontend_url)
 
+# Dev fallback only when nothing is configured at all
 if not _cors_origins:
-    if IS_DEV:
-        # Localhost defaults for dev only
-        _cors_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
-        logger.warning("CORS_ORIGINS not set; defaulting to localhost (dev mode).")
-    else:
-        # Fail closed: in production with no allowlist, reject all cross-origin.
-        logger.error(
-            "CORS_ORIGINS is not configured. Cross-origin browser requests will be "
-            "denied. Set CORS_ORIGINS to a comma-separated list of trusted origins."
-        )
+    _cors_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    logger.warning(
+        "CORS_ORIGINS not set; defaulting to localhost (dev mode)."
+    )
 
-# Visible at INFO level in Render boot logs so we can confirm prod
-# is pointing at the right Vercel origin without filtering for
-# WARNING / ERROR. Empty list = no cross-origin requests will succeed.
 logger.info(
     "CORS active origins (%d): %s",
     len(_cors_origins),
-    ", ".join(_cors_origins) if _cors_origins else "(none — cross-origin denied)",
+    ", ".join(_cors_origins),
 )
 
 app.add_middleware(
