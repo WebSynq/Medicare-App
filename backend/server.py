@@ -192,14 +192,34 @@ if not _cors_origins:
             "denied. Set CORS_ORIGINS to a comma-separated list of trusted origins."
         )
 
+# Visible at INFO level in Render boot logs so we can confirm prod
+# is pointing at the right Vercel origin without filtering for
+# WARNING / ERROR. Empty list = no cross-origin requests will succeed.
+logger.info(
+    "CORS active origins (%d): %s",
+    len(_cors_origins),
+    ", ".join(_cors_origins) if _cors_origins else "(none — cross-origin denied)",
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
     allow_origins=_cors_origins,
     allow_origin_regex=None,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "Origin",
-                   "X-Requested-With", "X-CSRF-Token"],
+    # X-Agent-ID is the admin/coach impersonation header. Without it on
+    # this allowlist the preflight OPTIONS returns 400 and every
+    # impersonated request fails at the browser before reaching the
+    # backend. CSRF-Token is the JS-readable double-submit echo.
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "Origin",
+        "X-Requested-With",
+        "X-CSRF-Token",
+        "X-Agent-ID",
+    ],
     max_age=600,
 )
 
