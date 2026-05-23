@@ -8,6 +8,10 @@ import {
   X as XIcon,
   CalendarDays,
   Search,
+  DollarSign,
+  CheckCircle2,
+  TrendingUp,
+  Calendar as CalendarIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -47,6 +51,15 @@ import {
 import ScrollableCard from "@/components/ScrollableCard";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import { api } from "@/lib/api";
+
+function fmtMoney(v) {
+  if (v == null || Number.isNaN(v)) return "$0";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(v);
+}
 
 const STATUS_OPTIONS = [
   { value: "all", label: "All" },
@@ -253,6 +266,7 @@ function NewAppointmentSheet({ open, onOpenChange, onCreated }) {
   const [type, setType] = useState("initial_consultation");
   const [notes, setNotes] = useState("");
   const [commission, setCommission] = useState("");
+  const [estimatedPreview, setEstimatedPreview] = useState(null);
   const [saving, setSaving] = useState(false);
 
   // Reset state on close so the next open starts clean.
@@ -266,9 +280,34 @@ function NewAppointmentSheet({ open, onOpenChange, onCreated }) {
       setType("initial_consultation");
       setNotes("");
       setCommission("");
+      setEstimatedPreview(null);
       setSaving(false);
     }
   }, [open]);
+
+  // When a lead is picked, ask the backend for the same commission
+  // estimate it would stamp on save. Skipped for walk-ins (no lead).
+  useEffect(() => {
+    if (!linkedLead?.id) {
+      setEstimatedPreview(null);
+      return;
+    }
+    let alive = true;
+    (async () => {
+      try {
+        const res = await api.post("/appointments/estimate", {
+          lead_id: linkedLead.id,
+        });
+        if (!alive) return;
+        setEstimatedPreview(res.data?.estimated_commission ?? null);
+      } catch {
+        if (alive) setEstimatedPreview(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [linkedLead?.id]);
 
   function handleLeadSelect(lead) {
     setLinkedLead(lead);
@@ -356,6 +395,16 @@ function NewAppointmentSheet({ open, onOpenChange, onCreated }) {
                 Current plan: {linkedLead.current_carrier || "—"} ·{" "}
                 {linkedLead.current_plan || "—"}
               </p>
+            )}
+            {linkedLead && estimatedPreview != null && (
+              <div
+                className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium"
+                style={{ background: "rgba(22,163,74,0.12)", color: "#166534" }}
+                data-testid="appt-estimate-pill"
+              >
+                <DollarSign className="w-3 h-3" />
+                Est. Commission: {fmtMoney(estimatedPreview)}
+              </div>
             )}
           </div>
 
@@ -522,8 +571,48 @@ function formatDateDisplay(iso) {
   }
 }
 
+// today/week/month all roll into the backend's "mtd" stats window —
+// those user-facing ranges are too narrow to be useful as standalone
+// rollups, and the stats bar's job is to give the agent a recent-month
+// pulse. "all" passes through unchanged.
+function rangeFilterToStatsPeriod(range) {
+  return range === "all" ? "all" : "mtd";
+}
+
+const TYPE_LABEL_SHORT = {
+  initial_consultation: "Consultation",
+  plan_review: "Plan Review",
+  enrollment: "Enrollment",
+  annual_review: "Annual Review",
+  follow_up: "Follow-up",
+  other: "Other",
+};
+
+function StatCard({ icon: Icon, label, value }) {
+  return (
+    <Card className="bg-surface">
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between mb-1">
+          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+            {label}
+          </div>
+          {Icon && <Icon className="w-4 h-4 text-muted-foreground" />}
+        </div>
+        <div
+          className="text-2xl font-bold tabular-nums tracking-tight"
+          style={{ fontFamily: "Outfit" }}
+          data-testid={`appt-stat-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+        >
+          {value}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AppointmentsList() {
   const [appts, setAppts] = useState([]);
+  const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("all");
   const [rangeFilter, setRangeFilter] = useState("week");
@@ -562,6 +651,36 @@ export default function AppointmentsList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilter, rangeFilter]);
 
+  // Revenue stats. Re-fetches whenever the range filter changes so the
+  // bar always reflects the period the user is looking at, and also on
+  // demand via the bumpable statsTick (e.g. after a new appointment
+  // is created). Failures silently zero the bar — we don't toast the
+  // user, the table is more important.
+  const [statsTick, setStatsTick] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const period = rangeFilterToStatsPeriod(rangeFilter);
+        const res = await api.get("/appointments/revenue-stats", {
+          params: { period },
+        });
+        if (!alive) return;
+        setStats(res.data);
+      } catch {
+        if (alive) setStats(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [rangeFilter, statsTick]);
+
+  const refreshAll = () => {
+    load();
+    setStatsTick((t) => t + 1);
+  };
+
   async function cancel(appt) {
     if (!window.confirm(`Cancel ${appt.client_name}'s appointment on ${formatDateDisplay(appt.appointment_date)}?`)) {
       return;
@@ -569,7 +688,7 @@ export default function AppointmentsList() {
     try {
       await api.delete(`/appointments/${appt.appointment_id}`);
       toast.success("Appointment cancelled");
-      load();
+      refreshAll();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Cancel failed");
     }
@@ -608,6 +727,61 @@ export default function AppointmentsList() {
             New Appointment
           </Button>
         </div>
+
+        {/* Stats bar — appointment counts + commission totals for the
+            current filter window. Re-fetches whenever rangeFilter
+            changes; today/week/month all map to backend "mtd" and
+            "all" passes through. */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3" data-testid="appt-stats-bar">
+          <StatCard
+            icon={CalendarIcon}
+            label="Appointments"
+            value={(stats?.total_appointments ?? 0).toLocaleString()}
+          />
+          <StatCard
+            icon={CheckCircle2}
+            label="Completed"
+            value={(stats?.completed_appointments ?? 0).toLocaleString()}
+          />
+          <StatCard
+            icon={DollarSign}
+            label="Est. Commission"
+            value={fmtMoney(stats?.total_estimated_commission ?? 0)}
+          />
+          <StatCard
+            icon={TrendingUp}
+            label="Avg per Appointment"
+            value={fmtMoney(stats?.avg_commission_per_appointment ?? 0)}
+          />
+        </div>
+
+        {stats && (stats.by_type || []).length > 0 && (
+          <div
+            className="flex flex-wrap items-center gap-2 mb-3"
+            data-testid="appt-stats-by-type"
+          >
+            {(stats.by_type || [])
+              .filter((b) => b.count > 0)
+              .map((b) => (
+                <span
+                  key={b.type}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-secondary text-foreground/80 text-[11px]"
+                >
+                  <span className="font-medium">
+                    {TYPE_LABEL_SHORT[b.type] || b.type}:
+                  </span>
+                  <span>
+                    {b.count} {b.count === 1 ? "appt" : "appts"}
+                  </span>
+                  {b.avg_commission > 0 && (
+                    <span className="text-muted-foreground">
+                      · {fmtMoney(b.avg_commission)} avg
+                    </span>
+                  )}
+                </span>
+              ))}
+          </div>
+        )}
 
         <Card className="bg-surface mb-3">
           <CardContent className="p-4">
@@ -723,7 +897,7 @@ export default function AppointmentsList() {
       <NewAppointmentSheet
         open={sheetOpen}
         onOpenChange={setSheetOpen}
-        onCreated={load}
+        onCreated={refreshAll}
       />
     </div>
   );

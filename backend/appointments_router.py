@@ -119,6 +119,14 @@ class AppointmentCreate(BaseModel):
         return _validate_time(v)
 
 
+class AppointmentEstimateRequest(BaseModel):
+    """Preview request for the booking sheet — same shape as
+    AppointmentCreate's lead_id field. Kept narrow so the sheet can
+    call it on every typeahead pick without ever accidentally creating
+    a row."""
+    lead_id: str = Field(..., min_length=1, max_length=128)
+
+
 class AppointmentUpdate(BaseModel):
     """Patch payload. None means "don't touch"; explicit empty string for
     notes/outcome means "clear it". ``status`` must be a valid enum value
@@ -419,6 +427,24 @@ async def list_appointments(
     )
     rows = [d async for d in cursor]
     return {"appointments": rows, "total": len(rows)}
+
+
+# ── Booking-sheet commission preview ─────────────────────────────────────
+@router.post("/estimate")
+@limiter.limit("60/hour")
+async def estimate_commission(
+    request: Request,
+    body: AppointmentEstimateRequest = Body(...),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    effective: dict = Depends(get_effective_agent),
+):
+    """Return the auto-estimated commission for a lead without
+    creating an appointment. The booking Sheet calls this when the
+    agent picks a lead from the typeahead so they see the same figure
+    that POST /appointments would stamp on save."""
+    lead = await _resolve_lead(db, body.lead_id, effective)
+    estimate = _estimate_commission(lead)
+    return {"lead_id": body.lead_id, "estimated_commission": estimate}
 
 
 # ── Revenue stats aggregator ─────────────────────────────────────────────
