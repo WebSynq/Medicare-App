@@ -19,7 +19,6 @@ import {
   MapPin,
   ShieldCheck,
   ShieldAlert,
-  ExternalLink,
   RefreshCw,
   ArrowLeft,
   Pencil,
@@ -521,24 +520,6 @@ export default function ClientProfile() {
     );
   }
 
-  // White-label GHL is served from app.coachscrm.com. Both the host and
-  // the location segment are env-configurable so this URL stays correct
-  // when we add sub-accounts (per-lead ghl_location_id overrides the
-  // env-wide default — multi-tenant ready).
-  const ghlBaseUrl = (
-    process.env.REACT_APP_GHL_BASE_URL || "https://app.coachscrm.com"
-  ).replace(/\/+$/, "");
-  const ghlLocationId =
-    lead.ghl_location_id ||
-    process.env.REACT_APP_GHL_LOCATION_ID ||
-    "";
-  const ghlUrl =
-    lead.ghl_contact_id &&
-    !lead.ghl_contact_id.startsWith("mock_") &&
-    ghlLocationId
-      ? `${ghlBaseUrl}/v2/location/${ghlLocationId}/contacts/${lead.ghl_contact_id}`
-      : null;
-
   return (
     <div className="p-6 md:p-8">
       <main className="max-w-5xl mx-auto w-full space-y-5">
@@ -660,17 +641,6 @@ export default function ClientProfile() {
                   </Button>
                 )}
                 <GhlSyncPill lead={lead} />
-                {ghlUrl && (
-                  <a
-                    href={ghlUrl}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="inline-flex items-center gap-1.5 h-9 px-3 rounded-md border border-border text-sm hover:bg-secondary"
-                    data-testid="client-view-ghl"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" /> View in GHL
-                  </a>
-                )}
                 <Button
                   variant="outline"
                   size="sm"

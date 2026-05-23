@@ -22,11 +22,27 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger("gruening.email")
 
 
-FROM_EMAIL_DEFAULT = "noreply@grueninghw.com"
+# Default sender. Per CLAUDE.md the real GHW email domain is
+# `grueninghealthwealth.com` — the shorter `grueninghw.com` is a legacy
+# alias and was NEVER verified in Resend, which silently rejected every
+# send from it. Keep this aligned with whatever domain is verified in
+# the Resend dashboard; FROM_EMAIL env var overrides for staging.
+FROM_EMAIL_DEFAULT = "noreply@grueninghealthwealth.com"
 
 
 def _from_email() -> str:
     return (os.environ.get("FROM_EMAIL") or FROM_EMAIL_DEFAULT).strip()
+
+
+# One-time visibility on startup so a missing RESEND_API_KEY is obvious
+# in Render's deploy logs, instead of only manifesting as silent skips
+# on every invite.
+if not (os.environ.get("RESEND_API_KEY") or "").strip():
+    logger.warning(
+        "RESEND_API_KEY is unset — transactional email (invite, "
+        "password reset, welcome) will be skipped. Add it in Render → "
+        "Environment to enable delivery.",
+    )
 
 
 def _frontend_url() -> str:
@@ -80,26 +96,47 @@ def _send_html(subject: str, to_email: str, html: str) -> Dict[str, Any]:
             subject, to_email,
         )
         return {"ok": False, "reason": "not_configured"}
+    from_addr = _from_email()
     try:
         resp = client.Emails.send({
-            "from": _from_email(),
+            "from": from_addr,
             "to": [to_email],
             "subject": subject,
             "html": html,
         })
+        # Resend's Python SDK historically returns a dict on both success
+        # AND certain 4xx responses (e.g. unverified-domain). Treat
+        # anything that doesn't carry an `id` as a soft failure so the
+        # admin sees a clear reason instead of a silent "no email".
+        resp_dict = resp or {}
+        msg_id = resp_dict.get("id")
+        if not msg_id:
+            reason = (
+                resp_dict.get("message")
+                or resp_dict.get("name")
+                or "no_id_in_response"
+            )
+            logger.error(
+                "resend send returned no id subject=%r to=%s from=%s "
+                "reason=%s payload=%r",
+                subject, to_email, from_addr, reason, resp_dict,
+            )
+            return {"ok": False, "reason": str(reason)[:120]}
         logger.info(
-            "resend send ok subject=%r to=%s id=%s",
-            subject, to_email, (resp or {}).get("id"),
+            "resend send ok subject=%r to=%s from=%s id=%s",
+            subject, to_email, from_addr, msg_id,
         )
-        return {"ok": True, "id": (resp or {}).get("id")}
+        return {"ok": True, "id": msg_id}
     except Exception as e:
         # logger.exception writes the full traceback to stderr but we
         # *still* want to return cleanly so the caller doesn't 5xx.
+        # Include the from address in the message because the #1 cause
+        # of Resend failures is sending from an unverified domain.
         logger.exception(
-            "resend send FAILED subject=%r to=%s: %s",
-            subject, to_email, e,
+            "resend send FAILED subject=%r to=%s from=%s: %s",
+            subject, to_email, from_addr, e,
         )
-        return {"ok": False, "reason": type(e).__name__}
+        return {"ok": False, "reason": f"{type(e).__name__}: {str(e)[:120]}"}
 
 
 # ── HTML templating ──────────────────────────────────────────────────────

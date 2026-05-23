@@ -599,16 +599,35 @@ async def create_invite(
         expires_at=expires.isoformat(),
     )
 
+    # Surface the underlying reason on the response so the admin sees
+    # "email not sent — domain not verified" instead of a generic
+    # "email not sent" they'd have to file a ticket about. The token
+    # is included regardless so the invite is always usable manually.
+    email_reason = email_res.get("reason") if not email_res.get("ok") else None
+    if email_res.get("ok"):
+        message = f"Invite sent to {invite.email}"
+    elif email_reason == "not_configured":
+        message = (
+            f"Invite created for {invite.email} — email skipped "
+            f"(RESEND_API_KEY not set). Copy the link below."
+        )
+    elif email_reason:
+        message = (
+            f"Invite created for {invite.email} — email failed "
+            f"({email_reason}). Copy the link below."
+        )
+    else:
+        message = (
+            f"Invite created for {invite.email} (email not sent — copy "
+            f"the link below)"
+        )
     return {
-        "message": (
-            f"Invite sent to {invite.email}"
-            if email_res.get("ok")
-            else f"Invite created for {invite.email} (email not sent — copy the link below)"
-        ),
+        "message": message,
         "invite_url": invite_url,
         "expires_at": expires.isoformat(),
         "token": raw_token,  # Raw token returned once for the admin to copy/send
         "email_sent": bool(email_res.get("ok")),
+        "email_reason": email_reason,
     }
 
 
