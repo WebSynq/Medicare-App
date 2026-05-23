@@ -2051,6 +2051,99 @@ async def test_appointment_create_400_when_lead_missing(client, db, admin_header
 
 
 @pytest.mark.asyncio
+async def test_appointment_autocalc_commission_for_ma_lead(client, db, admin_headers):
+    """A lead whose product_interest reads 'MAPD' should drive the
+    calculator's MA branch ($313 first-year flat × 30% = $93.90)."""
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    await db.leads.insert_one({
+        "id": "appt-autocalc-ma",
+        "first_name": "Mira", "last_name": "Adv",
+        "status": "new", "agent_id": admin["id"],
+        "product_interest": "Looking for MAPD HMO",
+        "state": "IL",
+        "current_carrier": "Humana", "current_plan": "MAPD",
+        "date_of_birth": "1955-03-15",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    r = client.post("/api/appointments", headers=admin_headers, json={
+        "lead_id": "appt-autocalc-ma",
+        "appointment_date": "2026-06-15",
+        "appointment_time": "10:30",
+    })
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["estimated_commission"] == 93.90
+
+
+@pytest.mark.asyncio
+async def test_appointment_autocalc_commission_for_pdp_lead(client, db, admin_headers):
+    """PDP lead → flat $100 × 30% = $30 regardless of premium / state."""
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    await db.leads.insert_one({
+        "id": "appt-autocalc-pdp",
+        "first_name": "Polly", "last_name": "Drug",
+        "status": "new", "agent_id": admin["id"],
+        "product_interest": "PDP for prescriptions",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    r = client.post("/api/appointments", headers=admin_headers, json={
+        "lead_id": "appt-autocalc-pdp",
+        "appointment_date": "2026-06-16",
+        "appointment_time": "11:00",
+    })
+    assert r.status_code == 201, r.text
+    assert r.json()["estimated_commission"] == 30.0
+
+
+@pytest.mark.asyncio
+async def test_appointment_manual_commission_overrides_autocalc(client, db, admin_headers):
+    """Manual estimated_commission in the body always wins — never
+    overwritten by the auto-calc even when the lead would have produced
+    a value."""
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    await db.leads.insert_one({
+        "id": "appt-manual-override",
+        "first_name": "Ovi", "last_name": "Manual",
+        "status": "new", "agent_id": admin["id"],
+        "product_interest": "MAPD",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    r = client.post("/api/appointments", headers=admin_headers, json={
+        "lead_id": "appt-manual-override",
+        "appointment_date": "2026-06-17",
+        "appointment_time": "09:00",
+        "estimated_commission": 750.0,
+    })
+    assert r.status_code == 201
+    assert r.json()["estimated_commission"] == 750.0
+
+
+@pytest.mark.asyncio
+async def test_appointment_autocalc_returns_null_when_unmappable(client, db, admin_headers):
+    """A lead with no product_interest / product_type leaves the
+    appointment's estimated_commission null — agent fills it in manually
+    if they want one."""
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    await db.leads.insert_one({
+        "id": "appt-no-product",
+        "first_name": "No", "last_name": "Product",
+        "status": "new", "agent_id": admin["id"],
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    r = client.post("/api/appointments", headers=admin_headers, json={
+        "lead_id": "appt-no-product",
+        "appointment_date": "2026-06-18",
+        "appointment_time": "12:00",
+    })
+    assert r.status_code == 201
+    assert r.json()["estimated_commission"] is None
+
+
+@pytest.mark.asyncio
 async def test_appointment_create_walkin_without_lead(client, db, admin_headers):
     """Walk-in flow: omit lead_id, supply client_name → succeeds with
     lead_id stored as null."""

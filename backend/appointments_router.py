@@ -20,7 +20,7 @@ and the row can still be referenced by past activity views.
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field, field_validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
+from commission_calculator import calculate_commission
 from deps import (
     FULL_AGENCY_SCOPE_ROLES,
     agent_filter,
@@ -178,6 +179,131 @@ def _client_name(lead: Dict[str, Any]) -> str:
     return full or lead.get("email") or "Unknown"
 
 
+# ── Commission auto-estimate from a lead row ─────────────────────────────
+# Lead docs don't carry the strict product_type enum the calculator
+# expects — they carry a free-text product_interest string and a few
+# loosely-typed price strings. We do a best-effort map here so the
+# appointment row picks up a sensible default that the agent can still
+# override on the booking form.
+_VALID_PRODUCT_TYPES = {
+    "med_supp", "ma", "pdp", "final_expense", "dental",
+    "cancer", "heart_stroke", "cancer_heart_stroke",
+    "hip", "rc", "dvh", "dvh_plus", "stc", "hhc",
+    "annuity", "life",
+}
+
+# Order matters — "ma plan" must be matched before bare "ma" inside
+# a longer string, and "medicare supplement" before "medicare".
+_PRODUCT_INTEREST_PATTERNS = [
+    ("med_supp", ("med supp", "medsupp", "medicare supplement",
+                   "medigap", "supplement")),
+    ("ma", ("mapd", "medicare advantage", "ma plan", " ma ", " ma,",
+            "advantage")),
+    ("pdp", ("pdp", "drug plan", "prescription drug", "part d")),
+    ("final_expense", ("final expense", "fex", "burial", "whole life")),
+    ("dental", ("dental",)),
+    ("cancer", ("cancer",)),
+    ("hip", ("hospital indemnity", " hip ", "hip plan")),
+]
+
+_PREMIUM_RE = re.compile(r"\$?\s*([\d,]+(?:\.\d+)?)")
+
+
+def _derive_product_type(lead: Dict[str, Any]) -> Optional[str]:
+    """Pick a product_type the calculator understands, in this order:
+    explicit ``lead.product_type`` (rare today), keyword match against
+    ``lead.product_interest``, keyword match against
+    ``lead.plan_type_premium`` (free-text label like "MAPD HMO — $0/mo").
+    Returns None when nothing maps cleanly — caller leaves the
+    appointment's estimated_commission null."""
+    raw = (lead.get("product_type") or "").strip().lower()
+    if raw in _VALID_PRODUCT_TYPES:
+        return raw
+    for source_field in ("product_interest", "plan_type_premium"):
+        text = " " + (lead.get(source_field) or "").lower() + " "
+        if not text.strip():
+            continue
+        for product, keywords in _PRODUCT_INTEREST_PATTERNS:
+            for kw in keywords:
+                if kw in text:
+                    return product
+    return None
+
+
+def _derive_age(dob_str: Optional[str]) -> Optional[int]:
+    """Tolerant DOB → integer age. Returns None when DOB is missing or
+    unparseable so the calculator falls back to a band-less rate path."""
+    if not dob_str or not isinstance(dob_str, str):
+        return None
+    try:
+        head = dob_str.split("T", 1)[0].split(" ", 1)[0]
+        if "/" in head:
+            mm, dd, yyyy = head.split("/")
+            dob = date(int(yyyy), int(mm), int(dd))
+        else:
+            parts = head.split("-")
+            if len(parts) != 3:
+                return None
+            dob = date(int(parts[0]), int(parts[1]), int(parts[2]))
+    except (ValueError, IndexError):
+        return None
+    today = datetime.now(timezone.utc).date()
+    years = today.year - dob.year - (
+        (today.month, today.day) < (dob.month, dob.day)
+    )
+    return max(0, years)
+
+
+def _derive_premium(lead: Dict[str, Any]) -> float:
+    """Try a structured field first, then sniff a dollar amount out of
+    ``plan_type_premium``. Returns 0.0 when nothing parses — MA/PDP
+    payouts are flat dollars and don't depend on premium, so 0 is a
+    safe default that still produces a valid estimate for those products."""
+    direct = lead.get("monthly_premium") or lead.get("premium")
+    if isinstance(direct, (int, float)):
+        return float(direct)
+    text = lead.get("plan_type_premium") or ""
+    if isinstance(text, str):
+        match = _PREMIUM_RE.search(text)
+        if match:
+            try:
+                return float(match.group(1).replace(",", ""))
+            except ValueError:
+                return 0.0
+    return 0.0
+
+
+def _estimate_commission(lead: Optional[Dict[str, Any]]) -> Optional[float]:
+    """Run the lead's currently-known data through commission_calculator
+    and return the agent-side dollar estimate. Returns None when the
+    product_type can't be resolved or the calculator can't find a rate
+    — the appointment row simply leaves estimated_commission unset and
+    the agent provides a manual figure if they want one."""
+    if not lead:
+        return None
+    product_type = _derive_product_type(lead)
+    if not product_type:
+        return None
+    try:
+        result = calculate_commission(
+            product_type=product_type,
+            carrier=(lead.get("current_carrier") or ""),
+            state=(lead.get("state") or ""),
+            plan_type=(lead.get("current_plan") or ""),
+            monthly_premium=_derive_premium(lead),
+            client_age=_derive_age(lead.get("date_of_birth")) or 0,
+            scope_completed=False,
+        )
+    except Exception as exc:                                # noqa: BLE001
+        logger.warning("commission estimate failed for lead %s: %s",
+                       lead.get("id"), exc)
+        return None
+    commission = result.get("agent_commission")
+    if not commission or commission <= 0:
+        return None
+    return float(commission)
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────
 @router.post("", status_code=201)
 @limiter.limit("60/hour")
@@ -207,6 +333,17 @@ async def create_appointment(
             )
         client_name = supplied
         stored_lead_id = None
+
+    # Commission estimate. A manually-supplied figure on the booking
+    # form always wins — we only auto-calc when the caller left it
+    # blank AND we have a lead to derive from.
+    if body.estimated_commission is not None:
+        estimated_commission = body.estimated_commission
+    elif lead is not None:
+        estimated_commission = _estimate_commission(lead)
+    else:
+        estimated_commission = None
+
     now_iso = datetime.now(timezone.utc).isoformat()
 
     doc = {
@@ -223,7 +360,7 @@ async def create_appointment(
         "status": "scheduled",
         "notes": (body.notes or "").strip() or None,
         "outcome": None,
-        "estimated_commission": body.estimated_commission,
+        "estimated_commission": estimated_commission,
         "created_at": now_iso,
         "updated_at": now_iso,
     }
