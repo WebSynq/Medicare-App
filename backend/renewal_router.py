@@ -21,7 +21,12 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends
 
-from deps import agent_filter, get_current_user, get_db
+from deps import (
+    agent_filter,
+    get_current_user,
+    get_db,
+    resolve_lead_id_for_policy,
+)
 
 
 logger = logging.getLogger("gruening.renewals")
@@ -156,6 +161,14 @@ async def renewal_alerts(
         "contact_name": 1, "product_type": 1, "product_label": 1,
         "carrier": 1, "effective_date": 1, "agent_name": 1,
     }
+    # Collect first, sort, then resolve canonical lead ids — cheaper
+    # than firing a lead-lookup for every policy when most won't survive
+    # the 90-day window filter. policy.lead_id / ghl_contact_id are
+    # NEVER trusted as leads-collection ids (they historically point at
+    # GHL or legacy lifecycles); the SPA's /clients/:leadId route
+    # expects the canonical leads.id, and bogus ids break the calendar's
+    # event-click "View Client" navigation.
+    candidates: List[Dict[str, Any]] = []
     async for p in db.policies.find(
         {**scope, "effective_date": {"$ne": None, "$ne": ""}},
         proj,
@@ -167,8 +180,8 @@ async def renewal_alerts(
         days_until = (anniv - today).days
         if days_until < 0 or days_until > 90:
             continue
-        renewal_rows.append({
-            "lead_id": p.get("lead_id") or p.get("ghl_contact_id"),
+        candidates.append({
+            "_policy": p,
             "full_name": p.get("contact_name") or "—",
             "product_type": p.get("product_type"),
             "product_label": p.get("product_label") or p.get("product_type"),
@@ -178,7 +191,21 @@ async def renewal_alerts(
             "days_until_renewal": days_until,
             "agent_name": p.get("agent_name"),
         })
-    renewal_rows.sort(key=lambda r: r["days_until_renewal"])
+    candidates.sort(key=lambda r: r["days_until_renewal"])
+
+    for cand in candidates:
+        lead_id = await resolve_lead_id_for_policy(db, scope, cand["_policy"])
+        renewal_rows.append({
+            "lead_id": lead_id,
+            "full_name": cand["full_name"],
+            "product_type": cand["product_type"],
+            "product_label": cand["product_label"],
+            "carrier": cand["carrier"],
+            "effective_date": cand["effective_date"],
+            "renewal_date": cand["renewal_date"],
+            "days_until_renewal": cand["days_until_renewal"],
+            "agent_name": cand["agent_name"],
+        })
 
     return {
         "today": today.isoformat(),

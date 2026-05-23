@@ -28,7 +28,13 @@ from fastapi import APIRouter, Depends, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from deps import agent_filter, get_current_user, get_db, write_audit
+from deps import (
+    agent_filter,
+    get_current_user,
+    get_db,
+    resolve_lead_id_for_policy,
+    write_audit,
+)
 # Re-use the birthday-rule evaluator so the urgent-call window math stays
 # in one place (handles Feb 29, year rollover, last-birthday computation).
 from birthday_rule_router import _evaluate_lead, _today_utc
@@ -129,50 +135,6 @@ def _renewal_anniversary(eff: date, today: date) -> date:
     return anniv
 
 
-async def _resolve_lead_id_for_policy(
-    db, scope: dict, policy: Dict[str, Any]
-) -> Optional[str]:
-    """Best-effort join policy → leads.id so the SPA's /clients/:leadId
-    link actually lands on a lead.
-
-    The policies collection historically stored the GHL contact id (or a
-    legacy lead id from a different lifecycle) under ``lead_id`` /
-    ``ghl_contact_id``, neither of which matches the canonical
-    ``leads.id`` the frontend expects. We try, in order:
-
-      1. leads.id      == policy.lead_id          (already correct)
-      2. leads.ghl_contact_id == policy.ghl_contact_id
-      3. leads.first_name + leads.last_name == policy.contact_name
-
-    All lookups respect ``scope`` so an agent can't surface a lead
-    outside their book via a stray policy reference. Returns ``None``
-    when nothing matches — the frontend hides the View Client button
-    rather than showing a broken link.
-    """
-    proj = {"_id": 0, "id": 1}
-    pid = policy.get("lead_id")
-    if pid:
-        ld = await db.leads.find_one({**scope, "id": pid}, proj)
-        if ld:
-            return ld["id"]
-    gcid = policy.get("ghl_contact_id")
-    if gcid:
-        ld = await db.leads.find_one({**scope, "ghl_contact_id": gcid}, proj)
-        if ld:
-            return ld["id"]
-    cn = policy.get("contact_name")
-    if cn and isinstance(cn, str):
-        parts = cn.strip().rsplit(" ", 1)
-        if len(parts) == 2:
-            fn, ln = parts
-            ld = await db.leads.find_one(
-                {**scope, "first_name": fn, "last_name": ln}, proj,
-            )
-            if ld:
-                return ld["id"]
-    return None
-
-
 async def _renewals_due(db, scope: dict, today: date) -> List[Dict[str, Any]]:
     """Policies whose anniversary is within the next 30 days."""
     proj = {
@@ -208,7 +170,7 @@ async def _renewals_due(db, scope: dict, today: date) -> List[Dict[str, Any]]:
 
     rows: List[Dict[str, Any]] = []
     for cand in candidates:
-        lead_id = await _resolve_lead_id_for_policy(db, scope, cand["_policy"])
+        lead_id = await resolve_lead_id_for_policy(db, scope, cand["_policy"])
         rows.append({
             "lead_id": lead_id,
             "full_name": cand["full_name"],

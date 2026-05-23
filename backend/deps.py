@@ -186,6 +186,55 @@ def resolve_agent_key(user: dict) -> Optional[str]:
     return name or None
 
 
+async def resolve_lead_id_for_policy(
+    db, scope: dict, policy: dict,
+) -> Optional[str]:
+    """Best-effort join policy → leads.id.
+
+    The policies collection historically stored the GHL contact id (or a
+    legacy lead id from a different lifecycle) under ``lead_id`` /
+    ``ghl_contact_id``, neither of which matches the canonical
+    ``leads.id`` the SPA's /clients/:leadId route expects. Tries, in
+    order:
+
+      1. ``leads.id == policy.lead_id``           (already correct)
+      2. ``leads.ghl_contact_id == policy.ghl_contact_id``
+      3. ``leads.first_name`` + ``last_name`` derived from
+         ``policy.contact_name`` (split on the last space).
+
+    All three lookups respect ``scope`` so a stray policy reference
+    can't surface a lead outside the caller's book. Returns ``None``
+    when nothing matches — callers ship ``lead_id: None`` and the SPA
+    hides the View Client button rather than rendering a broken link.
+
+    Lives in ``deps`` so today_router (Today action centre) and
+    renewal_router (calendar feed) resolve renewals to the same lead
+    ids without one importing internals from the other.
+    """
+    proj = {"_id": 0, "id": 1}
+    pid = policy.get("lead_id")
+    if pid:
+        ld = await db.leads.find_one({**scope, "id": pid}, proj)
+        if ld:
+            return ld["id"]
+    gcid = policy.get("ghl_contact_id")
+    if gcid:
+        ld = await db.leads.find_one({**scope, "ghl_contact_id": gcid}, proj)
+        if ld:
+            return ld["id"]
+    cn = policy.get("contact_name")
+    if cn and isinstance(cn, str):
+        parts = cn.strip().rsplit(" ", 1)
+        if len(parts) == 2:
+            fn, ln = parts
+            ld = await db.leads.find_one(
+                {**scope, "first_name": fn, "last_name": ln}, proj,
+            )
+            if ld:
+                return ld["id"]
+    return None
+
+
 def agent_filter(current_user: dict,
                  override_agent_id: Optional[str] = None) -> dict:
     """Build a Mongo filter that scopes results to one agent's data.

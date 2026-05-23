@@ -1854,6 +1854,57 @@ async def test_birthday_rule_window_currently_open(client, db, admin_headers):
     assert row["days_remaining_in_window"] > 0
 
 
+@pytest.mark.asyncio
+async def test_renewal_alerts_resolve_real_lead_id(client, db, admin_headers):
+    """BUG 1 calendar regression: /api/renewals/alerts must ship the
+    canonical leads.id on each row (joined via ghl_contact_id when
+    policy.lead_id is a legacy/foreign value). Orphan policies return
+    lead_id=None so the CalendarPage gate hides the broken link."""
+    from datetime import date, timedelta
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    # Lead with a known GHL contact id we'll point the policy at.
+    await db.leads.insert_one({
+        "id": "renewal-real-lead",
+        "ghl_contact_id": "ghl-rrr",
+        "first_name": "Renew", "last_name": "Match",
+        "status": "enrolled", "agent_id": admin["id"],
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    # Renewal in ~30 days. effective_date one year ago + 30 days.
+    eff = (date.today() - timedelta(days=335)).isoformat()
+    await db.policies.insert_one({
+        "lead_id": "legacy-policy-ref",      # NOT a leads.id
+        "ghl_contact_id": "ghl-rrr",         # matches the lead
+        "contact_name": "Renew Match",
+        "product_type": "ma", "product_label": "MAPD",
+        "carrier": "Aetna",
+        "effective_date": eff,
+        "agent_id": admin["id"],
+    })
+    # Orphan — no matching lead anywhere.
+    await db.policies.insert_one({
+        "lead_id": "orphan-ref",
+        "ghl_contact_id": "ghl-nothing",
+        "contact_name": "No Match Found",
+        "product_type": "pdp", "product_label": "PDP",
+        "carrier": "UHC",
+        "effective_date": eff,
+        "agent_id": admin["id"],
+    })
+
+    r = client.get("/api/renewals/alerts", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    rows = body.get("renewal_alerts", [])
+    matched = next((x for x in rows if x["full_name"] == "Renew Match"), None)
+    orphan = next((x for x in rows if x["full_name"] == "No Match Found"), None)
+    assert matched is not None
+    assert matched["lead_id"] == "renewal-real-lead"   # joined via ghl_contact_id
+    assert orphan is not None
+    assert orphan["lead_id"] is None                    # no match → null
+
+
 def test_aep_countdown_calculation(client, db, admin_headers):
     """AEP fields: days_until + is_active boolean, both shaped right."""
     r = client.get("/api/renewals/alerts", headers=admin_headers)
