@@ -54,6 +54,7 @@ from today_router import router as today_router  # noqa: E402
 from appointments_router import router as appointments_router  # noqa: E402
 from notes_router import router as notes_router  # noqa: E402
 from search_router import router as search_router  # noqa: E402
+from notifications_router import router as notifications_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
 
 
@@ -174,6 +175,7 @@ app.include_router(today_router, prefix="/api")
 app.include_router(appointments_router, prefix="/api")
 app.include_router(notes_router, prefix="/api")
 app.include_router(search_router, prefix="/api")
+app.include_router(notifications_router, prefix="/api")
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
@@ -631,9 +633,11 @@ async def on_startup():
     from comtrack_sync import start_scheduler as start_comtrack_scheduler
     from statement_generator import start_scheduler as start_statement_scheduler
     from backup_service import start_backup_scheduler
+    from notifications_router import start_scheduler as start_notifications_scheduler
     app.state.comtrack_scheduler = start_comtrack_scheduler(get_db)
     app.state.statement_scheduler = start_statement_scheduler(get_db)
     app.state.backup_scheduler = start_backup_scheduler(get_db)
+    app.state.notifications_scheduler = start_notifications_scheduler(get_db)
 
 
 @app.on_event("shutdown")

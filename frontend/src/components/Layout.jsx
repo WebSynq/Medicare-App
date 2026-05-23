@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Bell,
   Lock,
   ShieldCheck,
   LayoutDashboard,
@@ -42,6 +43,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import ChatWidget from "@/components/ChatWidget";
 import CommandPalette from "@/components/CommandPalette";
 import GlobalSearch from "@/components/GlobalSearch";
+import NotificationPanel from "@/components/NotificationPanel";
 
 // Width tokens for the two sidebar states. Pulled to the top so the
 // fixed sidebar, the main content padding, and the layout reserve stay
@@ -506,7 +508,7 @@ const COMPLIANCE_LIKE_ROLES = new Set([
   "sales_manager",
 ]);
 
-function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggleCollapse, onOpenSearch, isMobile }) {
+function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggleCollapse, onOpenSearch, onOpenNotifications, notifUnread = 0, isMobile }) {
   const isAdmin = role === "admin";
   const isAdminOrCompliance =
     role === "admin" || COMPLIANCE_LIKE_ROLES.has(role);
@@ -647,6 +649,62 @@ function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggle
               )}
             </div>
           </>
+        )}
+
+        {/* Notifications bell — sits just above the agency switcher so
+            it lives in the same persistent-controls cluster. Renders
+            as an icon-only square in the collapsed sidebar (Tooltip
+            for label), or an "Inbox" pill when expanded. Badge shows
+            the unread count, capped visually at 99+. */}
+        {onOpenNotifications && (
+          <div className={c ? "px-2 pt-3" : "px-3 pt-3"}>
+            {c ? (
+              <Tooltip delayDuration={120}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={onOpenNotifications}
+                    aria-label={`Notifications${notifUnread ? ` (${notifUnread} unread)` : ""}`}
+                    className="relative w-full grid place-items-center py-2 rounded-md bg-white/5 hover:bg-white/10 text-white/70 hover:text-white transition-colors"
+                    data-testid="sidebar-notifications-bell"
+                  >
+                    <Bell className="w-4 h-4" />
+                    {notifUnread > 0 && (
+                      <span
+                        className="absolute top-1 right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-[#e85d2f] text-white text-[10px] font-bold leading-4 text-center"
+                        aria-hidden="true"
+                      >
+                        {notifUnread > 99 ? "99+" : notifUnread}
+                      </span>
+                    )}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" sideOffset={8}>
+                  {notifUnread > 0
+                    ? `Notifications · ${notifUnread} unread`
+                    : "Notifications"}
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <button
+                type="button"
+                onClick={onOpenNotifications}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-md bg-white/5 hover:bg-white/10 text-xs text-white/65 hover:text-white transition-colors"
+                data-testid="sidebar-notifications-bell"
+              >
+                <Bell className="w-3.5 h-3.5 flex-shrink-0" />
+                <span className="flex-1 text-left">Notifications</span>
+                {notifUnread > 0 && (
+                  <span
+                    className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#e85d2f] text-white text-[10px] font-bold"
+                    data-testid="sidebar-notif-badge"
+                  >
+                    {notifUnread > 99 ? "99+" : notifUnread}
+                  </span>
+                )}
+              </button>
+            )}
+          </div>
         )}
 
         {/* Agency / Sub-Account switcher — admin & compliance only, lives
@@ -848,6 +906,8 @@ function MobileMoreDrawer({
   role,
   onSignOut,
   onOpenSearch,
+  onOpenNotifications,
+  notifUnread = 0,
 }) {
   const isAdmin = role === "admin";
   const isAdminOrCompliance =
@@ -916,7 +976,7 @@ function MobileMoreDrawer({
 
         <nav className="flex-1 overflow-y-auto py-3 px-2">
           {onOpenSearch && (
-            <div className="px-1 pb-3">
+            <div className="px-1 pb-3 space-y-2">
               <button
                 type="button"
                 onClick={() => {
@@ -929,6 +989,22 @@ function MobileMoreDrawer({
                 <SearchIcon className="w-3.5 h-3.5 flex-shrink-0" />
                 <span className="flex-1 text-left">Quick search…</span>
               </button>
+              {onOpenNotifications && (
+                <button
+                  type="button"
+                  onClick={onOpenNotifications}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-md bg-white/5 hover:bg-white/10 text-xs text-white/70 hover:text-white transition-colors"
+                  data-testid="mobile-more-notifications"
+                >
+                  <Bell className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span className="flex-1 text-left">Notifications</span>
+                  {notifUnread > 0 && (
+                    <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-[#e85d2f] text-white text-[10px] font-bold">
+                      {notifUnread > 99 ? "99+" : notifUnread}
+                    </span>
+                  )}
+                </button>
+              )}
             </div>
           )}
 
@@ -1094,6 +1170,27 @@ export function AppLayout({ children }) {
   // into the same keydown), but the visible search entry-points all
   // route through GlobalSearch.
   const [searchOpen, setSearchOpen] = useState(false);
+
+  // Notifications. The bell icon polls /unread-count every 60s when
+  // a user is signed in; the panel itself pulls the full list lazily
+  // on open.
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const refreshUnreadCount = useCallback(async () => {
+    if (!auth.getUser()) return;
+    try {
+      const res = await api.get("/notifications/unread-count");
+      setUnreadCount(Number(res?.data?.count) || 0);
+    } catch {
+      // Swallow — bell badge can stay stale rather than crash the
+      // chrome on a transient 401/403/network blip.
+    }
+  }, []);
+  useEffect(() => {
+    refreshUnreadCount();
+    const id = setInterval(refreshUnreadCount, 60000);
+    return () => clearInterval(id);
+  }, [refreshUnreadCount]);
   const [paletteSignal, setPaletteSignal] = useState(0);
   const openPalette = () => {
     setSearchOpen(true);
@@ -1156,6 +1253,8 @@ export function AppLayout({ children }) {
           collapsed={collapsed}
           onToggleCollapse={toggleCollapsed}
           onOpenSearch={openPalette}
+          onOpenNotifications={() => setNotifOpen(true)}
+          notifUnread={unreadCount}
           onNavigate={() => {}}
           onSignOut={handleSignOut}
         />
@@ -1181,15 +1280,34 @@ export function AppLayout({ children }) {
             Gruening H&amp;W
           </span>
         </Link>
-        <button
-          type="button"
-          onClick={openPalette}
-          aria-label="Open quick search"
-          className="p-2 -mr-2 text-foreground"
-          data-testid="mobile-search-toggle"
-        >
-          <SearchIcon className="w-5 h-5" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setNotifOpen(true)}
+            aria-label={`Notifications${unreadCount ? ` (${unreadCount} unread)` : ""}`}
+            className="relative p-2 text-foreground"
+            data-testid="mobile-notifications-bell"
+          >
+            <Bell className="w-5 h-5" />
+            {unreadCount > 0 && (
+              <span
+                className="absolute top-1 right-1 min-w-[16px] h-4 px-1 rounded-full bg-[#e85d2f] text-white text-[10px] font-bold leading-4 text-center"
+                aria-hidden="true"
+              >
+                {unreadCount > 99 ? "99+" : unreadCount}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={openPalette}
+            aria-label="Open quick search"
+            className="p-2 -mr-2 text-foreground"
+            data-testid="mobile-search-toggle"
+          >
+            <SearchIcon className="w-5 h-5" />
+          </button>
+        </div>
       </header>
 
       {/* Main content — desktop reserves left padding equal to the
@@ -1213,12 +1331,26 @@ export function AppLayout({ children }) {
         role={role}
         onSignOut={handleSignOut}
         onOpenSearch={openPalette}
+        onOpenNotifications={() => {
+          setMoreOpen(false);
+          setNotifOpen(true);
+        }}
+        notifUnread={unreadCount}
       />
 
       {/* Global search — Cmd/Ctrl+K. Single instance at the chrome
           level so every authenticated page picks up the shortcut and
           the visible entry-point buttons. */}
       <GlobalSearch open={searchOpen} onOpenChange={setSearchOpen} />
+
+      {/* Notification panel — opened from the sidebar / mobile-top
+          bell and the More drawer entry. Refreshes the unread badge
+          after every change. */}
+      <NotificationPanel
+        open={notifOpen}
+        onOpenChange={setNotifOpen}
+        onChange={refreshUnreadCount}
+      />
 
       {/* Legacy CommandPalette — kept mounted for any consumer still
           calling its module-level openPalette() helper. The visible

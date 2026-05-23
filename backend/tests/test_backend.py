@@ -1920,6 +1920,109 @@ def test_aep_countdown_calculation(client, db, admin_headers):
     assert "is_active" in oep
 
 
+# ── Notifications ──────────────────────────────────────────────────────────
+def test_notifications_requires_auth(client, db):
+    """No token → 401 on the unread-count endpoint."""
+    r = client.get("/api/notifications/unread-count")
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_notifications_unread_count_and_mark_read(client, db, admin_headers):
+    """Seed three notifications (two unread, one read) for the admin;
+    confirm unread-count, mark-read flips the count down."""
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    rows = [
+        {"notification_id": "n-1", "agent_id": admin["id"],
+         "type": "stale_lead", "title": "T1", "body": "b",
+         "link": None, "target_id": "x", "is_read": False,
+         "created_at": now_iso, "read_at": None},
+        {"notification_id": "n-2", "agent_id": admin["id"],
+         "type": "stale_lead", "title": "T2", "body": "b",
+         "link": None, "target_id": "y", "is_read": False,
+         "created_at": now_iso, "read_at": None},
+        {"notification_id": "n-3", "agent_id": admin["id"],
+         "type": "stale_lead", "title": "T3", "body": "b",
+         "link": None, "target_id": "z", "is_read": True,
+         "created_at": now_iso, "read_at": now_iso},
+    ]
+    await db.notifications.insert_many(rows)
+    c1 = client.get("/api/notifications/unread-count", headers=admin_headers)
+    assert c1.json()["count"] == 2
+
+    r = client.patch("/api/notifications/n-1/read", headers=admin_headers)
+    assert r.status_code == 200
+    assert r.json()["is_read"] is True
+
+    c2 = client.get("/api/notifications/unread-count", headers=admin_headers)
+    assert c2.json()["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_notifications_mark_all_read(client, db, admin_headers):
+    """PATCH /read-all flips every unread row for the caller."""
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.notifications.insert_many([
+        {"notification_id": f"all-{i}", "agent_id": admin["id"],
+         "type": "stale_lead", "title": "x", "body": "b",
+         "link": None, "target_id": "z", "is_read": False,
+         "created_at": now_iso, "read_at": None}
+        for i in range(3)
+    ])
+    r = client.patch("/api/notifications/read-all", headers=admin_headers)
+    assert r.status_code == 200
+    assert r.json()["marked_read"] == 3
+    remaining = await db.notifications.count_documents(
+        {"agent_id": admin["id"], "is_read": False},
+    )
+    assert remaining == 0
+
+
+@pytest.mark.asyncio
+async def test_notifications_generator_dedup(client, db, admin_headers):
+    """Generator skips a notification if one with the same
+    (agent_id, target_id, type) created in the last 24h already exists."""
+    from datetime import datetime, timedelta, timezone
+    from notifications_router import generate_notifications
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    now = datetime.now(timezone.utc)
+    week_old_iso = (now - timedelta(days=10)).isoformat()
+    # Seed a stale lead.
+    await db.leads.insert_one({
+        "id": "stale-1",
+        "first_name": "Sta", "last_name": "Le",
+        "agent_id": admin["id"], "agent_name": "Admin",
+        "status": "new",
+        "created_at": week_old_iso, "updated_at": week_old_iso,
+    })
+    # First run creates one notification.
+    stats1 = await generate_notifications(db)
+    assert stats1["stale"] >= 1
+    first = await db.notifications.count_documents({
+        "agent_id": admin["id"], "type": "stale_lead",
+    })
+    assert first == 1
+    # Second run within 24h dedups → no new row.
+    stats2 = await generate_notifications(db)
+    assert stats2["stale"] == 0
+    second = await db.notifications.count_documents({
+        "agent_id": admin["id"], "type": "stale_lead",
+    })
+    assert second == 1
+
+
+def test_notifications_scheduler_exists():
+    """start_scheduler is importable and returns None when DISABLE_
+    SCHEDULER=1 (the conftest default)."""
+    from notifications_router import start_scheduler
+    sched = start_scheduler(lambda: None)
+    assert sched is None
+
+
 # ── Global search ──────────────────────────────────────────────────────────
 def test_search_requires_min_length(client, db, admin_headers):
     """Queries under 2 chars 400."""
