@@ -1987,6 +1987,47 @@ async def test_today_renewals_resolve_real_lead_id(client, db, admin_headers):
 
 
 @pytest.mark.asyncio
+async def test_today_mtd_commission_sums_appointments(client, db, admin_headers):
+    """Today response carries an mtd_commission total that excludes
+    cancelled rows and any prior-month rows."""
+    from datetime import datetime, timezone
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    now_iso = datetime.now(timezone.utc).isoformat()
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    month_start_iso = datetime.now(timezone.utc).date().replace(day=1).isoformat()
+    # Three this-month appointments (two count, one cancelled) + one
+    # null-commission row that should also be skipped.
+    await db.appointments.insert_many([
+        {"appointment_id": "tm-1", "agent_id": admin["id"], "client_name": "A",
+         "appointment_date": month_start_iso, "appointment_time": "09:00",
+         "duration_minutes": 30, "type": "enrollment",
+         "status": "completed", "estimated_commission": 313.0,
+         "created_at": now_iso, "updated_at": now_iso},
+        {"appointment_id": "tm-2", "agent_id": admin["id"], "client_name": "B",
+         "appointment_date": today_iso, "appointment_time": "10:00",
+         "duration_minutes": 30, "type": "enrollment",
+         "status": "scheduled", "estimated_commission": 93.90,
+         "created_at": now_iso, "updated_at": now_iso},
+        {"appointment_id": "tm-3", "agent_id": admin["id"], "client_name": "C",
+         "appointment_date": today_iso, "appointment_time": "11:00",
+         "duration_minutes": 30, "type": "enrollment",
+         "status": "cancelled", "estimated_commission": 500.0,
+         "created_at": now_iso, "updated_at": now_iso},
+        {"appointment_id": "tm-4", "agent_id": admin["id"], "client_name": "D",
+         "appointment_date": today_iso, "appointment_time": "12:00",
+         "duration_minutes": 30, "type": "plan_review",
+         "status": "scheduled", "estimated_commission": None,
+         "created_at": now_iso, "updated_at": now_iso},
+    ])
+    r = client.get("/api/today/actions", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "mtd_commission" in body
+    # 313.0 + 93.90 = 406.90 (cancelled + null skipped)
+    assert body["mtd_commission"] == 406.90
+
+
+@pytest.mark.asyncio
 async def test_today_actions_audits(client, db, admin_headers):
     """Every Today fetch must drop a today_viewed audit row."""
     client.get("/api/today/actions", headers=admin_headers)

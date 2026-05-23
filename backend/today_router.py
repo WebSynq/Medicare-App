@@ -249,6 +249,39 @@ async def _stale_leads(db, scope: dict, now_dt: datetime) -> List[Dict[str, Any]
     return rows[:_MAX_PER_BUCKET]
 
 
+async def _mtd_commission(db, scope: dict, today: date) -> float:
+    """Sum estimated_commission across this calendar month's non-cancelled
+    appointments. Anchored to the same first-of-month boundary the
+    dashboard router uses so the Today pill matches whatever
+    /api/dashboard/stats and /api/appointments/revenue-stats are
+    reporting for the same window.
+    """
+    month_start_iso = today.replace(day=1).isoformat()
+    total = 0.0
+    try:
+        cursor = db.appointments.find(
+            {
+                **scope,
+                "appointment_date": {"$gte": month_start_iso},
+                "status": {"$ne": "cancelled"},
+                "estimated_commission": {"$ne": None},
+            },
+            {"_id": 0, "estimated_commission": 1},
+        )
+        async for a in cursor:
+            v = a.get("estimated_commission")
+            if v is None:
+                continue
+            try:
+                total += float(v)
+            except (TypeError, ValueError):
+                continue
+    except Exception as e:                                 # noqa: BLE001
+        logger.warning("today: mtd_commission query failed: %s", e)
+        return 0.0
+    return round(total, 2)
+
+
 async def _todays_appointments(db, scope: dict, today: date) -> List[Dict[str, Any]]:
     """Appointments on ``today``. Returns [] before Task 2 creates the
     collection — mongomock + Atlas both auto-create on first insert."""
@@ -297,6 +330,7 @@ async def today_actions(
     renewals = await _renewals_due(db, scope, today)
     stale = await _stale_leads(db, scope, now_dt)
     appts = await _todays_appointments(db, scope, today)
+    mtd_commission = await _mtd_commission(db, scope, today)
 
     summary = {
         "urgent_count": len(urgent),
@@ -310,7 +344,7 @@ async def today_actions(
         actor_email=current_user.get("email"),
         actor_id=current_user.get("id"),
         request=request,
-        metadata=summary,
+        metadata={**summary, "mtd_commission": mtd_commission},
     )
 
     return {
@@ -320,4 +354,5 @@ async def today_actions(
         "renewals_due": renewals,
         "stale_leads": stale,
         "todays_appointments": appts,
+        "mtd_commission": mtd_commission,
     }

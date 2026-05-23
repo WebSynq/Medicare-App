@@ -147,6 +147,13 @@ export default function TodayPage() {
   const renewals = data?.renewals_due || [];
   const stale = data?.stale_leads || [];
   const appts = data?.todays_appointments || [];
+  const mtdCommission = Number(data?.mtd_commission) || 0;
+
+  const mtdCommissionLabel = new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(mtdCommission);
 
   return (
     <div className="p-6 md:p-8">
@@ -174,6 +181,16 @@ export default function TodayPage() {
             <SummaryPill count={summary.renewals_count} kind="renewals" suffix="Renewals" />
             <SummaryPill count={summary.stale_count} kind="stale" suffix="Stale Leads" />
             <SummaryPill count={summary.appointments_count} kind="appointments" suffix="Appointments" />
+            {mtdCommission > 0 && (
+              <span
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tabular-nums"
+                style={{ background: "rgba(22,163,74,0.15)", color: "#166534" }}
+                data-testid="today-pill-mtd-commission"
+              >
+                <span className="font-bold">{mtdCommissionLabel}</span>
+                Est. MTD
+              </span>
+            )}
           </div>
         </div>
 
