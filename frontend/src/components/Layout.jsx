@@ -41,6 +41,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import ChatWidget from "@/components/ChatWidget";
 import CommandPalette from "@/components/CommandPalette";
+import GlobalSearch from "@/components/GlobalSearch";
 
 // Width tokens for the two sidebar states. Pulled to the top so the
 // fixed sidebar, the main content padding, and the layout reserve stay
@@ -1086,17 +1087,32 @@ export function AppLayout({ children }) {
     }
   });
 
-  // Imperative bridge so child components (sidebar search button,
-  // ⌘K keypress inside CommandPalette) and any future page-level
-  // "Open palette" CTA can open the palette without prop drilling.
+  // Global search dialog (Cmd/Ctrl+K). The sidebar search button +
+  // mobile top-bar search icon both call openPalette which now opens
+  // this dialog instead of the old route-jumper CommandPalette. The
+  // palette still mounts below (kept for any other consumers wiring
+  // into the same keydown), but the visible search entry-points all
+  // route through GlobalSearch.
+  const [searchOpen, setSearchOpen] = useState(false);
   const [paletteSignal, setPaletteSignal] = useState(0);
   const openPalette = () => {
-    // Synthesize the same keystroke the CommandPalette already listens
-    // for. Avoids exposing an internal API.
-    const evt = new KeyboardEvent("keydown", { key: "k", metaKey: true });
-    window.dispatchEvent(evt);
+    setSearchOpen(true);
     setPaletteSignal((n) => n + 1);
   };
+
+  // Cmd/Ctrl+K opens GlobalSearch. Registered once at the layout
+  // level so every authenticated page picks it up for free.
+  useEffect(() => {
+    function onKey(e) {
+      const isK = (e.key || "").toLowerCase() === "k";
+      if (isK && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const toggleCollapsed = () => {
     setCollapsed((prev) => {
@@ -1199,8 +1215,14 @@ export function AppLayout({ children }) {
         onOpenSearch={openPalette}
       />
 
-      {/* Global keyboard-driven launcher. Single instance lives in the
-          chrome so every authenticated page gets it for free. */}
+      {/* Global search — Cmd/Ctrl+K. Single instance at the chrome
+          level so every authenticated page picks up the shortcut and
+          the visible entry-point buttons. */}
+      <GlobalSearch open={searchOpen} onOpenChange={setSearchOpen} />
+
+      {/* Legacy CommandPalette — kept mounted for any consumer still
+          calling its module-level openPalette() helper. The visible
+          search buttons now route through GlobalSearch above. */}
       <CommandPalette key={paletteSignal} />
 
       {/* Floating AI assistant — rendered outside main so it stays put

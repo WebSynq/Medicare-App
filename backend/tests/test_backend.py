@@ -1920,6 +1920,112 @@ def test_aep_countdown_calculation(client, db, admin_headers):
     assert "is_active" in oep
 
 
+# ── Global search ──────────────────────────────────────────────────────────
+def test_search_requires_min_length(client, db, admin_headers):
+    """Queries under 2 chars 400."""
+    r = client.get("/api/search?q=a", headers=admin_headers)
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_search_returns_leads_appointments_notes(client, db, admin_headers):
+    """Match a lead by name, an appointment by client name, and a note
+    by content — all three surfaces in one response, leads first."""
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    now_iso = "2026-05-10T10:00:00+00:00"
+    await db.leads.insert_one({
+        "id": "search-lead-1",
+        "first_name": "Zelda", "last_name": "Marin",
+        "phone": "555-1111", "email": "zelda@example.com",
+        "current_carrier": "Aetna", "state": "IL",
+        "agent_id": admin["id"], "agent_name": "Admin",
+        "status": "new",
+        "created_at": now_iso, "updated_at": now_iso,
+    })
+    await db.appointments.insert_one({
+        "appointment_id": "search-appt-1",
+        "agent_id": admin["id"],
+        "client_name": "Zelda Marin",
+        "appointment_date": "2026-06-01", "appointment_time": "10:00",
+        "type": "enrollment", "status": "scheduled",
+        "notes": "Zelda is ready",
+        "created_at": now_iso, "updated_at": now_iso,
+    })
+    await db.notes.insert_one({
+        "note_id": "search-note-1",
+        "lead_id": "search-lead-1",
+        "agent_id": admin["id"], "agent_name": "Admin",
+        "type": "note", "content": "Zelda confirmed she's interested",
+        "is_task": False, "deleted": False,
+        "created_at": now_iso, "updated_at": now_iso,
+    })
+
+    r = client.get("/api/search?q=Zelda", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    types = [r["type"] for r in body["results"]]
+    # All three surfaces matched.
+    assert "lead" in types
+    assert "appointment" in types
+    assert "note" in types
+    # Leads sort first (score=3 beats appointment=2 beats note=1).
+    assert body["results"][0]["type"] == "lead"
+
+
+@pytest.mark.asyncio
+async def test_search_scoped_to_agent(client, db, admin_headers):
+    """Agent B searching the same term only sees their own records."""
+    # Admin's lead
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    await db.leads.insert_one({
+        "id": "scope-lead-admin",
+        "first_name": "Quincy", "last_name": "Shared",
+        "agent_id": admin["id"], "agent_name": "Admin",
+        "status": "new",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    # Bob with his own lead
+    b_id, b_headers = await _make_agent_with_token(
+        client, db, admin_headers, "search.bob@example.com", "Bob S",
+        password="Q9pl#aux!7zT",
+    )
+    await db.leads.insert_one({
+        "id": "scope-lead-bob",
+        "first_name": "Quincy", "last_name": "BobsOwn",
+        "agent_id": b_id, "agent_name": "Bob S",
+        "status": "new",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+
+    # Bob searches "Quincy" — should only see his own lead, not admin's.
+    bob_r = client.get("/api/search?q=Quincy", headers=b_headers)
+    assert bob_r.status_code == 200
+    bob_ids = [r["id"] for r in bob_r.json()["results"]]
+    assert "scope-lead-bob" in bob_ids
+    assert "scope-lead-admin" not in bob_ids
+
+    # Admin sees both (FULL_AGENCY_SCOPE).
+    admin_r = client.get("/api/search?q=Quincy", headers=admin_headers)
+    admin_ids = [r["id"] for r in admin_r.json()["results"]]
+    assert "scope-lead-admin" in admin_ids
+    assert "scope-lead-bob" in admin_ids
+
+
+@pytest.mark.asyncio
+async def test_search_audits(client, db, admin_headers):
+    """Search writes search_performed audit with query length only —
+    never the raw query (PHI risk)."""
+    client.get("/api/search?q=Zelda", headers=admin_headers)
+    entry = await db.audit_logs.find_one({"event_type": "search_performed"})
+    assert entry is not None
+    assert "query_length" in entry["metadata"]
+    # Raw query MUST NOT appear in audit metadata.
+    assert "query" not in entry["metadata"]
+    assert "q" not in entry["metadata"]
+
+
 # ── Notes + Tasks ──────────────────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_note_create_and_list(client, db, admin_headers):

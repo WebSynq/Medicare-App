@@ -53,6 +53,7 @@ from cfo_chat_router import router as cfo_chat_router  # noqa: E402
 from today_router import router as today_router  # noqa: E402
 from appointments_router import router as appointments_router  # noqa: E402
 from notes_router import router as notes_router  # noqa: E402
+from search_router import router as search_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
 
 
@@ -172,6 +173,7 @@ app.include_router(cfo_chat_router, prefix="/api")
 app.include_router(today_router, prefix="/api")
 app.include_router(appointments_router, prefix="/api")
 app.include_router(notes_router, prefix="/api")
+app.include_router(search_router, prefix="/api")
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
