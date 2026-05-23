@@ -1920,6 +1920,139 @@ def test_aep_countdown_calculation(client, db, admin_headers):
     assert "is_active" in oep
 
 
+# ── Agent transfer ─────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def _make_agent_with_token(client, db, admin_headers, email, name,
+                                  password="Q9pl#aux!7zT"):
+    """Helper: invite+register+approve an agent and return (id, headers)."""
+    inv = client.post("/api/auth/invite", headers=admin_headers, json={
+        "email": email, "full_name": name,
+        "agency_name": "GHW", "agent_name": name,
+    }).json()
+    reg = client.post("/api/auth/register", json={
+        "email": email, "password": password,
+        "full_name": name, "agency_name": "GHW",
+        "invite_token": inv["token"],
+    })
+    assert reg.status_code == 201, reg.text
+    uid = reg.json()["id"]
+    client.post(f"/api/auth/users/{uid}/approve", headers=admin_headers)
+    login = client.post("/api/auth/login", json={
+        "email": email, "password": password,
+    })
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    return uid, headers
+
+
+@pytest.mark.asyncio
+async def test_lead_transfer_success(client, db, admin_headers):
+    """Admin transfers a lead from agent A to agent B; doc gets the new
+    agent_id + transferred_at + transferred_from + transfer_reason."""
+    a_id, _ = await _make_agent_with_token(
+        client, db, admin_headers, "xfer.alice@example.com", "Alice X",
+        password="Q1pl#aux!7zT",
+    )
+    b_id, _ = await _make_agent_with_token(
+        client, db, admin_headers, "xfer.bob@example.com", "Bob X",
+        password="Q2pl#aux!7zT",
+    )
+    await db.leads.insert_one({
+        "id": "xfer-lead-1",
+        "first_name": "Move", "last_name": "Me",
+        "agent_id": a_id, "agent_name": "Alice X",
+        "status": "new",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    r = client.patch(
+        "/api/leads/xfer-lead-1/transfer",
+        headers=admin_headers,
+        json={"new_agent_id": b_id, "reason": "Territory balancing"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["agent_id"] == b_id
+    assert body["agent_name"] == "Bob X"
+
+    stored = await db.leads.find_one({"id": "xfer-lead-1"}, {"_id": 0})
+    assert stored["transferred_from"] == a_id
+    assert stored["transfer_reason"] == "Territory balancing"
+    assert stored["transferred_at"]
+
+    audit = await db.audit_logs.find_one({"event_type": "lead_transferred"})
+    assert audit is not None
+    assert audit["metadata"]["from_agent_id"] == a_id
+    assert audit["metadata"]["to_agent_id"] == b_id
+
+
+@pytest.mark.asyncio
+async def test_lead_transfer_to_non_agent_fails(client, db, admin_headers):
+    """Transfers to an admin / coach / compliance account 422 — leads
+    only belong to role=agent users."""
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    a_id, _ = await _make_agent_with_token(
+        client, db, admin_headers, "xfer.solo@example.com", "Solo X",
+        password="Q3pl#aux!7zT",
+    )
+    await db.leads.insert_one({
+        "id": "xfer-lead-2",
+        "first_name": "Wrong", "last_name": "Dest",
+        "agent_id": a_id, "agent_name": "Solo X",
+        "status": "new",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    r = client.patch(
+        "/api/leads/xfer-lead-2/transfer",
+        headers=admin_headers,
+        json={"new_agent_id": admin["id"]},
+    )
+    assert r.status_code == 422
+    assert "role 'admin'" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_lead_transfer_agent_forbidden(client, db, admin_headers):
+    """Regular agents can't transfer leads — only admin + coach."""
+    a_id, a_headers = await _make_agent_with_token(
+        client, db, admin_headers, "xfer.actor@example.com", "Actor X",
+        password="Q4pl#aux!7zT",
+    )
+    b_id, _ = await _make_agent_with_token(
+        client, db, admin_headers, "xfer.dest@example.com", "Dest X",
+        password="Q5pl#aux!7zT",
+    )
+    await db.leads.insert_one({
+        "id": "xfer-lead-3",
+        "first_name": "Own", "last_name": "Lead",
+        "agent_id": a_id, "agent_name": "Actor X",
+        "status": "new",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    r = client.patch(
+        "/api/leads/xfer-lead-3/transfer",
+        headers=a_headers,
+        json={"new_agent_id": b_id},
+    )
+    assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_lead_transfer_invalid_lead_404(client, db, admin_headers):
+    """A transfer pointed at a non-existent lead 404s."""
+    b_id, _ = await _make_agent_with_token(
+        client, db, admin_headers, "xfer.empty@example.com", "Empty X",
+        password="Q6pl#aux!7zT",
+    )
+    r = client.patch(
+        "/api/leads/no-such-lead/transfer",
+        headers=admin_headers,
+        json={"new_agent_id": b_id},
+    )
+    assert r.status_code == 404
+
+
 # ── Today action centre ────────────────────────────────────────────────────
 def test_today_actions_requires_auth(client, db):
     """No token → 401 (rejects anonymous access to the aggregator)."""

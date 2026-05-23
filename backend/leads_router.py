@@ -7,9 +7,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Query
 from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -21,6 +22,7 @@ from deps import (
     agent_filter,
     get_agency_id,
     get_client_ip,
+    require_roles,
     write_audit,
     FULL_AGENCY_SCOPE_ROLES,
 )
@@ -585,6 +587,100 @@ async def update_lead(
 
     doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
     return Lead(**doc)
+
+
+# ── Agent transfer ────────────────────────────────────────────────────────
+# Reassigns a lead from one agent to another. Distinct from the generic
+# PATCH endpoint because (a) it has stricter role gating (admin + coach
+# only — coach owns load-balancing, agent departures, territory moves),
+# (b) it validates the destination is actually an agent rather than an
+# admin/coach/CS account, and (c) the audit metadata captures from/to
+# agent names so the trail reads like a transfer log instead of a
+# generic field-update event.
+class LeadTransferRequest(BaseModel):
+    new_agent_id: str = Field(..., min_length=1, max_length=128)
+    reason: Optional[str] = Field(None, max_length=200)
+
+
+@router.patch("/{lead_id}/transfer", response_model=Lead)
+@limiter.limit("20/hour")
+async def transfer_lead(
+    lead_id: str,
+    request: Request,
+    body: LeadTransferRequest = Body(...),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin", "coach")),
+):
+    """Reassign a lead to a different agent. admin + coach only.
+
+    Validates that the destination user exists AND has role == "agent"
+    so we never accidentally transfer a lead onto an admin / coach /
+    accounting account (those roles read the agency book; they don't
+    own individual leads in their personal scope).
+    """
+    lead = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    new_agent = await db.users.find_one(
+        {"id": body.new_agent_id}, {"_id": 0},
+    )
+    if not new_agent:
+        raise HTTPException(
+            status_code=422,
+            detail="Target agent not found",
+        )
+    if new_agent.get("role") != "agent":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Leads can only be transferred to a user with role "
+                "'agent' — destination has role "
+                f"'{new_agent.get('role') or 'unknown'}'."
+            ),
+        )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    reason = (body.reason or "").strip() or "No reason given"
+    old_agent_id = lead.get("agent_id")
+    old_agent_name = lead.get("agent_name")
+    new_agent_name = (
+        new_agent.get("agent_name")
+        or new_agent.get("full_name")
+        or new_agent.get("email")
+    )
+
+    await db.leads.update_one(
+        {"id": lead_id},
+        {"$set": {
+            "agent_id": new_agent["id"],
+            "agent_name": new_agent_name,
+            "agent_email": (new_agent.get("email") or "").lower() or None,
+            "transferred_at": now_iso,
+            "transferred_from": old_agent_id,
+            "transfer_reason": reason,
+            "updated_at": now_iso,
+        }},
+    )
+
+    await write_audit(
+        db, "lead_transferred",
+        actor_email=current_user.get("email"),
+        actor_id=current_user["id"],
+        target_type="lead",
+        target_id=lead_id,
+        request=request,
+        metadata={
+            "from_agent_id": old_agent_id,
+            "from_agent_name": old_agent_name,
+            "to_agent_id": new_agent["id"],
+            "to_agent_name": new_agent_name,
+            "reason": reason,
+        },
+    )
+
+    fresh = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    return Lead(**fresh)
 
 
 @router.get("/{lead_id}/pdf")

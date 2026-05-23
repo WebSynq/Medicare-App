@@ -7,6 +7,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
   Tabs,
   TabsContent,
   TabsList,
@@ -38,9 +52,10 @@ import {
   AlertTriangle,
   Sparkles,
   Headphones,
+  ArrowLeftRight,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+import { api, auth } from "@/lib/api";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 
 const STATUS_BADGE = {
@@ -398,6 +413,81 @@ export default function ClientProfile() {
     }
   }
 
+  // ── Agent transfer (admin / coach) ─────────────────────────────────────
+  const currentUser = auth.getUser();
+  const canTransfer =
+    currentUser?.role === "admin" || currentUser?.role === "coach";
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferAgents, setTransferAgents] = useState([]);
+  const [transferTargetId, setTransferTargetId] = useState("");
+  const [transferReason, setTransferReason] = useState("");
+  const [transferLoadingAgents, setTransferLoadingAgents] = useState(false);
+  const [transferring, setTransferring] = useState(false);
+
+  // Reset sheet state every time it closes so reopening starts clean.
+  useEffect(() => {
+    if (!transferOpen) {
+      setTransferTargetId("");
+      setTransferReason("");
+      setTransferring(false);
+    }
+  }, [transferOpen]);
+
+  // Fetch the agent list lazily — only when the sheet actually opens.
+  // Filter to role=agent so admins/coach/CS accounts don't appear as
+  // transfer targets (backend rejects them anyway with 422).
+  useEffect(() => {
+    if (!transferOpen) return;
+    let alive = true;
+    setTransferLoadingAgents(true);
+    (async () => {
+      try {
+        const res = await api.get("/agents");
+        if (!alive) return;
+        const all = res?.data?.agents || [];
+        setTransferAgents(
+          all.filter(
+            (a) => a.role === "agent" && a.is_active !== false &&
+                    a.id !== lead?.agent_id,
+          ),
+        );
+      } catch {
+        if (alive) setTransferAgents([]);
+      } finally {
+        if (alive) setTransferLoadingAgents(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [transferOpen, lead?.agent_id]);
+
+  async function submitTransfer() {
+    if (!transferTargetId) {
+      toast.error("Pick an agent");
+      return;
+    }
+    setTransferring(true);
+    try {
+      const payload = { new_agent_id: transferTargetId };
+      if (transferReason.trim()) payload.reason = transferReason.trim();
+      const { data } = await api.patch(
+        `/leads/${leadId}/transfer`,
+        payload,
+      );
+      setLead(data);
+      const target = transferAgents.find((a) => a.id === transferTargetId);
+      toast.success(
+        `Client transferred to ${target?.full_name || target?.agent_name || "agent"}`,
+      );
+      setTransferOpen(false);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Transfer failed");
+    } finally {
+      setTransferring(false);
+    }
+  }
+
   // Notes auto-save — fires 1.2s after the user stops typing.
   function onNotesChange(v) {
     setNotesDraft(v);
@@ -638,6 +728,17 @@ export default function ClientProfile() {
                     data-testid="client-edit-btn"
                   >
                     <Pencil className="w-3.5 h-3.5 mr-1.5" /> Edit
+                  </Button>
+                )}
+                {canTransfer && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTransferOpen(true)}
+                    data-testid="client-transfer-btn"
+                  >
+                    <ArrowLeftRight className="w-3.5 h-3.5 mr-1.5" />
+                    Transfer Client
                   </Button>
                 )}
                 <GhlSyncPill lead={lead} />
@@ -1260,6 +1361,106 @@ export default function ClientProfile() {
           </TabsContent>
         </Tabs>
       </main>
+
+      {/* Transfer Client sheet — admin + coach only, opens from the
+          header action row. Server-side require_roles("admin", "coach")
+          plus a destination-must-be-role-agent check is the source of
+          truth; this UI is the friendly path. */}
+      <Sheet open={transferOpen} onOpenChange={setTransferOpen}>
+        <SheetContent side="right" className="w-full sm:max-w-md overflow-y-auto">
+          <SheetHeader className="mb-4">
+            <SheetTitle>
+              Transfer {lead?.first_name} {lead?.last_name} to a
+              different agent
+            </SheetTitle>
+            <SheetDescription>
+              Pick the destination agent. Historical records (notes,
+              documents, audit trail) stay with this client — only
+              future activity routes to the new agent.
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="space-y-4">
+            <div>
+              <Label className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1.5 block">
+                Destination agent *
+              </Label>
+              <Select
+                value={transferTargetId}
+                onValueChange={setTransferTargetId}
+                disabled={transferLoadingAgents}
+              >
+                <SelectTrigger className="h-10" data-testid="transfer-agent-select">
+                  <SelectValue
+                    placeholder={
+                      transferLoadingAgents ? "Loading agents…" : "Pick an agent"
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {transferAgents.length === 0 && !transferLoadingAgents && (
+                    <div className="px-3 py-2 text-xs text-muted-foreground">
+                      No other agents available.
+                    </div>
+                  )}
+                  {transferAgents.map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      {a.full_name || a.agent_name || a.email}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <Label className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1.5 block">
+                Reason (optional)
+              </Label>
+              <Input
+                value={transferReason}
+                onChange={(e) => setTransferReason(e.target.value)}
+                maxLength={200}
+                placeholder="Territory change, agent departure, load balancing…"
+                data-testid="transfer-reason"
+              />
+              <p className="text-[10px] text-muted-foreground mt-1 text-right">
+                {transferReason.length}/200
+              </p>
+            </div>
+
+            <div
+              className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+            >
+              <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <span>
+                This will move all future activity to the selected
+                agent. Historical records are preserved.
+              </span>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="flex-1"
+                onClick={() => setTransferOpen(false)}
+                disabled={transferring}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                className="flex-1 bg-[#e85d2f] hover:bg-[#c84416]"
+                onClick={submitTransfer}
+                disabled={transferring || !transferTargetId}
+                data-testid="transfer-confirm"
+              >
+                {transferring ? "Transferring…" : "Confirm Transfer"}
+              </Button>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
