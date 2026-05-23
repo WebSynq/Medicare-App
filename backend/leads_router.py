@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field
@@ -411,6 +411,230 @@ async def _fire_speed_to_lead_sms(
     except Exception as e:
         logger.warning("speed-to-lead SMS failed for %s: %s",
                        lead.get("id"), e)
+
+
+# ── CSV import ───────────────────────────────────────────────────────────
+# Bulk-create leads from an uploaded .csv. Used to onboard an existing
+# book of business or import a marketing-list pull. Every imported row
+# inherits the calling agent's identity via get_effective_agent so an
+# admin can import for an agent via X-Agent-ID (consistent with the
+# rest of the write path).
+_CSV_MAX_BYTES = 5 * 1024 * 1024  # 5 MB ceiling per the spec
+_CSV_DOB_FORMATS = ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y")
+
+
+def _parse_csv_dob(raw):
+    """Tolerant DOB parse — return ISO YYYY-MM-DD on success, None on
+    anything we can't recognise. Accepts the three common formats the
+    spec calls out plus whitespace-padded variants."""
+    if not raw or not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    for fmt in _CSV_DOB_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _split_full_name(raw):
+    """('Mira Holt') -> ('Mira', 'Holt'). Last token is the last_name;
+    everything before joins as the first_name. Empty when blank."""
+    s = (raw or "").strip()
+    if not s:
+        return "", ""
+    parts = s.split()
+    if len(parts) == 1:
+        return parts[0], ""
+    return " ".join(parts[:-1]), parts[-1]
+
+
+@router.post("/import", status_code=201)
+@limiter.limit("5/hour")
+async def import_leads_csv(
+    request: Request,
+    csv_file: UploadFile = File(...),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    effective: dict = Depends(get_effective_agent),
+):
+    """Bulk-import leads from a CSV. Accepts the columns documented in
+    the spec (case-insensitive header match), skips rows missing both
+    phone AND email, dedupes by email inside the file, and skips
+    again on existing-email collisions inside the effective agent's
+    scope. Returns per-bucket counts so the SPA can show a clear
+    "X imported, Y duplicates, Z errors" summary."""
+    fname = (csv_file.filename or "").lower()
+    if not fname.endswith(".csv"):
+        raise HTTPException(
+            status_code=422,
+            detail="Only .csv files are accepted",
+        )
+
+    content = await csv_file.read()
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="File is empty.")
+    if len(content) > _CSV_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds the 5MB limit "
+                   f"({len(content) // 1_048_576} MB received).",
+        )
+
+    # Lazy-import csv to keep the module's import-time cost the same
+    # as before this endpoint landed.
+    import csv as _csv
+    import io as _io
+
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = content.decode("latin-1")
+        except Exception:
+            raise HTTPException(
+                status_code=422,
+                detail="Could not decode file as UTF-8 or Latin-1.",
+            )
+
+    reader = _csv.DictReader(_io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(
+            status_code=422,
+            detail="CSV has no header row.",
+        )
+    # Case-insensitive header map: lowercased-name → original key.
+    header_map = {h.lower().strip(): h for h in reader.fieldnames}
+
+    def col(row, *names):
+        for n in names:
+            key = header_map.get(n)
+            if key is not None:
+                val = row.get(key)
+                if val is not None and str(val).strip() != "":
+                    return str(val).strip()
+        return ""
+
+    seen_emails_in_file: set[str] = set()
+    imported = 0
+    skipped_duplicates = 0
+    skipped_empty = 0
+    errors: list[dict] = []
+
+    effective_id = effective["id"]
+    effective_email = (effective.get("email") or "").lower().strip() or None
+    effective_name = (
+        effective.get("agent_name") or effective.get("full_name") or None
+    )
+    now_iso = datetime.now(timezone.utc).isoformat()
+    agency = get_agency_id()
+
+    # Pre-load the existing emails owned by the effective agent so we
+    # can dedup without N round-trips. Scoped to this agent — admins
+    # who use X-Agent-ID dedupe against the target agent's book.
+    existing_emails: set[str] = set()
+    async for ld in db.leads.find(
+        {"agent_id": effective_id, "email": {"$nin": [None, ""]}},
+        {"_id": 0, "email": 1},
+    ):
+        em = (ld.get("email") or "").lower().strip()
+        if em:
+            existing_emails.add(em)
+
+    total_rows = 0
+    for row_idx, row in enumerate(reader, start=2):  # row 1 is the header
+        total_rows += 1
+        # Resolve name: prefer first/last; fall back to splitting
+        # full_name when first_name isn't present.
+        first = col(row, "first_name")
+        last = col(row, "last_name")
+        if not first and not last:
+            full = col(row, "full_name", "name")
+            first, last = _split_full_name(full)
+        if not (first or last):
+            errors.append({"row": row_idx, "reason": "Missing name"})
+            continue
+
+        phone = col(row, "phone", "mobile")
+        email_raw = col(row, "email")
+        email = email_raw.lower() if email_raw else ""
+        if not phone and not email:
+            skipped_empty += 1
+            continue
+
+        if email:
+            if email in seen_emails_in_file:
+                skipped_duplicates += 1
+                continue
+            seen_emails_in_file.add(email)
+            if email in existing_emails:
+                skipped_duplicates += 1
+                continue
+
+        state = col(row, "state").upper() or None
+        dob_iso = _parse_csv_dob(col(row, "date_of_birth", "dob"))
+        carrier = col(row, "carrier", "current_carrier") or None
+        product_type = col(row, "product_type", "product") or None
+        lead_source = col(row, "lead_source", "source") or None
+
+        try:
+            lead = Lead(
+                first_name=first,
+                last_name=last or "",
+                email=email or None,
+                phone=phone or None,
+                state=state,
+                date_of_birth=dob_iso,
+                current_carrier=carrier,
+                product_interest=product_type,
+                lead_source=lead_source,
+                agent_id=effective_id,
+                agent_email=effective_email,
+                agent_name=effective_name,
+                status="new",
+            )
+        except Exception as exc:                            # noqa: BLE001
+            errors.append({
+                "row": row_idx,
+                "reason": f"Validation: {str(exc)[:160]}",
+            })
+            continue
+
+        doc = lead.model_dump()
+        doc["agency_id"] = agency
+        doc["created_via"] = "csv_import"
+        doc["created_at"] = now_iso
+        doc["updated_at"] = now_iso
+        await db.leads.insert_one(doc.copy())
+        imported += 1
+
+    await write_audit(
+        db, "leads_imported",
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
+        target_type="lead_import", target_id=effective_id,
+        request=request,
+        metadata={
+            "imported": imported,
+            "skipped_duplicates": skipped_duplicates,
+            "skipped_empty": skipped_empty,
+            "errors_count": len(errors),
+            "total_rows": total_rows,
+            "filename": (csv_file.filename or "")[:120],
+            "impersonated_by": effective.get("_impersonated_by"),
+        },
+    )
+
+    return {
+        "imported": imported,
+        "skipped_duplicates": skipped_duplicates,
+        "skipped_empty": skipped_empty,
+        "errors": errors[:50],   # cap so a junk file doesn't blow up the response
+        "total_rows": total_rows,
+    }
 
 
 # ── Pipeline (Kanban) ────────────────────────────────────────────────────

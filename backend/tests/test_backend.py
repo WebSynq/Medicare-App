@@ -1920,6 +1920,116 @@ def test_aep_countdown_calculation(client, db, admin_headers):
     assert "is_active" in oep
 
 
+# ── CSV import ─────────────────────────────────────────────────────────────
+def _import_post(client, headers, csv_text, filename="leads.csv"):
+    """Helper: POST a CSV string as multipart/form-data."""
+    return client.post(
+        "/api/leads/import",
+        headers=headers,
+        files={"csv_file": (filename, csv_text.encode("utf-8"), "text/csv")},
+    )
+
+
+@pytest.mark.asyncio
+async def test_import_valid_csv(client, db, admin_headers):
+    """Five-row CSV imports cleanly, agency_id is stamped."""
+    csv_text = (
+        "full_name,phone,email,state,date_of_birth,carrier\n"
+        "Mira Holt,555-1000,mira@example.com,IL,1955-03-15,Aetna\n"
+        "Quinn Adams,555-1001,quinn@example.com,FL,03/22/1962,Humana\n"
+        "Pat Lee,,pat@example.com,TX,,UHC\n"
+        "Riley Cho,555-1003,,WA,11/04/1948,\n"
+        "Sam Park,555-1004,sam@example.com,CA,1958-09-09,Aetna\n"
+    )
+    r = _import_post(client, admin_headers, csv_text)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["imported"] == 5
+    assert body["skipped_duplicates"] == 0
+    assert body["skipped_empty"] == 0
+    assert body["total_rows"] == 5
+    assert body["errors"] == []
+
+    # Spot-check a row: agency_id stamped, created_via marker present,
+    # status defaults to "new".
+    sample = await db.leads.find_one({"email": "mira@example.com"}, {"_id": 0})
+    assert sample is not None
+    assert sample["agency_id"] == "ghw_001"
+    assert sample["created_via"] == "csv_import"
+    assert sample["status"] == "new"
+    assert sample["date_of_birth"] == "1955-03-15"
+
+
+@pytest.mark.asyncio
+async def test_import_skips_duplicates(client, db, admin_headers):
+    """Email already on file for the agent → skipped. In-file dupes
+    inside the same upload → skipped too (keep first)."""
+    admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
+    # Pre-existing lead the admin already owns.
+    await db.leads.insert_one({
+        "id": "existing-1",
+        "first_name": "Pre", "last_name": "Existing",
+        "email": "dup@example.com",
+        "agent_id": admin["id"], "agent_name": "Admin",
+        "status": "new",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    })
+    csv_text = (
+        "full_name,phone,email\n"
+        "Already Here,555-9000,dup@example.com\n"       # existing-collision
+        "First In File,555-9001,twin@example.com\n"     # ok
+        "Second In File,555-9002,twin@example.com\n"    # in-file dup
+        "Fresh One,555-9003,fresh@example.com\n"        # ok
+    )
+    r = _import_post(client, admin_headers, csv_text)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["imported"] == 2
+    assert body["skipped_duplicates"] == 2
+    assert body["total_rows"] == 4
+
+
+def test_import_skips_empty_rows(client, db, admin_headers):
+    """Rows missing both phone AND email are counted as skipped_empty
+    (not imported, not erroring)."""
+    csv_text = (
+        "full_name,phone,email\n"
+        "Has Phone,555-1,,\n"                # ok
+        "No Contact,,\n"                     # skipped_empty
+        "Has Email,,emailonly@example.com\n" # ok
+        "Also Empty,,\n"                     # skipped_empty
+    )
+    # Two rows above are actually 4-col with empty trailing cells but
+    # the field count matches the header so DictReader parses fine.
+    r = _import_post(client, admin_headers, csv_text)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["imported"] == 2
+    assert body["skipped_empty"] == 2
+    assert body["total_rows"] == 4
+
+
+def test_import_wrong_format_422(client, db, admin_headers):
+    """A non-.csv filename is rejected up front (no parsing attempt)."""
+    r = client.post(
+        "/api/leads/import",
+        headers=admin_headers,
+        files={"csv_file": ("leads.xlsx", b"binary-garbage", "application/vnd.ms-excel")},
+    )
+    assert r.status_code == 422
+    assert ".csv" in r.json()["detail"]
+
+
+def test_import_requires_auth(client, db):
+    """Unauthenticated upload is rejected."""
+    r = client.post(
+        "/api/leads/import",
+        files={"csv_file": ("x.csv", b"full_name,phone\nA,1\n", "text/csv")},
+    )
+    assert r.status_code == 401
+
+
 # ── Notifications ──────────────────────────────────────────────────────────
 def test_notifications_requires_auth(client, db):
     """No token → 401 on the unread-count endpoint."""

@@ -29,6 +29,7 @@ import {
   ShieldAlert,
   ArrowUpRight,
   Plus,
+  Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -187,10 +188,18 @@ export default function ClientsList() {
             </p>
             <ImpersonationBanner />
           </div>
-          <Button onClick={() => setSheetOpen(true)} data-testid="new-client-btn">
-            <Plus className="w-4 h-4 mr-1.5" />
-            New Client
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button asChild variant="outline" data-testid="clients-import-btn">
+              <Link to="/import">
+                <Upload className="w-4 h-4 mr-1.5" />
+                Import Leads
+              </Link>
+            </Button>
+            <Button onClick={() => setSheetOpen(true)} data-testid="new-client-btn">
+              <Plus className="w-4 h-4 mr-1.5" />
+              New Client
+            </Button>
+          </div>
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
