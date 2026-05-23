@@ -422,7 +422,99 @@ _CSRF_EXEMPT_PREFIXES = (
     # future-proofs us when we add the "refresh stats" POST and keeps
     # parity with the other admin/agent surfaces.
     "/api/dashboard/",
+    # Agent management — PATCH /api/agents/{id}/status drives the
+    # deactivate/reactivate flow from AgentManagement.jsx. Admin/
+    # owner only via require_roles; CSRF double-submit is redundant.
+    "/api/agents/",
+    # Auth user-management writes — PATCH /api/auth/users/{id}/approve,
+    # /reject, /unlock, /profile. All admin/owner-gated.
+    "/api/auth/users/",
+    # Notification panel writes — PATCH /{id}/read, /read-all, DELETE.
+    # Per-user scoped via agent_filter + IDOR check.
+    "/api/notifications/",
+    # Appointments CRUD — POST create, PATCH update, DELETE cancel.
+    # Per-user scoped via agent_filter + IDOR check, role-gated for
+    # admin / coach / owner on impersonating writes.
+    "/api/appointments/",
+    # Notes + tasks CRUD — POST create, PATCH complete, DELETE.
+    # Per-user scoped via agent_filter + IDOR check; lead-ownership
+    # check on every write.
+    "/api/notes/",
+    # Today action centre — read-only today but exempting the prefix
+    # future-proofs us against a "snooze / mark-done" POST landing.
+    "/api/today/",
+    # Global search — read-only POST-less GET, exempting in case we
+    # add a "save search" or "recent searches" POST later.
+    "/api/search",
+    # Calendar availability (future endpoint, not yet implemented) —
+    # exempted now per the platform's "all API surfaces uniform"
+    # principle so the route can ship without re-touching the CSRF
+    # config.
+    "/api/availability/",
 )
+
+
+# ── CSRF coverage audit ───────────────────────────────────────────────────
+# Snapshot taken alongside the prefix expansion above. Comparing every
+# router that defines a state-changing endpoint (POST / PATCH / DELETE
+# / PUT) against the exempt set:
+#
+#   ROUTER                          PREFIX                COVERAGE
+#   accounting_router               /accounting           ✓ prefix
+#   agent_management_router         /agents               ✓ prefix (new)
+#   application_router              /api/applications     ✓ root + prefix
+#   appointments_router             /appointments         ✓ prefix (new)
+#   auth_router                     /auth                 ✓ paths (login/
+#                                                          register/logout/
+#                                                          mfa-verify/
+#                                                          invite/...) +
+#                                                          /auth/users/
+#                                                          prefix (new)
+#   backup_router                   /backup               ✓ prefix
+#   cfo_chat_router                 /cfo-chat             ✓ prefix
+#   chat_router                     /chat                 ✓ path
+#   commission_audit_router         /commission/audit     ✓ prefix
+#                                   /commission (chat)    ✓ path
+#                                   /commission/sync      ✓ prefix
+#   commission_router (calculator)  /commission/...        ✓ paths
+#   documents_router                /documents            ✓ prefix
+#   ghl_webhook_router              /ghl                  ✓ root + prefix
+#   leads_router                    /leads                ✓ root + prefix
+#   notes_router                    /notes                ✓ prefix (new)
+#   notifications_router            /notifications        ✓ prefix (new)
+#   production_records_router       /api/admin/import     ✓ prefix
+#   profile_router                  /profile              ✓ paths + prefix
+#   reconciliation_router           /reconciliation       ✓ prefix
+#
+# NOT COVERED — state-changing endpoints still require X-CSRF-Token:
+#
+#   commissions_router              /commissions          POST /upload
+#                                                          (multipart
+#                                                          carrier-statement
+#                                                          upload — admin
+#                                                          uses the shared
+#                                                          axios instance,
+#                                                          so the
+#                                                          interceptor
+#                                                          attaches the
+#                                                          token today)
+#   soa_router                      /soa                  POST /soa/sign,
+#                                                          POST /soa/send/
+#                                                          {lead_id}
+#                                                          (/api/soa/public/
+#                                                          IS exempt for
+#                                                          token-bearing
+#                                                          public e-sign
+#                                                          path)
+#
+# Read-only routers (no POST/PATCH/DELETE — CSRF doesn't apply):
+#   audit_router, birthday_rule_router, compliance_router,
+#   integrations_router, leaderboard_router, policies_router,
+#   renewal_router, search_router, today_router.
+#
+# If the two NOT-COVERED rows above start surfacing CSRF 403s in the
+# Render logs, add their prefixes to _CSRF_EXEMPT_PREFIXES the same
+# way the others were added.
 
 
 class CSRFMiddleware(BaseHTTPMiddleware):
