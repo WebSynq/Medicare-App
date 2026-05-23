@@ -55,6 +55,7 @@ from appointments_router import router as appointments_router  # noqa: E402
 from notes_router import router as notes_router  # noqa: E402
 from search_router import router as search_router  # noqa: E402
 from notifications_router import router as notifications_router  # noqa: E402
+from agency_dashboard_router import router as agency_dashboard_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
 
 
@@ -177,6 +178,7 @@ app.include_router(appointments_router, prefix="/api")
 app.include_router(notes_router, prefix="/api")
 app.include_router(search_router, prefix="/api")
 app.include_router(notifications_router, prefix="/api")
+app.include_router(agency_dashboard_router, prefix="/api")
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────

@@ -3678,3 +3678,143 @@ async def test_team_member_cannot_assign_others(client, db, admin_headers):
 
     fresh = await db.users.find_one({"id": other_va["id"]}, {"_id": 0})
     assert fresh.get("parent_agent_id") in (None, "")
+
+
+# ── Agency Command Center ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_kpis_returns_correct_period(client, db, admin_headers):
+    """KPI endpoint returns the spec'd envelope shape, honours the
+    period filter, and computes period-over-period trends correctly.
+
+    Two enrolled leads in the last 24h vs zero in the prior 30-day
+    bucket → trend_pct should cap at 100.0 (we don't ship infinity)."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    # Lead created today, enrolled.
+    await db.leads.insert_many([
+        {
+            "id": f"lk-{i}", "agent_id": "kp-agent", "agent_name": "KP",
+            "first_name": f"K{i}", "last_name": "Test",
+            "status": "enrolled", "lead_source": "Facebook",
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+        }
+        for i in range(2)
+    ])
+    r = client.get("/api/agency-dashboard/kpis?period=last30",
+                   headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["period"] == "last30"
+    assert "date_range" in body and body["date_range"]["start"]
+    assert body["leads"]["new_this_period"] >= 2
+    assert body["enrolled"]["new_this_period"] >= 2
+    # Trend: 2 enrolled vs 0 prior → capped at 100.0 (not Inf).
+    assert body["enrolled"]["trend_pct"] == 100.0
+    # Right-now alert metrics always present.
+    for key in ("birthday_windows", "renewals", "stale_agents"):
+        assert key in body
+
+
+@pytest.mark.asyncio
+async def test_agent_performance_sorted(client, db, admin_headers):
+    """Agent rows must come back ordered by enrolled_count desc."""
+    # Two synthetic producers with different enrolled counts.
+    a = await _seed_user(db, "perf.a@example.com", role="agent",
+                          full_name="Perf A")
+    b = await _seed_user(db, "perf.b@example.com", role="agent",
+                          full_name="Perf B")
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    # B has 3 enrolled, A has 1 — performance table should sort B first.
+    await db.leads.insert_many([
+        {"id": f"a-lead-{i}", "agent_id": a["id"], "agent_name": "Perf A",
+         "first_name": f"a{i}", "last_name": "X", "status": "enrolled",
+         "created_at": now_iso, "updated_at": now_iso}
+        for i in range(1)
+    ] + [
+        {"id": f"b-lead-{i}", "agent_id": b["id"], "agent_name": "Perf B",
+         "first_name": f"b{i}", "last_name": "X", "status": "enrolled",
+         "created_at": now_iso, "updated_at": now_iso}
+        for i in range(3)
+    ])
+    r = client.get("/api/agency-dashboard/agent-performance?period=all",
+                   headers=admin_headers)
+    assert r.status_code == 200, r.text
+    rows = r.json()["agents"]
+    # Both seeded agents must appear, and B must rank above A.
+    names = [r["agent_name"] for r in rows]
+    assert "Perf A" in names and "Perf B" in names
+    assert names.index("Perf B") < names.index("Perf A")
+    perf_b = next(r for r in rows if r["agent_name"] == "Perf B")
+    assert perf_b["enrolled_count"] == 3
+    assert perf_b["status"] in ("active", "stale", "inactive")
+
+
+@pytest.mark.asyncio
+async def test_charts_return_12_weeks(client, db, admin_headers):
+    """enrollments_by_week always returns exactly 12 buckets — the
+    sustained-trend chart is fixed-length regardless of `period`."""
+    r = client.get("/api/agency-dashboard/charts?period=mtd",
+                   headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["enrollments_by_week"]) == 12
+    # Each bucket has the spec'd shape.
+    for bucket in body["enrollments_by_week"]:
+        assert {"week", "label", "count"} <= set(bucket.keys())
+        assert bucket["week"].startswith("20") and "-W" in bucket["week"]
+    # Other two charts are present but may be empty on a fresh DB.
+    assert "revenue_by_carrier" in body
+    assert "leads_by_source" in body
+
+
+@pytest.mark.asyncio
+async def test_drilldown_pagination(client, db, admin_headers):
+    """Drilldown returns the spec'd pagination envelope and the
+    page_size cap of 50."""
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    # Seed 60 leads so we can prove pagination.
+    await db.leads.insert_many([
+        {"id": f"dd-{i}", "agent_id": "dd-agent", "agent_name": "DD",
+         "first_name": f"d{i}", "last_name": "Lead", "status": "new",
+         "lead_source": "Webform",
+         "created_at": now_iso, "updated_at": now_iso}
+        for i in range(60)
+    ])
+    r = client.get("/api/agency-dashboard/drilldown/leads?period=all&page=1",
+                   headers=admin_headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["page"] == 1
+    assert body["page_size"] == 50
+    assert body["total"] >= 60
+    assert len(body["rows"]) == 50
+    # Page 2 has the remainder.
+    r2 = client.get("/api/agency-dashboard/drilldown/leads?period=all&page=2",
+                    headers=admin_headers)
+    assert r2.status_code == 200
+    body2 = r2.json()
+    assert body2["page"] == 2
+    assert len(body2["rows"]) >= 10
+
+
+@pytest.mark.asyncio
+async def test_agency_role_required_403_for_agent(client, db, admin_headers):
+    """Plain agents must be refused (403) on every command-center
+    endpoint. Only owner/admin/coach/sales_manager/compliance/
+    accounting may read."""
+    await _seed_user(db, "agent.peek@example.com", role="agent")
+    token = _login_token(client, "agent.peek@example.com")
+    headers = {"Authorization": f"Bearer {token}"}
+    for path in (
+        "/api/agency-dashboard/kpis",
+        "/api/agency-dashboard/agent-performance",
+        "/api/agency-dashboard/charts",
+        "/api/agency-dashboard/alerts",
+        "/api/agency-dashboard/drilldown/leads",
+    ):
+        r = client.get(path, headers=headers)
+        assert r.status_code == 403, f"{path}: {r.status_code} {r.text}"
