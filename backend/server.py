@@ -184,7 +184,20 @@ app.include_router(notifications_router, prefix="/api")
 # site read authenticated responses. We require CORS_ORIGINS to be set
 # explicitly to a comma-separated list of fully-qualified origins.
 _raw_origins = os.environ.get("CORS_ORIGINS", "").strip()
-_cors_origins = [o.strip() for o in _raw_origins.split(",") if o.strip() and o.strip() != "*"]
+_cors_origins = [
+    o.strip().rstrip("/")
+    for o in _raw_origins.split(",")
+    if o.strip() and o.strip() != "*"
+]
+
+# Always include production domains regardless of env var formatting
+_production_origins = [
+    "https://app.ghwcrm.com",
+    "https://medicare-app-sandy-tau.vercel.app",
+]
+for _origin in _production_origins:
+    if _origin not in _cors_origins:
+        _cors_origins.append(_origin)
 
 if not _cors_origins:
     if IS_DEV:
