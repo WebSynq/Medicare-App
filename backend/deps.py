@@ -157,11 +157,27 @@ COMPLIANCE_ROLES = (
 
 # Roles that see the full agency's lead/client data, not just their own.
 # admin/compliance are agency leadership; client_success is support staff
-# who needs visibility across every agent's book to help clients.
+# who needs visibility across every agent's book to help clients;
+# coach mentors agents on performance and pipeline; accounting reconciles
+# commissions across the agency.
 FULL_AGENCY_SCOPE_ROLES = (
     "admin",
     "compliance",
     "client_success",
+    "coach",
+    "accounting",
+)
+
+# Roles that may impersonate an individual agent via X-Agent-ID. Wider
+# than the leadership pair because coach/accounting also need to "view
+# as" a specific agent when reviewing performance or commissions.
+# client_success is intentionally excluded — they have full-scope read
+# already and impersonation would mostly cause confusion.
+IMPERSONATION_ROLES = (
+    "admin",
+    "compliance",
+    "coach",
+    "accounting",
 )
 
 
@@ -277,7 +293,7 @@ async def get_effective_agent(
     if not target_id:
         return current_user
     role = current_user.get("role", "agent")
-    if role not in ("admin", "compliance"):
+    if role not in IMPERSONATION_ROLES:
         raise HTTPException(403, "Only admins can impersonate agents")
     target = await db.users.find_one({"id": target_id}, {"_id": 0})
     if not target:

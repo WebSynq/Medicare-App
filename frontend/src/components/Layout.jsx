@@ -192,7 +192,15 @@ function AgentSwitcher({ role, onNavigate, collapsed, onToggleCollapse }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
-  const canSee = role === "admin" || role === "compliance";
+  // Roles authorised to impersonate an individual agent — mirrors the
+  // backend deps.IMPERSONATION_ROLES list. coach + accounting both
+  // need "view as agent" so they can review one rep's pipeline /
+  // commissions without leaving their own login.
+  const canSee =
+    role === "admin" ||
+    role === "compliance" ||
+    role === "coach" ||
+    role === "accounting";
 
   useEffect(() => {
     if (!canSee) return;

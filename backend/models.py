@@ -58,6 +58,8 @@ class UserBase(BaseModel):
         "sales_manager",
         "onboarding",
         "client_success",
+        "coach",
+        "accounting",
     ] = "agent"
     is_active: bool = True
     status: UserStatus = "active"
@@ -181,6 +183,8 @@ class InviteRequest(BaseModel):
         "sales_manager",
         "onboarding",
         "client_success",
+        "coach",
+        "accounting",
     ]] = "agent"
 
     @field_validator("agent_name")

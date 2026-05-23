@@ -7,6 +7,8 @@ import { toast } from "sonner";
 // not invitable here (privilege escalation requires DB-level intervention).
 const INVITABLE_ROLES = [
   { value: "agent", label: "Agent" },
+  { value: "coach", label: "Coach" },
+  { value: "accounting", label: "Accounting" },
   { value: "client_success", label: "Client Success" },
   { value: "compliance", label: "Compliance" },
   { value: "sales_manager", label: "Sales Manager" },
