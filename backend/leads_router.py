@@ -957,7 +957,7 @@ async def transfer_lead(
     request: Request,
     body: LeadTransferRequest = Body(...),
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(require_roles("admin", "coach")),
+    current_user: dict = Depends(require_roles("admin", "coach", "owner")),
 ):
     """Reassign a lead to a different agent. admin + coach only.
 

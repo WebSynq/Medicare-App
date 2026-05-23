@@ -162,6 +162,7 @@ COMPLIANCE_ROLES = (
 # commissions across the agency.
 FULL_AGENCY_SCOPE_ROLES = (
     "admin",
+    "owner",
     "compliance",
     "client_success",
     "coach",
@@ -175,6 +176,7 @@ FULL_AGENCY_SCOPE_ROLES = (
 # already and impersonation would mostly cause confusion.
 IMPERSONATION_ROLES = (
     "admin",
+    "owner",
     "compliance",
     "coach",
     "accounting",

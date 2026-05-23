@@ -457,7 +457,7 @@ async def mfa_verify(
 @router.get("/pending", response_model=list[UserPublic])
 async def list_pending_agents(
     db: AsyncIOMotorDatabase = Depends(get_db),
-    _admin=Depends(require_roles("admin")),
+    _admin=Depends(require_roles("admin", "owner")),
 ):
     cursor = db.users.find({"status": "pending"}, {"_id": 0}).sort("created_at", -1)
     return [_user_public(u) async for u in cursor]
@@ -468,7 +468,7 @@ async def approve_agent(
     user_id: str,
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    admin=Depends(require_roles("admin")),
+    admin=Depends(require_roles("admin", "owner")),
 ):
     user = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not user:
@@ -497,7 +497,7 @@ async def reject_agent(
     user_id: str,
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    admin=Depends(require_roles("admin")),
+    admin=Depends(require_roles("admin", "owner")),
 ):
     user = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not user:
@@ -522,7 +522,7 @@ async def reject_agent(
 async def create_invite(
     invite: InviteRequest,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
 ):
     """
     Admin creates an invite link for a new agent.
@@ -671,7 +671,7 @@ async def validate_invite(
 @router.get("/invites")
 async def list_invites(
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
 ):
     """List all active (unused, non-expired) invite tokens."""
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -688,7 +688,7 @@ async def revoke_invite(
     invite_id: str,
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
 ):
     """Revoke a pending invite.
 
@@ -740,7 +740,7 @@ async def revoke_invite(
 async def unlock_account(
     user_id: str,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
 ):
     """Admin manually unlocks a locked account."""
     user = await db.users.find_one({"id": user_id})
@@ -767,7 +767,7 @@ async def update_user_profile(
     payload: UserProfileUpdate,
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(require_roles("admin")),
+    current_user: dict = Depends(require_roles("admin", "owner")),
 ):
     """Admin-only: update an agent's identity fields (agent_name, agent_npn).
 

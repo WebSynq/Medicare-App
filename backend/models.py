@@ -49,6 +49,7 @@ class UserBase(BaseModel):
     # map to the compliance nav profile. admin retains full access.
     role: Literal[
         "admin",
+        "owner",
         "agent",
         "compliance",
         "va",
@@ -175,6 +176,7 @@ class InviteRequest(BaseModel):
     # that has to be done manually in the DB / via the admin tools.
     role: Optional[Literal[
         "agent",
+        "owner",
         "compliance",
         "va",
         "support",
