@@ -3802,6 +3802,81 @@ async def test_drilldown_pagination(client, db, admin_headers):
 
 
 @pytest.mark.asyncio
+async def test_me_parent_returns_parent_name(client, db):
+    """A team member calling /auth/me/parent gets the parent's name +
+    email back; an unassigned user gets null."""
+    parent = await _seed_user(db, "parent.me@example.com", role="agent",
+                               full_name="Parent Me")
+    va = await _seed_user(db, "va.me@example.com", role="va",
+                          parent_agent_id=parent["id"])
+    standalone = await _seed_user(db, "standalone.me@example.com",
+                                    role="agent")
+
+    va_token = _login_token(client, "va.me@example.com")
+    r = client.get("/api/auth/me/parent",
+                   headers={"Authorization": f"Bearer {va_token}"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["parent"] is not None
+    assert body["parent"]["id"] == parent["id"]
+    assert body["parent"]["full_name"] == "Parent Me"
+
+    # Stand-alone user without parent_agent_id → null.
+    standalone_token = _login_token(client, "standalone.me@example.com")
+    r2 = client.get("/api/auth/me/parent",
+                    headers={"Authorization": f"Bearer {standalone_token}"})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["parent"] is None
+
+
+@pytest.mark.asyncio
+async def test_invite_with_parent_agent_id_stamps_on_register(
+    client, db, admin_headers,
+):
+    """An invite carrying parent_agent_id stamps the new user with it
+    on register, so VAs come up already inside the parent's scope on
+    first sign-in."""
+    parent = await _seed_user(db, "parent.invite@example.com", role="agent",
+                               full_name="Parent Invite")
+    # Admin issues the invite for a VA with parent_agent_id set.
+    inv_r = client.post(
+        "/api/auth/invite",
+        headers=admin_headers,
+        json={
+            "email": "new.va@example.com",
+            "full_name": "New VA",
+            "agency_name": "GHW",
+            "role": "va",
+            "parent_agent_id": parent["id"],
+        },
+    )
+    assert inv_r.status_code == 201, inv_r.text
+    raw_token = inv_r.json()["token"]
+
+    # VA accepts the invite — the parent_agent_id from the invite must
+    # land on the user row.
+    reg_r = client.post(
+        "/api/auth/register",
+        json={
+            "email": "new.va@example.com",
+            "full_name": "New VA",
+            "agency_name": "GHW",
+            "password": "Q9pl#aux!7zT-newva",
+            "invite_token": raw_token,
+        },
+    )
+    assert reg_r.status_code == 201, reg_r.text
+
+    fresh = await db.users.find_one(
+        {"email": "new.va@example.com"}, {"_id": 0},
+    )
+    assert fresh["parent_agent_id"] == parent["id"], (
+        f"Invite's parent_agent_id should be stamped on register, "
+        f"got {fresh.get('parent_agent_id')}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_agency_role_required_403_for_agent(client, db, admin_headers):
     """Plain agents must be refused (403) on every command-center
     endpoint. Only owner/admin/coach/sales_manager/compliance/

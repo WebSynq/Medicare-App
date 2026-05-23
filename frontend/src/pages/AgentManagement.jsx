@@ -1,13 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Users,
+  UsersRound,
   CheckCircle2,
   XCircle,
   Clock,
   Eye,
   Power,
   PowerOff,
+  ChevronDown,
+  ChevronRight,
+  UserPlus,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -22,6 +27,20 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { api, auth } from "@/lib/api";
 import { useAgent } from "@/context/AgentContext";
 import ScrollableCard from "@/components/ScrollableCard";
@@ -126,6 +145,14 @@ export default function AgentManagement() {
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [pendingId, setPendingId] = useState(null);
+  // expandedTeamId: id of the agent whose team-member sub-row is open.
+  // teamMembersById: cache of fetched team rosters so re-expanding the
+  // same agent doesn't re-fire the network. Invalidated on assign /
+  // remove via deleting the entry before refetch.
+  const [expandedTeamId, setExpandedTeamId] = useState(null);
+  const [teamMembersById, setTeamMembersById] = useState({});
+  const [teamLoadingId, setTeamLoadingId] = useState(null);
+  const [assignSheetAgent, setAssignSheetAgent] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -157,6 +184,87 @@ export default function AgentManagement() {
     setSelectedAgent(agent);
     toast.success(`Viewing as ${agent.full_name || agent.email}`);
     navigate("/dashboard");
+  }
+
+  async function loadTeam(agentId) {
+    setTeamLoadingId(agentId);
+    try {
+      const res = await api.get(`/agents/${agentId}/team`);
+      setTeamMembersById((m) => ({ ...m, [agentId]: res.data?.members || [] }));
+    } catch (e) {
+      toast.error(
+        e?.response?.data?.detail || "Failed to load team members",
+      );
+    } finally {
+      setTeamLoadingId(null);
+    }
+  }
+
+  function toggleExpandTeam(agent) {
+    if (expandedTeamId === agent.id) {
+      setExpandedTeamId(null);
+      return;
+    }
+    setExpandedTeamId(agent.id);
+    if (!teamMembersById[agent.id]) loadTeam(agent.id);
+  }
+
+  async function handleAssignTeamMember(parentAgent, userId) {
+    try {
+      await api.post(`/agents/${parentAgent.id}/team`, { user_id: userId });
+      toast.success("Team member assigned");
+      setAssignSheetAgent(null);
+      // Bump the agent's team_count locally + refresh the team roster
+      // for this agent so the expanded list updates immediately.
+      setAgents((prev) =>
+        prev.map((a) =>
+          a.id === parentAgent.id
+            ? { ...a, team_count: (a.team_count || 0) + 1 }
+            : a,
+        ),
+      );
+      // Invalidate then refetch so the expanded section reflects the
+      // new member if it's currently open.
+      setTeamMembersById((m) => {
+        const next = { ...m };
+        delete next[parentAgent.id];
+        return next;
+      });
+      if (expandedTeamId === parentAgent.id) loadTeam(parentAgent.id);
+    } catch (e) {
+      toast.error(
+        e?.response?.data?.detail || "Could not assign team member",
+      );
+    }
+  }
+
+  async function handleRemoveTeamMember(parentAgent, member) {
+    const name = member.full_name || member.email;
+    if (!window.confirm(
+      `Remove ${name} from ${parentAgent.full_name || parentAgent.email}'s team? ` +
+      "They will revert to their own account scope.",
+    )) return;
+    try {
+      await api.delete(`/agents/${parentAgent.id}/team/${member.id}`);
+      toast.success(`${name} removed`);
+      setAgents((prev) =>
+        prev.map((a) =>
+          a.id === parentAgent.id
+            ? { ...a, team_count: Math.max(0, (a.team_count || 0) - 1) }
+            : a,
+        ),
+      );
+      setTeamMembersById((m) => ({
+        ...m,
+        [parentAgent.id]: (m[parentAgent.id] || []).filter(
+          (x) => x.id !== member.id,
+        ),
+      }));
+    } catch (e) {
+      toast.error(
+        e?.response?.data?.detail || "Could not remove team member",
+      );
+    }
   }
 
   async function handleToggleStatus(agent) {
@@ -266,16 +374,32 @@ export default function AgentManagement() {
                     const isActive = a.is_active !== false;
                     const isPending = a.status === "pending";
                     const isBusy = pendingId === a.id;
+                    const teamCount = a.team_count || 0;
+                    const isExpanded = expandedTeamId === a.id;
+                    const teamMembers = teamMembersById[a.id];
+                    const teamLoading = teamLoadingId === a.id;
+                    const canHaveTeam = a.role === "agent";
                     return (
+                      <React.Fragment key={a.id}>
                       <TableRow
-                        key={a.id}
                         className={`hover:bg-secondary/40 ${
                           isSelf ? "opacity-60" : ""
                         }`}
                         data-testid={`agent-row-${a.id}`}
                       >
                         <TableCell className="font-medium">
-                          <div>{a.full_name || a.agent_name || "—"}</div>
+                          <div className="flex items-center gap-2">
+                            <span>{a.full_name || a.agent_name || "—"}</span>
+                            {teamCount > 0 && (
+                              <Badge
+                                className="rounded-full bg-blue-100 text-blue-900 border-0 text-[10px]"
+                                data-testid={`agent-team-badge-${a.id}`}
+                              >
+                                <UsersRound className="w-2.5 h-2.5 mr-1" />
+                                {teamCount} team
+                              </Badge>
+                            )}
+                          </div>
                           <div className="text-xs text-muted-foreground">
                             {a.email}
                           </div>
@@ -311,7 +435,34 @@ export default function AgentManagement() {
                           {formatDate(a.last_submission_date)}
                         </TableCell>
                         <TableCell className="text-right">
-                          <div className="inline-flex items-center gap-2">
+                          <div className="inline-flex items-center gap-2 flex-wrap justify-end">
+                            {isAdmin && canHaveTeam && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => toggleExpandTeam(a)}
+                                className="text-blue-700 hover:text-blue-800 hover:bg-blue-50"
+                                data-testid={`agent-team-toggle-${a.id}`}
+                              >
+                                {isExpanded ? (
+                                  <ChevronDown className="w-3.5 h-3.5 mr-1.5" />
+                                ) : (
+                                  <ChevronRight className="w-3.5 h-3.5 mr-1.5" />
+                                )}
+                                Team
+                              </Button>
+                            )}
+                            {isAdmin && canHaveTeam && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setAssignSheetAgent(a)}
+                                data-testid={`agent-assign-team-${a.id}`}
+                              >
+                                <UserPlus className="w-3.5 h-3.5 mr-1.5" />
+                                Assign
+                              </Button>
+                            )}
                             <Button
                               variant="outline"
                               size="sm"
@@ -360,6 +511,61 @@ export default function AgentManagement() {
                           </div>
                         </TableCell>
                       </TableRow>
+                      {isExpanded && (
+                        <TableRow
+                          className="bg-secondary/30 hover:bg-secondary/30"
+                          data-testid={`agent-team-expanded-${a.id}`}
+                        >
+                          <TableCell colSpan={7} className="py-3">
+                            <div className="pl-4 border-l-2 border-blue-200">
+                              <div className="text-[11px] uppercase tracking-widest text-muted-foreground mb-2">
+                                Team members
+                              </div>
+                              {teamLoading ? (
+                                <p className="text-sm text-muted-foreground">
+                                  Loading…
+                                </p>
+                              ) : (teamMembers || []).length === 0 ? (
+                                <p className="text-sm text-muted-foreground">
+                                  No team members assigned yet.
+                                </p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {teamMembers.map((m) => (
+                                    <div
+                                      key={m.id}
+                                      className="flex items-center justify-between gap-3 text-sm py-1.5"
+                                      data-testid={`team-member-${m.id}`}
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="font-medium truncate">
+                                          {m.full_name || m.agent_name || m.email}
+                                        </div>
+                                        <div className="text-[11px] text-muted-foreground truncate">
+                                          {m.email} · {roleLabel(m.role)}
+                                        </div>
+                                      </div>
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() =>
+                                          handleRemoveTeamMember(a, m)
+                                        }
+                                        className="text-rose-700 hover:text-rose-800 hover:bg-rose-50 h-8 flex-shrink-0"
+                                        data-testid={`team-member-remove-${m.id}`}
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5 mr-1.5" />
+                                        Remove
+                                      </Button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      </React.Fragment>
                     );
                 })}
               </TableBody>
@@ -367,6 +573,112 @@ export default function AgentManagement() {
           </div>
         </ScrollableCard>
       </main>
+
+      <AssignTeamMemberSheet
+        parentAgent={assignSheetAgent}
+        allAgents={agents}
+        onClose={() => setAssignSheetAgent(null)}
+        onAssign={handleAssignTeamMember}
+      />
     </div>
+  );
+}
+
+// ── Assign team member sheet ─────────────────────────────────────────────
+// Lists every user with role ∈ (va, agent) who isn't already on
+// SOMEONE's team. Single-pick + confirm. Disabled when the candidate
+// list is empty so the admin knows there's no one to assign right now
+// rather than getting a silently-broken button.
+function AssignTeamMemberSheet({ parentAgent, allAgents, onClose, onAssign }) {
+  const [selected, setSelected] = useState("");
+
+  useEffect(() => {
+    setSelected("");
+  }, [parentAgent?.id]);
+
+  const candidates = useMemo(() => {
+    if (!parentAgent) return [];
+    return (allAgents || []).filter(
+      (a) =>
+        a.id !== parentAgent.id &&
+        (a.role === "va" || a.role === "agent") &&
+        a.is_active !== false &&
+        // Already-assigned VAs / agents would 409 from the backend.
+        // We don't fetch parent_agent_id on the list endpoint today,
+        // so an in-flight 409 is the safety net.
+        true,
+    );
+  }, [parentAgent, allAgents]);
+
+  const open = !!parentAgent;
+  return (
+    <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
+      <SheetContent
+        side="right"
+        className="w-full sm:max-w-md overflow-y-auto"
+      >
+        <SheetHeader className="mb-4">
+          <SheetTitle>Assign Team Member</SheetTitle>
+          <SheetDescription>
+            Pick a VA or agent to assign to{" "}
+            <strong>{parentAgent?.full_name || parentAgent?.email}</strong>'s
+            account. They'll work inside that scope from their next
+            sign-in.
+          </SheetDescription>
+        </SheetHeader>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium mb-1.5 uppercase tracking-[0.08em] text-muted-foreground">
+              Team member
+            </label>
+            <Select value={selected} onValueChange={setSelected}>
+              <SelectTrigger data-testid="assign-team-select">
+                <SelectValue placeholder="Select a user…" />
+              </SelectTrigger>
+              <SelectContent>
+                {candidates.length === 0 ? (
+                  <div className="px-3 py-4 text-xs text-muted-foreground text-center">
+                    No eligible users.
+                  </div>
+                ) : (
+                  candidates.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {(c.full_name || c.email) +
+                        " — " +
+                        (c.role === "va" ? "Virtual Assistant" : "Agent")}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] mt-1.5 text-muted-foreground">
+              Only VAs and agents may be assigned. Other roles
+              operate at agency scope.
+            </p>
+          </div>
+
+          <div className="flex gap-2 pt-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={onClose}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="flex-1 bg-[#e85d2f] hover:bg-[#c84416] text-white"
+              disabled={!selected || !parentAgent}
+              onClick={() => onAssign(parentAgent, selected)}
+              data-testid="assign-team-confirm"
+            >
+              <UserPlus className="w-3.5 h-3.5 mr-1.5" />
+              Assign to {parentAgent?.full_name?.split(" ")[0] || "agent"}'s
+              account
+            </Button>
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }

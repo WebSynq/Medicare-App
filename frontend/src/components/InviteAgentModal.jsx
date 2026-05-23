@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { X as XIcon } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
@@ -29,9 +29,37 @@ export default function InviteAgentModal({ onClose }) {
     agent_name: "",
     agent_npn: "",
     role: "agent",
+    parent_agent_id: "",
   });
   const [loading, setLoading] = useState(false);
   const [inviteUrl, setInviteUrl] = useState(null);
+  // Parent-agent picker — only fetched (and only shown) when the
+  // invitee role is va or agent, which are the only roles backend
+  // honours parent_agent_id for. Fetching lazily keeps the modal
+  // network-quiet for the common admin/owner invite case.
+  const [parentCandidates, setParentCandidates] = useState([]);
+  const parentEligible = form.role === "va" || form.role === "agent";
+
+  useEffect(() => {
+    if (!parentEligible) return;
+    let alive = true;
+    api.get("/agents")
+      .then((res) => {
+        if (!alive) return;
+        const list = (res.data?.agents || []).filter(
+          (a) => a.role === "agent" && a.is_active !== false,
+        );
+        setParentCandidates(list);
+      })
+      .catch(() => {
+        // Soft fail — the field stays hidden if we can't enumerate
+        // candidates. Admin can still finish the invite without it.
+        if (alive) setParentCandidates([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [parentEligible]);
 
   const handleSubmit = async () => {
     if (!form.email) { toast.error("Email is required"); return; }
@@ -122,7 +150,22 @@ export default function InviteAgentModal({ onClose }) {
               <label className={labelCls}>Role</label>
               <select
                 value={form.role}
-                onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
+                onChange={(e) => {
+                  const nextRole = e.target.value;
+                  setForm((f) => ({
+                    ...f,
+                    role: nextRole,
+                    // Drop parent_agent_id when the role becomes
+                    // ineligible so a stale selection can't slip
+                    // through. Backend would silently drop it anyway
+                    // (only honoured for va/agent) but keeping the
+                    // form clean is a nicer admin experience.
+                    parent_agent_id:
+                      nextRole === "va" || nextRole === "agent"
+                        ? f.parent_agent_id
+                        : "",
+                  }));
+                }}
                 className={inputCls}
               >
                 {INVITABLE_ROLES.map((r) => (
@@ -137,6 +180,35 @@ export default function InviteAgentModal({ onClose }) {
                   : "Controls which screens the invited user can access."}
               </p>
             </div>
+            {parentEligible && (
+              <div>
+                <label className={labelCls}>
+                  Assign to Agent's Account (optional)
+                </label>
+                <select
+                  value={form.parent_agent_id}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, parent_agent_id: e.target.value }))
+                  }
+                  className={inputCls}
+                  data-testid="invite-parent-agent"
+                >
+                  <option value="">— Standalone account —</option>
+                  {parentCandidates.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {(a.full_name || a.email) +
+                        (a.agent_name && a.agent_name !== a.full_name
+                          ? ` (${a.agent_name})`
+                          : "")}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] mt-1 text-muted-foreground">
+                  Pin this user to an agent's workspace so they see and
+                  manage that agent's data once they accept the invite.
+                </p>
+              </div>
+            )}
             <div>
               <label className={labelCls}>Full Name</label>
               <input

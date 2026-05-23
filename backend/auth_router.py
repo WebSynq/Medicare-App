@@ -214,6 +214,17 @@ async def register(
     # Auto-activate on register. The invite token is itself the
     # admin's approval gate — once a user redeems a valid token they
     # can sign in immediately.
+    # Carry parent_agent_id from the invite when present — admin set
+    # this so the registering team member starts inside the parent's
+    # scope on first sign-in. Only honour it for roles that are
+    # eligible to be team members; for other roles silently drop it.
+    invite_parent_id = invite.get("parent_agent_id")
+    parent_agent_id_to_stamp = (
+        invite_parent_id
+        if invite_parent_id and assigned_role in ("va", "agent")
+        else None
+    )
+
     user_doc = {
         "id": new_user_id,
         "agent_id": new_user_id,
@@ -227,6 +238,7 @@ async def register(
         "agent_npn": agent_npn,
         # Passive multi-tenant stamp — see deps.get_agency_id.
         "agency_id": get_agency_id(),
+        "parent_agent_id": parent_agent_id_to_stamp,
         "hashed_password": hash_password(body.password),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -557,6 +569,36 @@ async def me(current_user=Depends(get_current_user)):
     return _user_public(current_user)
 
 
+@router.get("/me/parent")
+async def my_parent_agent(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Resolve the team member's parent agent into a name the SPA can
+    show in the persistent "Working in: …'s workspace" banner.
+
+    Returns ``{"parent": null}`` when the caller isn't a team member
+    (no parent_agent_id) or the parent row has been deleted. Never
+    leaks any field beyond id / full_name / agent_name / email — the
+    banner doesn't need anything else, and exposing role / status here
+    would be a small privilege leak."""
+    parent_id = current_user.get("parent_agent_id")
+    if not parent_id:
+        return {"parent": None}
+    parent = await db.users.find_one(
+        {"id": parent_id},
+        {"_id": 0, "id": 1, "full_name": 1, "agent_name": 1, "email": 1},
+    )
+    if not parent:
+        return {"parent": None}
+    return {"parent": {
+        "id": parent["id"],
+        "full_name": parent.get("full_name"),
+        "agent_name": parent.get("agent_name"),
+        "email": parent.get("email"),
+    }}
+
+
 # ----- Pending agent approval (admin only) -----
 
 @router.get("/pending", response_model=list[UserPublic])
@@ -665,6 +707,10 @@ async def create_invite(
         "agent_name": invite.agent_name,
         "agent_npn": invite.agent_npn,
         "role": invite_role,
+        # parent_agent_id carried from the invite to register so the
+        # new user is auto-stamped into the parent's scope on first
+        # sign-in. None means "stand-alone account", same as before.
+        "parent_agent_id": invite.parent_agent_id,
         "created_by": current_user["id"],
         "created_at": now.isoformat(),
         "expires_at": expires.isoformat(),

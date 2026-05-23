@@ -1169,6 +1169,66 @@ function MobileMoreDrawer({
   );
 }
 
+// ── Team-member banner ────────────────────────────────────────────────────
+// Persistent blue strip under the header for users whose
+// parent_agent_id is set. Differentiated from the orange impersonation
+// banner (which a privileged user explicitly toggles) so the visual
+// vocabulary is unambiguous: orange = "I'm choosing to act as someone
+// else", blue = "I always operate inside this parent agent's
+// workspace". Quietly self-fetches the parent's display name once on
+// mount.
+function TeamMemberBanner() {
+  const user = auth.getUser();
+  const parentId = user?.parent_agent_id;
+  const [parentName, setParentName] = useState(null);
+
+  useEffect(() => {
+    if (!parentId) {
+      setParentName(null);
+      return;
+    }
+    let alive = true;
+    api.get("/auth/me/parent")
+      .then((res) => {
+        if (!alive) return;
+        const p = res.data?.parent;
+        setParentName(
+          p?.full_name || p?.agent_name || p?.email || "parent agent",
+        );
+      })
+      .catch(() => {
+        // Soft fail — fall back to a generic label so the banner still
+        // surfaces (the team member is still operating in someone's
+        // workspace, the banner is the user-visible reminder).
+        if (alive) setParentName("parent agent");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [parentId]);
+
+  if (!parentId) return null;
+  return (
+    <div
+      className="text-white text-sm px-4 py-2 flex items-center gap-3"
+      style={{ background: "#1A4A8A" }}
+      data-testid="team-member-banner"
+    >
+      <UsersRound className="w-4 h-4 flex-shrink-0" aria-hidden="true" />
+      <div className="flex-1 min-w-0">
+        <div className="font-semibold truncate">
+          Working in: {parentName || "…"}
+          {parentName ? "'s workspace" : ""}
+        </div>
+        <div className="text-[11px] text-white/75">
+          You are managing this agent's account.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 // ── AppLayout ──────────────────────────────────────────────────────────────
 // Fixed sidebar on the left (collapsible 64px ↔ 220px on desktop),
 // scrollable main content on the right. On <md screens the sidebar is
@@ -1348,6 +1408,7 @@ export function AppLayout({ children }) {
           collapsed ? "md:pl-[64px]" : "md:pl-[220px]"
         }`}
       >
+        <TeamMemberBanner />
         {children}
       </main>
 

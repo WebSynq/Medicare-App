@@ -193,6 +193,13 @@ class InviteRequest(BaseModel):
         "coach",
         "accounting",
     ]] = "agent"
+    # Optional parent agent — when set, the invite stamps the new user
+    # with parent_agent_id on register so they immediately operate
+    # inside that agent's scope. Only meaningful when role is "va" or
+    # "agent"; the agent_management_router endpoint validates role
+    # eligibility (the invite step doesn't, so legacy invites that
+    # carried this for the wrong role just have it silently ignored).
+    parent_agent_id: Optional[str] = None
 
     @field_validator("agent_name")
     @classmethod
