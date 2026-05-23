@@ -22,6 +22,7 @@ from deps import (
     agent_filter,
     get_agency_id,
     get_client_ip,
+    get_frontend_url,
     require_roles,
     write_audit,
     FULL_AGENCY_SCOPE_ROLES,
@@ -103,11 +104,7 @@ async def _auto_create_soa_for_medicare_lead(
         }
         await db.soa_records.insert_one(soa_doc.copy())
 
-        frontend = (
-            os.environ.get("FRONTEND_URL")
-            or "https://medicare-app-sandy-tau.vercel.app"
-        ).rstrip("/")
-        soa_link = f"{frontend}/soa/{token}"
+        soa_link = f"{get_frontend_url()}/soa/{token}"
 
         # Best-effort GHL push — tag + custom note so the workflow can
         # fire SMS / email outside the portal. Field-id mapping for

@@ -9,7 +9,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field
 
 from models import SOASignRequest, SOARecord
-from deps import get_db, get_current_user, write_audit, get_client_ip
+from deps import get_db, get_current_user, get_frontend_url, write_audit, get_client_ip
 from ghl_client import GHLClient
 
 
@@ -252,11 +252,7 @@ async def list_soa_for_lead(
     ).sort("created_at", -1)
     rows = await cursor.to_list(length=200)
 
-    import os
-    frontend = (
-        os.environ.get("FRONTEND_URL")
-        or "https://medicare-app-sandy-tau.vercel.app"
-    ).rstrip("/")
+    frontend = get_frontend_url()
     for r in rows:
         if r.get("token"):
             r["public_link"] = f"{frontend}/soa/{r['token']}"
@@ -311,12 +307,7 @@ async def send_new_soa(
     soa_doc["expires_at"] = (now + timedelta(days=30)).isoformat()
     await db.soa_records.insert_one(soa_doc.copy())
 
-    import os
-    frontend = (
-        os.environ.get("FRONTEND_URL")
-        or "https://medicare-app-sandy-tau.vercel.app"
-    ).rstrip("/")
-    link = f"{frontend}/soa/{token}"
+    link = f"{get_frontend_url()}/soa/{token}"
 
     if lead.get("ghl_contact_id"):
         try:

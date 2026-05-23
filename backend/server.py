@@ -196,11 +196,13 @@ _cors_origins = [
 # FRONTEND_URL is already required for invite links —
 # reuse it as a guaranteed CORS origin so the frontend
 # domain is always allowed without hardcoding it twice.
-# If someone updates FRONTEND_URL the CORS list updates
-# automatically with zero code changes.
-_frontend_url = os.environ.get("FRONTEND_URL", "").strip().rstrip("/")
-if _frontend_url and _frontend_url not in _cors_origins:
-    _cors_origins.append(_frontend_url)
+# Goes through deps.get_frontend_url so the single source
+# of truth (one helper) drives CORS, invite links, reset
+# emails, and SOA links all from the same env var.
+from deps import get_frontend_url as _get_frontend_url
+_fe_url = _get_frontend_url()
+if _fe_url and _fe_url not in _cors_origins:
+    _cors_origins.append(_fe_url)
 
 # Dev fallback only when nothing is configured at all
 if not _cors_origins:
@@ -559,7 +561,7 @@ async def on_startup():
 
     # Invite-only registration — single-use, 24h TTL tokens
     # NOTE: FRONTEND_URL env var must be set on Render so invite emails
-    # use the correct origin (e.g. https://medicare-app-sandy-tau.vercel.app).
+    # use the correct origin (resolved via deps.get_frontend_url).
     await db.invite_tokens.create_index("token_hash", unique=True)
     await db.invite_tokens.create_index("email")
     await db.invite_tokens.create_index(

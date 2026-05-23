@@ -34,7 +34,7 @@ from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, EmailStr, Field
 
-from deps import get_current_user, get_db, require_roles, write_audit
+from deps import get_current_user, get_db, get_frontend_url, require_roles, write_audit
 from security import (
     hash_password,
     verify_password,
@@ -642,10 +642,7 @@ async def forgot_password(
             "used": False,
         })
         # Build the reset URL pointing at the SPA.
-        import os
-        frontend = (os.environ.get("FRONTEND_URL")
-                     or "https://medicare-app-sandy-tau.vercel.app").rstrip("/")
-        reset_url = f"{frontend}/reset-password?token={token}"
+        reset_url = f"{get_frontend_url()}/reset-password?token={token}"
 
         # Fire the email — never-throw inside the service.
         from email_service import send_password_reset_email

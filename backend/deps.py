@@ -437,3 +437,21 @@ async def check_and_record_login_attempt(
         return {"locked": True, "unlock_at": unlock_at, "attempts": recent_count}
 
     return {"locked": False, "unlock_at": None, "attempts": recent_count}
+
+
+def get_frontend_url() -> str:
+    """Single source of truth for the frontend URL.
+
+    All routers must use this — never os.getenv inline. Change the
+    customer-facing SPA domain by updating the FRONTEND_URL env var
+    on Render only; no code edits.
+
+    Fallback is localhost so a deployed-but-unconfigured instance
+    fails loud against a non-prod origin instead of silently using a
+    stale hard-coded domain.
+    """
+    return (
+        os.environ.get("FRONTEND_URL", "http://localhost:3000")
+        .strip()
+        .rstrip("/")
+    )

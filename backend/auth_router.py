@@ -74,7 +74,7 @@ from security import (
     validate_password_strength,
 )
 from deps import (
-    get_db, get_current_user, require_roles, write_audit,
+    get_db, get_current_user, get_frontend_url, require_roles, write_audit,
     is_account_locked, check_and_record_login_attempt,
 )
 
@@ -582,9 +582,9 @@ async def create_invite(
         },
     )
 
-    # Render needs FRONTEND_URL set in env (e.g. https://medicare-app-sandy-tau.vercel.app)
-    frontend_url = os.getenv("FRONTEND_URL", "https://medicare-app-sandy-tau.vercel.app")
-    invite_url = f"{frontend_url}/register?token={raw_token}"
+    # Single source of truth lives in deps.get_frontend_url — set
+    # FRONTEND_URL in Render env to rotate the SPA host.
+    invite_url = f"{get_frontend_url()}/register?token={raw_token}"
 
     # Fire the invite email. Email send is wrapped never-throw inside
     # the service — a delivery failure must not roll back the invite

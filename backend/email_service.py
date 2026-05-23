@@ -22,16 +22,28 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger("gruening.email")
 
 
-# Default sender. Per CLAUDE.md the real GHW email domain is
-# `grueninghealthwealth.com` — the shorter `grueninghw.com` is a legacy
-# alias and was NEVER verified in Resend, which silently rejected every
-# send from it. Keep this aligned with whatever domain is verified in
-# the Resend dashboard; FROM_EMAIL env var overrides for staging.
-FROM_EMAIL_DEFAULT = "noreply@grueninghealthwealth.com"
+# Default sender. Read from FROM_EMAIL at import time so the constant
+# stays inspectable; runtime calls re-read via _from_email() below so
+# a misconfigured env doesn't bake the default into the worker for
+# the lifetime of the process.
+FROM_EMAIL_DEFAULT = os.environ.get("FROM_EMAIL", "").strip()
 
 
 def _from_email() -> str:
-    return (os.environ.get("FROM_EMAIL") or FROM_EMAIL_DEFAULT).strip()
+    """Single source of truth for the outbound sender. 100% env-driven —
+    a missing FROM_EMAIL logs ERROR (loud in Render) and returns a
+    sentinel localhost address so a downstream send still fires (and
+    fails) instead of silently no-op'ing under an old hard-coded
+    domain. The previous default (noreply@grueninghealthwealth.com)
+    was pinned in code and would have papered over a real config gap."""
+    addr = (os.environ.get("FROM_EMAIL") or "").strip()
+    if not addr:
+        logger.error(
+            "FROM_EMAIL env var not set — emails will fail. "
+            "Set FROM_EMAIL in Render environment.",
+        )
+        return "noreply@localhost"
+    return addr
 
 
 # One-time visibility on startup so a missing RESEND_API_KEY is obvious
@@ -46,10 +58,11 @@ if not (os.environ.get("RESEND_API_KEY") or "").strip():
 
 
 def _frontend_url() -> str:
-    return (
-        os.environ.get("FRONTEND_URL")
-        or "https://medicare-app-sandy-tau.vercel.app"
-    ).rstrip("/")
+    """Thin pass-through to deps.get_frontend_url so existing call
+    sites in this module keep their local name. The helper itself is
+    the single source of truth (deps.get_frontend_url)."""
+    from deps import get_frontend_url
+    return get_frontend_url()
 
 
 def _resend_client():
