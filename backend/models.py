@@ -106,15 +106,12 @@ class UserCreate(UserBase):
 
 class UserPublic(UserBase):
     id: str
-    mfa_enabled: bool = False
     created_at: str
 
 
 class UserInDB(UserBase):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     hashed_password: str
-    mfa_secret: Optional[str] = None
-    mfa_enabled: bool = False
     created_at: str = Field(default_factory=utcnow_iso)
 
 
@@ -204,24 +201,12 @@ class InviteRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-    mfa_code: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    mfa_required: bool = False
     user: UserPublic
-
-
-class MfaEnrollResponse(BaseModel):
-    secret: str
-    otpauth_uri: str
-    qr_png_base64: str
-
-
-class MfaVerifyRequest(BaseModel):
-    code: str
 
 
 # ----- Leads -----

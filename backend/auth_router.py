@@ -1,17 +1,13 @@
-"""Authentication routes: register, login, MFA enroll/verify, me, approval."""
-import io
-import os
-import base64
+"""Authentication routes: register, login, magic-link, me, approval, invite."""
 import hashlib
 import logging
 import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
 
-import pyotp
-import qrcode
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pydantic import BaseModel, EmailStr
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -66,7 +62,6 @@ _DUMMY_BCRYPT_HASH = "$2b$12$CwTycUXWue0Thq9StjUM0uJ8zJZ6yfsT9MrbXk7eDjmnQDQt2WJ
 
 from models import (
     UserPublic, LoginRequest, LoginResponse,
-    MfaEnrollResponse, MfaVerifyRequest,
     AgentRegistrationRequest, InviteRequest, UserProfileUpdate,
 )
 from security import (
@@ -74,8 +69,9 @@ from security import (
     validate_password_strength,
 )
 from deps import (
-    get_agency_id, get_db, get_current_user, get_frontend_url, require_roles,
-    write_audit, is_account_locked, check_and_record_login_attempt,
+    get_agency_id, get_db, get_current_user, get_client_ip, get_frontend_url,
+    require_roles, write_audit, is_account_locked,
+    check_and_record_login_attempt,
 )
 
 
@@ -86,6 +82,10 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # Per-router limiter — uses the same key_func as the app-level one. Endpoints
 # below decorate themselves with @limiter.limit(...) to apply IP-based ceilings.
 limiter = Limiter(key_func=get_remote_address)
+
+# Magic-link config
+_MAGIC_LINK_TTL_MINUTES = 15
+_MAGIC_LINK_PER_EMAIL_HOURLY_CAP = 5
 
 
 def _user_public(user: dict) -> UserPublic:
@@ -102,12 +102,11 @@ def _user_public(user: dict) -> UserPublic:
         agent_id=user.get("agent_id") or user.get("id"),
         agent_name=user.get("agent_name"),
         agent_npn=user.get("agent_npn"),
-        mfa_enabled=user.get("mfa_enabled", False),
         created_at=user.get("created_at", datetime.now(timezone.utc).isoformat()),
     )
 
 
-def _jwt_claims(user: dict, mfa_verified: bool, pre_auth: bool = False) -> dict:
+def _jwt_claims(user: dict) -> dict:
     """Build the JWT payload. Agent identity travels in the token for fast
     downstream lookups, but server code MUST still resolve it from the DB row
     before trusting it for any high-impact action."""
@@ -115,7 +114,6 @@ def _jwt_claims(user: dict, mfa_verified: bool, pre_auth: bool = False) -> dict:
         "sub": user["id"],
         "email": user["email"],
         "role": user["role"],
-        "mfa_verified": mfa_verified,
         # token_version is compared in deps.get_current_user against
         # the live user row — bump it on the user (e.g. on password
         # change) and every JWT minted before the bump becomes invalid
@@ -126,8 +124,6 @@ def _jwt_claims(user: dict, mfa_verified: bool, pre_auth: bool = False) -> dict:
         claims["agent_name"] = user["agent_name"]
     if user.get("agent_npn"):
         claims["agent_npn"] = user["agent_npn"]
-    if pre_auth:
-        claims["pre_auth"] = True
     return claims
 
 
@@ -217,12 +213,7 @@ async def register(
     assigned_role = invite.get("role") or "agent"
     # Auto-activate on register. The invite token is itself the
     # admin's approval gate — once a user redeems a valid token they
-    # can sign in immediately. Previous behaviour stamped status=
-    # "pending" + is_active=False and required a second
-    # /auth/users/{id}/approve call, which left agents stuck on the
-    # "Account pending admin approval" 403 indefinitely if the admin
-    # never followed up. approve_agent still works (idempotent on
-    # already-active accounts) for any pre-existing pending rows.
+    # can sign in immediately.
     user_doc = {
         "id": new_user_id,
         "agent_id": new_user_id,
@@ -237,14 +228,9 @@ async def register(
         # Passive multi-tenant stamp — see deps.get_agency_id.
         "agency_id": get_agency_id(),
         "hashed_password": hash_password(body.password),
-        "mfa_secret": None,
-        "mfa_enabled": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.users.insert_one(user_doc)
-    # Renamed from "agent_registration_requested" — the invite token
-    # is the approval gate, so registration completion IS the event,
-    # not a request for a follow-up step.
     await write_audit(db, "agent_registered", actor_email=email,
                       target_type="user", target_id=user_doc["id"], request=request,
                       metadata={"agency_name": user_doc["agency_name"],
@@ -264,27 +250,23 @@ async def register(
         role=user_doc.get("role"),
     )
 
-    # Notification hook — keep the logger line so ops can grep for new
-    # registrations even when the email path is in mock mode.
     logger.info(
-        "[notification] Agent registered via invite: %s (%s) — agency=%s. "
-        "Approve at /api/auth/users/%s/approve",
-        user_doc["full_name"], email, user_doc["agency_name"], user_doc["id"],
+        "[notification] Agent registered via invite: %s (%s) — agency=%s.",
+        user_doc["full_name"], email, user_doc["agency_name"],
     )
     return _user_public(user_doc)
-
-
-def _format_unlock_message(unlock_at: datetime) -> str:
-    return (
-        "Account temporarily locked due to too many failed attempts. "
-        f"Try again at {unlock_at.strftime('%H:%M')} UTC."
-    )
 
 
 @router.post("/login", response_model=LoginResponse)
 @limiter.limit("10/minute")
 async def login(payload: LoginRequest, request: Request, response: Response,
                 db: AsyncIOMotorDatabase = Depends(get_db)):
+    """Password login (Option B). The other path is magic-link below.
+
+    Magic link is the agency's primary second factor — possession of
+    the registered inbox stands in for TOTP. Email + password is kept
+    as an alternative when the user prefers it. Either path issues a
+    full session cookie immediately."""
     email = payload.email.lower().strip()
 
     # 1. Check existing lockout BEFORE verifying password
@@ -349,10 +331,6 @@ async def login(payload: LoginRequest, request: Request, response: Response,
         await write_audit(db, "login_failed", actor_email=payload.email,
                           actor_id=user.get("id"), request=request,
                           metadata={"reason": "inactive"})
-        # 401 (not 403) + user-readable copy that the SPA can surface
-        # on the redirect to /login. Matches the message returned by
-        # deps.get_current_user when the user becomes deactivated
-        # mid-session.
         raise HTTPException(
             status_code=401,
             detail=(
@@ -361,36 +339,202 @@ async def login(payload: LoginRequest, request: Request, response: Response,
             ),
         )
 
-    mfa_verified = False
-    if user.get("mfa_enabled"):
-        if not payload.mfa_code:
-            # Issue a short pre-auth token allowing MFA submission
-            token = create_access_token(
-                _jwt_claims(user, mfa_verified=False, pre_auth=True),
-                expires_minutes=5,
-            )
-            await write_audit(db, "login_mfa_required", actor_email=payload.email,
-                              actor_id=user["id"], request=request)
-            return LoginResponse(access_token=token, mfa_required=True, user=_user_public(user))
-        totp = pyotp.TOTP(user["mfa_secret"])
-        if not totp.verify(payload.mfa_code, valid_window=1):
-            await write_audit(db, "login_failed", actor_email=payload.email,
-                              actor_id=user["id"], request=request,
-                              metadata={"reason": "invalid_mfa"})
-            raise HTTPException(status_code=401, detail="Invalid MFA code")
-        mfa_verified = True
-
-    token = create_access_token(
-        _jwt_claims(user, mfa_verified=mfa_verified or not user.get("mfa_enabled", False))
-    )
-    # Successful auth — clear any tracked failed attempts for this email
+    token = create_access_token(_jwt_claims(user))
     await check_and_record_login_attempt(db, email, success=True)
-    await write_audit(db, "login_success", actor_email=user["email"], actor_id=user["id"],
-                      request=request, metadata={"mfa": user.get("mfa_enabled", False)})
-    # Plant cookies for browser sessions; still return access_token in the body
-    # so the existing header-bearer code path keeps working during the rollout.
+    await write_audit(db, "login_success", actor_email=user["email"],
+                      actor_id=user["id"], request=request,
+                      metadata={"method": "password"})
     _set_session_cookies(response, token)
-    return LoginResponse(access_token=token, mfa_required=False, user=_user_public(user))
+    return LoginResponse(access_token=token, user=_user_public(user))
+
+
+# ── Magic link (Option A) ──────────────────────────────────────────────────
+
+class MagicLinkRequest(BaseModel):
+    email: EmailStr
+
+
+class MagicLinkVerifyRequest(BaseModel):
+    token: str
+
+
+def _magic_link_generic_response() -> dict:
+    """One response shape regardless of whether the email exists, was
+    rate-limited, or the send succeeded. Never leaks the existence of
+    an account — see comment in request_magic_link."""
+    return {
+        "message": "If that email is registered, a login link has been sent.",
+    }
+
+
+@router.post("/magic-link")
+@limiter.limit("20/hour")  # IP-based ceiling — per-email cap applied below
+async def request_magic_link(
+    payload: MagicLinkRequest,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Issue a single-use, 15-minute magic link to the email if it
+    matches an active user.
+
+    Always returns the same body whether the email exists or not, so
+    an attacker can't enumerate accounts. The per-email hourly cap is
+    enforced silently for the same reason — when the cap is hit we
+    simply skip the send and return success.
+    """
+    email = (payload.email or "").lower().strip()
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+
+    if not user:
+        await write_audit(db, "magic_link_requested", actor_email=email,
+                          request=request,
+                          metadata={"sent": False, "reason": "unknown_email"})
+        return _magic_link_generic_response()
+
+    # Per-email rate limit (5/hour). Count rows we've already minted for
+    # this email in the last hour. Silently no-op when over the cap so
+    # the response shape is indistinguishable from the unknown-email
+    # branch — no enumeration signal.
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(hours=1)
+    recent = await db.magic_link_tokens.count_documents({
+        "email": email,
+        "created_at": {"$gte": window_start},
+    })
+    if recent >= _MAGIC_LINK_PER_EMAIL_HOURLY_CAP:
+        await write_audit(db, "magic_link_requested", actor_email=email,
+                          actor_id=user.get("id"), request=request,
+                          metadata={"sent": False, "reason": "rate_limited"})
+        return _magic_link_generic_response()
+
+    # Refuse for accounts that can't sign in anyway — keeps the link
+    # from being a back-door past the pending/rejected/deactivated
+    # gates the password path enforces. Same opaque response.
+    status_value = user.get("status", "active")
+    if status_value in ("pending", "rejected") or not user.get("is_active", True):
+        await write_audit(db, "magic_link_requested", actor_email=email,
+                          actor_id=user.get("id"), request=request,
+                          metadata={"sent": False,
+                                    "reason": f"status_{status_value}_active_"
+                                              f"{user.get('is_active', True)}"})
+        return _magic_link_generic_response()
+
+    # Mint the token. Store ONLY the SHA-256 hash so a DB dump can't
+    # be replayed to log in as the user — the raw token only ever
+    # exists in the email link.
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    expires_at = now + timedelta(minutes=_MAGIC_LINK_TTL_MINUTES)
+
+    await db.magic_link_tokens.insert_one({
+        "token_hash": token_hash,
+        "email": email,
+        "user_id": user["id"],
+        "created_at": now,
+        "expires_at": expires_at,
+        "used": False,
+        "used_at": None,
+        "ip": get_client_ip(request),
+    })
+
+    magic_url = f"{get_frontend_url()}/auth/magic?token={raw_token}"
+
+    # Fire the email — never-throw inside the service.
+    from email_service import send_magic_link_email
+    await send_magic_link_email(
+        db,
+        to_email=email,
+        full_name=user.get("full_name"),
+        magic_url=magic_url,
+        expires_at=expires_at,
+    )
+
+    await write_audit(db, "magic_link_requested", actor_email=email,
+                      actor_id=user["id"], request=request,
+                      metadata={"sent": True, "expires_at": expires_at.isoformat()})
+
+    return _magic_link_generic_response()
+
+
+@router.post("/magic-link/verify", response_model=LoginResponse)
+@limiter.limit("10/hour")
+async def verify_magic_link(
+    payload: MagicLinkVerifyRequest,
+    request: Request,
+    response: Response,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Redeem a magic-link token for a full session cookie.
+
+    Single-use: marks ``used=true`` atomically so re-posting the same
+    token returns 400. Expiry is checked against the BSON Date stored
+    at mint time (15 minutes). The same opaque error covers all the
+    invalid-token branches so a caller can't distinguish "expired" from
+    "wrong token" from "already used".
+    """
+    if not payload.token:
+        raise HTTPException(400, "This link is invalid or has expired.")
+
+    token_hash = hashlib.sha256(payload.token.encode()).hexdigest()
+    now = datetime.now(timezone.utc)
+    rec = await db.magic_link_tokens.find_one({
+        "token_hash": token_hash,
+        "used": False,
+        "expires_at": {"$gt": now},
+    }, {"_id": 0})
+    if not rec:
+        await write_audit(db, "magic_link_verify_failed",
+                          request=request,
+                          metadata={"reason": "invalid_or_expired"})
+        raise HTTPException(400, "This link is invalid or has expired.")
+
+    # Single-use: mark as used BEFORE issuing the session so a race that
+    # double-submits the same token can't yield two sessions.
+    flip = await db.magic_link_tokens.update_one(
+        {"token_hash": token_hash, "used": False},
+        {"$set": {"used": True, "used_at": now}},
+    )
+    if flip.modified_count != 1:
+        await write_audit(db, "magic_link_verify_failed",
+                          request=request,
+                          metadata={"reason": "race_already_used"})
+        raise HTTPException(400, "This link is invalid or has expired.")
+
+    user = await db.users.find_one({"id": rec["user_id"]}, {"_id": 0})
+    if not user:
+        await write_audit(db, "magic_link_verify_failed",
+                          request=request,
+                          metadata={"reason": "user_missing"})
+        raise HTTPException(400, "This link is invalid or has expired.")
+
+    status_value = user.get("status", "active")
+    if status_value in ("pending", "rejected") or not user.get("is_active", True):
+        await write_audit(db, "magic_link_verify_failed",
+                          actor_email=user.get("email"), actor_id=user.get("id"),
+                          request=request,
+                          metadata={"reason": f"status_{status_value}_active_"
+                                              f"{user.get('is_active', True)}"})
+        raise HTTPException(400, "This link is invalid or has expired.")
+
+    # Clear any failed-login lockout counters — the magic link is
+    # proof of inbox control, equivalent to a fresh password reset.
+    await check_and_record_login_attempt(db, user["email"], success=True)
+
+    token = create_access_token(_jwt_claims(user))
+    _set_session_cookies(response, token)
+
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"last_login_at": now.isoformat()}},
+    )
+    await write_audit(db, "magic_link_used", actor_email=user["email"],
+                      actor_id=user["id"], request=request,
+                      metadata={"ip": get_client_ip(request)})
+    await write_audit(db, "login_success", actor_email=user["email"],
+                      actor_id=user["id"], request=request,
+                      metadata={"method": "magic_link"})
+
+    return LoginResponse(access_token=token, user=_user_public(user))
 
 
 @router.post("/logout")
@@ -411,58 +555,6 @@ async def logout(request: Request, response: Response,
 @router.get("/me", response_model=UserPublic)
 async def me(current_user=Depends(get_current_user)):
     return _user_public(current_user)
-
-
-@router.post("/mfa/enroll", response_model=MfaEnrollResponse)
-async def mfa_enroll(
-    request: Request,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    if current_user.get("mfa_enabled"):
-        raise HTTPException(status_code=400, detail="MFA already enabled")
-
-    secret = pyotp.random_base32()
-    otpauth_uri = pyotp.TOTP(secret).provisioning_uri(
-        name=current_user["email"], issuer_name="Gruening Health & Wealth"
-    )
-
-    img = qrcode.make(otpauth_uri)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-
-    await db.users.update_one(
-        {"id": current_user["id"]},
-        {"$set": {"mfa_secret": secret}},
-    )
-    await write_audit(db, "mfa_enroll_started", actor_email=current_user["email"],
-                      actor_id=current_user["id"], request=request)
-    return MfaEnrollResponse(secret=secret, otpauth_uri=otpauth_uri, qr_png_base64=b64)
-
-
-@router.post("/mfa/verify")
-async def mfa_verify(
-    payload: MfaVerifyRequest,
-    request: Request,
-    response: Response,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user=Depends(get_current_user),
-):
-    user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
-    if not user or not user.get("mfa_secret"):
-        raise HTTPException(status_code=400, detail="MFA not started")
-    if not pyotp.TOTP(user["mfa_secret"]).verify(payload.code, valid_window=1):
-        raise HTTPException(status_code=400, detail="Invalid code")
-    await db.users.update_one({"id": user["id"]}, {"$set": {"mfa_enabled": True}})
-    await write_audit(db, "mfa_enabled", actor_email=user["email"], actor_id=user["id"], request=request)
-
-    # Re-issue token with mfa_verified=true. Re-read user so any agent identity
-    # fields populated between enroll and verify also land in the new token.
-    refreshed = await db.users.find_one({"id": user["id"]}, {"_id": 0})
-    token = create_access_token(_jwt_claims(refreshed or user, mfa_verified=True))
-    _set_session_cookies(response, token)
-    return {"message": "MFA enabled", "access_token": token, "token_type": "bearer"}
 
 
 # ----- Pending agent approval (admin only) -----
@@ -612,10 +704,6 @@ async def create_invite(
         expires_at=expires.isoformat(),
     )
 
-    # Surface the underlying reason on the response so the admin sees
-    # "email not sent — domain not verified" instead of a generic
-    # "email not sent" they'd have to file a ticket about. The token
-    # is included regardless so the invite is always usable manually.
     email_reason = email_res.get("reason") if not email_res.get("ok") else None
     if email_res.get("ok"):
         message = f"Invite sent to {invite.email}"

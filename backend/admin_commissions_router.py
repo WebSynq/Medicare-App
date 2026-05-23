@@ -50,7 +50,6 @@ async def get_all_agent_commissions(
         {
             "_id": 0,
             "hashed_password": 0,
-            "mfa_secret": 0,
             "approved_by": 0,
             "rejected_by": 0,
         },

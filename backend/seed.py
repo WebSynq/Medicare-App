@@ -63,8 +63,6 @@ async def seed_admin(db) -> None:
         "status": "active",
         "agency_name": None,
         "hashed_password": hash_password(password),
-        "mfa_secret": None,
-        "mfa_enabled": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     logger.info("Seeded admin account: %s (%s)", email, full_name)

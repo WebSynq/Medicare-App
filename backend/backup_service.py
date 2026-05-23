@@ -38,7 +38,7 @@ BACKUP_COLLECTIONS: List[Dict[str, Any]] = [
     # users — exclude hashed_password explicitly so a leaked backup
     # can never be used to derive credentials offline.
     {"name": "users", "projection": {
-        "_id": 0, "hashed_password": 0, "mfa_secret": 0,
+        "_id": 0, "hashed_password": 0,
     }},
     {"name": "leads", "projection": {"_id": 0}},
     {"name": "policies", "projection": {"_id": 0}},
@@ -150,7 +150,6 @@ async def run_backup(db) -> Dict[str, Any]:
     # never let hashed_password slip into the dump.
     for u in payload["collections"].get("users", []):
         u.pop("hashed_password", None)
-        u.pop("mfa_secret", None)
 
     try:
         raw = json.dumps(payload, default=_json_default, separators=(",", ":")).encode("utf-8")

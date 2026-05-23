@@ -104,8 +104,6 @@ async def _clean_db():
         "agent_name": None,
         "agent_npn": None,
         "hashed_password": hash_password(os.environ["SEED_ADMIN_PASSWORD"]),
-        "mfa_secret": None,
-        "mfa_enabled": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     yield inst

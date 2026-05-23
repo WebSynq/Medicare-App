@@ -6,9 +6,6 @@ Endpoints (all mounted under /api):
     PATCH /profile/me                         — update email/full_name/phone/npn/password
     GET  /profile/sessions                    — last 10 successful logins for caller
     GET  /profile/audit-log                   — audit history (own for agents, all for admin/compliance)
-    GET  /profile/mfa/setup                   — generate TOTP secret + QR for caller
-    POST /profile/mfa/verify                  — confirm TOTP and turn MFA on
-    DELETE /profile/mfa                       — turn MFA off (requires password)
     GET  /profile/agency                      — single agency_settings document
     PATCH /profile/agency                     — update agency_settings (admin only)
     GET  /profile/team                        — list of active users for the Team tab (admin only)
@@ -19,17 +16,13 @@ Notes:
       not the values).
     - All state-changing routes write to the audit log via deps.write_audit.
 """
-import base64
 import csv
-import hashlib
 import io
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-import pyotp
-import qrcode
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, EmailStr, Field
@@ -64,7 +57,6 @@ def _profile_dict(user: dict) -> dict:
         "is_active": user.get("is_active", True),
         "status": user.get("status", "active"),
         "agency_name": user.get("agency_name"),
-        "mfa_enabled": user.get("mfa_enabled", False),
         "created_at": user.get("created_at"),
     }
 
@@ -312,104 +304,6 @@ async def my_audit_log(
     }
 
 
-# ── GET /api/profile/mfa/setup ────────────────────────────────────────────
-@router.get("/profile/mfa/setup")
-async def mfa_setup(
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
-):
-    """Returns a fresh TOTP secret + QR code. Persists the secret to the
-    user's row but leaves mfa_enabled=False until /profile/mfa/verify
-    confirms a working token. Safe to call repeatedly — overwrites the
-    pending secret each time."""
-    if current_user.get("mfa_enabled"):
-        raise HTTPException(400, "MFA is already enabled. Disable it first to re-enroll.")
-
-    secret = pyotp.random_base32()
-    qr_uri = pyotp.TOTP(secret).provisioning_uri(
-        name=current_user["email"], issuer_name="Gruening Health & Wealth"
-    )
-    # Render the QR code to PNG → base64 so the SPA can drop it into an <img>.
-    img = qrcode.make(qr_uri)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    qr_png_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-
-    await db.users.update_one(
-        {"id": current_user["id"]},
-        {"$set": {"mfa_secret": secret,
-                   "updated_at": datetime.now(timezone.utc).isoformat()}},
-    )
-    return {
-        "secret": secret,
-        "qr_uri": qr_uri,
-        "qr_png_base64": qr_png_b64,
-    }
-
-
-# ── POST /api/profile/mfa/verify ──────────────────────────────────────────
-class MfaVerifyBody(BaseModel):
-    token: str = Field(..., min_length=4, max_length=12)
-
-
-@router.post("/profile/mfa/verify")
-async def mfa_verify(
-    body: MfaVerifyBody,
-    request: Request,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
-):
-    user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
-    if not user or not user.get("mfa_secret"):
-        raise HTTPException(400, "MFA setup not started. Call /profile/mfa/setup first.")
-    if not pyotp.TOTP(user["mfa_secret"]).verify(body.token, valid_window=1):
-        raise HTTPException(400, "Invalid code")
-
-    await db.users.update_one(
-        {"id": user["id"]},
-        {"$set": {"mfa_enabled": True,
-                   "updated_at": datetime.now(timezone.utc).isoformat()}},
-    )
-    await write_audit(
-        db, "mfa_enabled",
-        actor_email=user["email"], actor_id=user["id"],
-        target_type="user", target_id=user["id"],
-        request=request,
-    )
-    return {"mfa_enabled": True}
-
-
-# ── DELETE /api/profile/mfa ───────────────────────────────────────────────
-class MfaDisableBody(BaseModel):
-    current_password: str = Field(..., min_length=1)
-
-
-@router.delete("/profile/mfa")
-async def mfa_disable(
-    body: MfaDisableBody,
-    request: Request,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
-):
-    user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
-    if not user:
-        raise HTTPException(404, "User not found")
-    if not verify_password(body.current_password, user["hashed_password"]):
-        raise HTTPException(401, "Current password incorrect")
-    await db.users.update_one(
-        {"id": user["id"]},
-        {"$set": {"mfa_enabled": False, "mfa_secret": None,
-                   "updated_at": datetime.now(timezone.utc).isoformat()}},
-    )
-    await write_audit(
-        db, "mfa_disabled",
-        actor_email=user["email"], actor_id=user["id"],
-        target_type="user", target_id=user["id"],
-        request=request,
-    )
-    return {"mfa_enabled": False}
-
-
 # ── Agency settings (single-doc collection) ───────────────────────────────
 # agency_settings is a one-row collection keyed by the constant "ghw".
 # Anything we need across the agency lives here.
@@ -496,7 +390,7 @@ async def list_team(
     cursor = db.users.find(
         {},
         {"_id": 0, "id": 1, "email": 1, "full_name": 1, "role": 1,
-         "is_active": 1, "status": 1, "created_at": 1, "mfa_enabled": 1},
+         "is_active": 1, "status": 1, "created_at": 1},
     ).sort("created_at", -1).limit(200)
     rows = await cursor.to_list(length=200)
     return {"members": rows, "count": len(rows)}

@@ -1717,7 +1717,6 @@ async def test_deactivated_user_cannot_login(client, db, admin_headers):
         "full_name": "Deact Test", "agent_name": "Deact Test",
         "role": "agent", "is_active": True, "status": "active",
         "hashed_password": hash_password(pw),
-        "mfa_enabled": False, "mfa_secret": None,
         "token_version": 0, "failed_attempts": 0,
         "created_at": "2026-01-01T00:00:00+00:00",
     })
@@ -3383,3 +3382,133 @@ async def test_backup_excludes_passwords(client, db, admin_headers):
     rows = await _dump_collection(db, "users", proj)
     for u in rows:
         assert "hashed_password" not in u, u
+
+
+# ── Magic link auth ────────────────────────────────────────────────────────
+
+def _mint_magic_token(db_sync, email: str, user_id: str,
+                      *, expires_minutes: int = 15) -> str:
+    """Drop a fresh magic_link_tokens row straight into the DB and
+    return the raw token. Skips the email-send code path so the verify
+    tests don't depend on Resend being mocked."""
+    import secrets, hashlib
+    from datetime import datetime, timedelta, timezone
+    raw = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    return raw, {
+        "token_hash": hashlib.sha256(raw.encode()).hexdigest(),
+        "email": email,
+        "user_id": user_id,
+        "created_at": now,
+        "expires_at": now + timedelta(minutes=expires_minutes),
+        "used": False,
+        "used_at": None,
+        "ip": "127.0.0.1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_magic_link_request_success(client, db):
+    """POST /auth/magic-link for a known user → 200 + opaque body +
+    a magic_link_tokens row stored as a hash (raw token never persisted)."""
+    admin = await db.users.find_one(
+        {"email": os.environ["SEED_ADMIN_EMAIL"]}, {"_id": 0},
+    )
+    r = client.post("/api/auth/magic-link", json={"email": admin["email"]})
+    assert r.status_code == 200, r.text
+    assert "login link" in r.json()["message"].lower()
+
+    row = await db.magic_link_tokens.find_one(
+        {"email": admin["email"]}, {"_id": 0},
+    )
+    assert row is not None
+    assert row["used"] is False
+    assert row["user_id"] == admin["id"]
+    # Stored hash, never raw token.
+    assert len(row["token_hash"]) == 64
+
+
+@pytest.mark.asyncio
+async def test_magic_link_verify_success(client, db):
+    """Token redemption issues a session cookie and marks the row used."""
+    admin = await db.users.find_one(
+        {"email": os.environ["SEED_ADMIN_EMAIL"]}, {"_id": 0},
+    )
+    raw, row = _mint_magic_token(db, admin["email"], admin["id"])
+    await db.magic_link_tokens.insert_one(row)
+
+    r = client.post("/api/auth/magic-link/verify", json={"token": raw})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["access_token"]
+    assert body["user"]["email"] == admin["email"]
+    # Session cookie planted.
+    assert "ghw_access_token" in r.cookies or any(
+        c.name == "ghw_access_token" for c in client.cookies.jar
+    )
+
+    used = await db.magic_link_tokens.find_one(
+        {"token_hash": row["token_hash"]}, {"_id": 0},
+    )
+    assert used["used"] is True
+    assert used["used_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_magic_link_expired_400(client, db):
+    """An expired token must 400 with the same generic message."""
+    from datetime import datetime, timedelta, timezone
+    admin = await db.users.find_one(
+        {"email": os.environ["SEED_ADMIN_EMAIL"]}, {"_id": 0},
+    )
+    raw, row = _mint_magic_token(db, admin["email"], admin["id"])
+    # Force expiry 1 minute in the past.
+    row["expires_at"] = datetime.now(timezone.utc) - timedelta(minutes=1)
+    await db.magic_link_tokens.insert_one(row)
+
+    r = client.post("/api/auth/magic-link/verify", json={"token": raw})
+    assert r.status_code == 400, r.text
+    assert "expired" in r.json()["detail"].lower() or \
+           "invalid" in r.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_magic_link_used_twice_400(client, db):
+    """Single-use: redeeming the same token a second time must 400."""
+    admin = await db.users.find_one(
+        {"email": os.environ["SEED_ADMIN_EMAIL"]}, {"_id": 0},
+    )
+    raw, row = _mint_magic_token(db, admin["email"], admin["id"])
+    await db.magic_link_tokens.insert_one(row)
+
+    r1 = client.post("/api/auth/magic-link/verify", json={"token": raw})
+    assert r1.status_code == 200, r1.text
+
+    # Drop the session cookie before the replay so the second call is
+    # actually exercising the magic-link path and not a stale session.
+    client.cookies.clear()
+    r2 = client.post("/api/auth/magic-link/verify", json={"token": raw})
+    assert r2.status_code == 400, r2.text
+
+
+def test_magic_link_unknown_email_200(client, db):
+    """Unknown email must still 200 — no account-enumeration signal."""
+    r = client.post("/api/auth/magic-link",
+                    json={"email": "nobody-at-all@example.com"})
+    assert r.status_code == 200, r.text
+    assert "login link" in r.json()["message"].lower()
+
+
+def test_password_login_still_works(client, db):
+    """Email + password login (Option B) must continue to issue a
+    session in one step — no MFA challenge in the response body."""
+    r = client.post("/api/auth/login", json={
+        "email": os.environ["SEED_ADMIN_EMAIL"],
+        "password": os.environ["SEED_ADMIN_PASSWORD"],
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["access_token"]
+    assert body["user"]["email"] == os.environ["SEED_ADMIN_EMAIL"]
+    # mfa_required must no longer be a field in the response.
+    assert "mfa_required" not in body

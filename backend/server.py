@@ -123,7 +123,8 @@ api_router = APIRouter(prefix="/api")
 async def root():
     return {"app": "Gruening Health & Wealth Medicare Intake",
             "status": "ok",
-            "hipaa_safeguards": ["TLS", "AES-128 at rest (docs)", "JWT", "TOTP MFA", "Audit Log", "RBAC"]}
+            "hipaa_safeguards": ["TLS", "AES-128 at rest (docs)", "JWT",
+                                 "Magic Link", "Audit Log", "RBAC"]}
 
 
 @api_router.get("/health")
@@ -294,7 +295,12 @@ _CSRF_EXEMPT_PATHS = {
     "/api/auth/login",
     "/api/auth/register",
     "/api/auth/logout",
-    "/api/auth/mfa/verify",  # called immediately after login pre-auth token issued
+    # Magic link request + verify. Both are pre-session (no CSRF
+    # cookie planted yet) and authenticity comes from the single-use
+    # token in the body. /verify is the response that plants the
+    # session cookie, mirroring how /login behaves.
+    "/api/auth/magic-link",
+    "/api/auth/magic-link/verify",
     # Commission AI chat — Anthropic-backed POST. Auth is enforced by
     # get_current_user (JWT, cookie OR header); CSRF exempt by product
     # decision so the panel can post without echoing the csrf cookie.
@@ -383,8 +389,8 @@ _CSRF_EXEMPT_PREFIXES = (
     # _require_admin dependency.
     "/api/admin/import/",
     # /api/profile/* — Settings page state-changing routes (profile patch,
-    # MFA enable/disable, agency settings patch). JWT-authenticated via
-    # get_current_user / require_roles.
+    # agency settings patch). JWT-authenticated via get_current_user /
+    # require_roles.
     "/api/profile/",
     # /api/admin/users/{id}/credentials — admin force-reset endpoint.
     "/api/admin/users/",
@@ -466,7 +472,8 @@ _CSRF_EXEMPT_PREFIXES = (
 #   appointments_router             /appointments         ✓ prefix (new)
 #   auth_router                     /auth                 ✓ paths (login/
 #                                                          register/logout/
-#                                                          mfa-verify/
+#                                                          magic-link/
+#                                                          magic-link/verify/
 #                                                          invite/...) +
 #                                                          /auth/users/
 #                                                          prefix (new)
@@ -619,6 +626,18 @@ _PROD_INDEXES = [
     ("password_resets", "token", {"background": True, "unique": True}),
     ("password_resets", "user_id", {"background": True}),
     ("password_resets", "used", {"background": True}),
+
+    # magic_link_tokens — single-use passwordless login. token_hash is
+    # the lookup key; expires_at is a BSON Date so MongoDB's TTL index
+    # can auto-evict expired rows. expireAfterSeconds=3600 keeps used
+    # / expired tokens around for an hour past expiry for audit then
+    # purges them.
+    ("magic_link_tokens", "token_hash",
+     {"background": True, "unique": True}),
+    ("magic_link_tokens", "email", {"background": True}),
+    ("magic_link_tokens", "user_id", {"background": True}),
+    ("magic_link_tokens", "expires_at",
+     {"background": True, "expireAfterSeconds": 3600}),
 ]
 
 

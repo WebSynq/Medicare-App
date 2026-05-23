@@ -114,9 +114,6 @@ async def get_current_user(
             detail="Session expired — please sign in again",
         )
 
-    if not payload.get("mfa_verified", False) and user.get("mfa_enabled"):
-        raise HTTPException(status_code=401, detail="MFA verification required")
-
     return user
 
 

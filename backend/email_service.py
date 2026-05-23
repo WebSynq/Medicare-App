@@ -272,6 +272,36 @@ async def send_password_reset_email(
     return res
 
 
+async def send_magic_link_email(
+    db,
+    to_email: str,
+    full_name: Optional[str],
+    magic_url: str,
+    expires_at: Any = None,
+) -> Dict[str, Any]:
+    """Sign-in link email (Option A, primary path).
+
+    Task 1 places a basic body here so the auth flow works end-to-end;
+    Task 2 swaps in the polished template. The function signature is
+    final — only the rendered HTML changes."""
+    subject = "Your GHW Portal Login Link"
+    first = (full_name or to_email.split("@")[0] or "there").split(" ")[0]
+    body = (
+        f"<p>Hi <strong style=\"color:#ffffff;\">{first}</strong>,</p>"
+        "<p>Click the button below to sign in to your "
+        "Gruening Health &amp; Wealth Agent Portal account.</p>"
+        f"{_button('Sign In Now', magic_url)}"
+        "<p style=\"color:#94a3b8;font-size:12px;\">"
+        "This link expires in 15 minutes and can only be used once.</p>"
+        "<p style=\"color:#94a3b8;font-size:12px;\">"
+        "If you didn&rsquo;t request this, you can safely ignore this email.</p>"
+    )
+    res = _send_html(subject, to_email, _shell(body))
+    await _audit_send(db, "magic_link_email_sent", to_email,
+                      res.get("ok", False))
+    return res
+
+
 async def send_welcome_email(
     db,
     to_email: str,
