@@ -562,12 +562,26 @@ export default function AgentDashboard() {
   const navigate = useNavigate();
   const user = auth.getUser();
   const role = user?.role;
-  const { isImpersonating, setSelectedAgent } = useAgent();
+  const { isImpersonating, selectedAgent, setSelectedAgent } = useAgent();
 
-  // Admin sees agency-wide view when not impersonating. Anyone else (or
-  // an admin currently impersonating) sees the personal/agent view.
-  const isAdminAgency =
-    (role === "admin" || role === "compliance") && !isImpersonating;
+  // Leadership / back-office roles see the agency-wide view by default.
+  // coach + accounting were added once both joined the
+  // FULL_AGENCY_SCOPE_ROLES list — without widening this gate they'd get
+  // an empty personal-view dashboard (no leads of their own to populate
+  // the KPI row).
+  const isAgencyViewRole =
+    role === "admin" ||
+    role === "compliance" ||
+    role === "coach" ||
+    role === "accounting";
+  const isAdminAgency = isAgencyViewRole && !isImpersonating;
+  const impersonatedName =
+    isImpersonating
+      ? selectedAgent?.full_name ||
+        selectedAgent?.agent_name ||
+        selectedAgent?.email ||
+        "Agent"
+      : null;
 
   const [period, setPeriod] = useState("mtd");
   const [stats, setStats] = useState(null);
@@ -613,10 +627,43 @@ export default function AgentDashboard() {
             <p className="text-xs uppercase tracking-widest text-muted-foreground mb-1">
               {isAdminAgency ? "Agency Command Center" : "Performance Dashboard"}
             </p>
-            <h1 className="text-2xl font-bold text-[#1e2d3d]" style={{ fontFamily: "Outfit" }}>
-              {isAdminAgency
-                ? `Welcome back, ${user?.full_name?.split(" ")[0] || "Admin"}`
-                : `Welcome back, ${(user?.full_name || user?.email || "Agent").split(/[ @]/)[0]}`}
+            <h1
+              className="text-2xl font-bold text-[#1e2d3d] flex flex-wrap items-center gap-2"
+              style={{ fontFamily: "Outfit" }}
+            >
+              <span>
+                {isAdminAgency
+                  ? `Welcome back, ${user?.full_name?.split(" ")[0] || "Admin"}`
+                  : `Welcome back, ${(user?.full_name || user?.email || "Agent").split(/[ @]/)[0]}`}
+              </span>
+              {/* Agency-view / impersonation context badge. The orange
+                  ImpersonationBanner below carries the full alert; this
+                  is the inline title cue so leadership users don't
+                  mistake aggregate numbers for one agent's. */}
+              {isAdminAgency && (
+                <span
+                  className="text-xs font-medium px-2 py-0.5 rounded-full uppercase tracking-wider"
+                  style={{
+                    background: "rgba(30,45,61,0.08)",
+                    color: "#1e2d3d",
+                  }}
+                  data-testid="dashboard-agency-badge"
+                >
+                  Agency View
+                </span>
+              )}
+              {isImpersonating && impersonatedName && (
+                <span
+                  className="text-xs font-medium px-2 py-0.5 rounded-full uppercase tracking-wider"
+                  style={{
+                    background: "rgba(232,93,47,0.12)",
+                    color: "#c84416",
+                  }}
+                  data-testid="dashboard-viewing-badge"
+                >
+                  Viewing: {impersonatedName}
+                </span>
+              )}
             </h1>
             <p className="text-sm text-muted-foreground mt-1">{todayDateLine()}</p>
             <p className="text-xs text-muted-foreground mt-0.5">
