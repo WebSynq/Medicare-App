@@ -1,5 +1,5 @@
 """
-backend/encryption.py — application-level PHI encryption (Phase 1).
+backend/encryption.py — application-level PHI encryption.
 
 Single enforcement point for `leads` PHI. Use `safe_lead_set` on every
 write (insert doc and update $set dict) and `safe_lead_load` on every
@@ -7,17 +7,18 @@ read result. Pydantic validators are NOT used because `update_one`
 with a raw `$set` dict bypasses them.
 
 Fields encrypted on `leads`:
-  - mbi_number
-  - medicare_part_a_effective
-  - medicare_part_b_effective
+  - mbi_number                       (Phase 1)
+  - medicare_part_a_effective        (Phase 1)
+  - medicare_part_b_effective        (Phase 1)
+  - date_of_birth                    (Phase 2)
 
-`date_of_birth` is intentionally NOT encrypted in Phase 1 — it is
-queried by value in ~9 router call sites (birthday rules, enrollment
-windows, appointment filters). Fernet ciphertext is non-deterministic
-so encrypting DOB would silently zero-out those query results. The
-helper instead stamps `dob_year` and `dob_month` as plaintext integers
-whenever `date_of_birth` is set, so future-Phase-2 DOB encryption can
-keep enrollment-window queries working.
+Phase 2 added DOB encryption after a discovery pass confirmed every
+filter on date_of_birth is `{"$ne": None}` (an exists check that
+works identically on plaintext and ciphertext). All age / birthday
+math runs in Python AFTER `safe_lead_load` decrypts. `safe_lead_set`
+additionally stamps `dob_year` and `dob_month` as plaintext integers
+(derived BEFORE encryption) so future range-query work has a queryable
+surface without breaking the encryption invariant.
 
 Env vars:
   PHI_FIELD_KEY — URL-safe base64 Fernet key. Generate with:
@@ -36,10 +37,18 @@ logger = logging.getLogger("gruening.encryption")
 
 # Fields on the `leads` collection that hold PHI and must be encrypted
 # at rest. Order is stable; do not depend on it elsewhere.
+#
+# Phase 2 added `date_of_birth`. Two facts that made this safe:
+#   1. Every filter on date_of_birth in the codebase is `{"$ne": None}`
+#      (exists check) — works identically on plaintext and ciphertext.
+#   2. All age/birthday math runs in Python AFTER safe_lead_load
+#      decrypts. dob_year / dob_month plaintext integers are also
+#      stamped by safe_lead_set for future range-query use.
 LEAD_PHI_FIELDS = [
     "mbi_number",
     "medicare_part_a_effective",
     "medicare_part_b_effective",
+    "date_of_birth",
 ]
 
 # Live PHI discovery (2026-05) found no banking fields in `policies` or
@@ -128,21 +137,39 @@ def safe_lead_set(updates: Optional[dict]) -> Optional[dict]:
         await db.leads.update_one(filter, {"$set": safe_lead_set(updates)})
 
     Behavior:
-      - PHI keys (LEAD_PHI_FIELDS) with non-None values are encrypted.
+      - PHI keys (LEAD_PHI_FIELDS, including date_of_birth) with
+        non-None values are encrypted.
       - Values that already look like Fernet ciphertext are left alone
         (idempotency / defense against double-encryption during
         partial rollouts).
-      - date_of_birth is NEVER encrypted (Phase 1 — see module docstring).
       - When date_of_birth is present in the dict, dob_year and
-        dob_month are stamped (or set to None on parse failure / explicit
-        clear) so the helper is the single source of truth for the
-        derived components.
+        dob_month are derived from the PLAINTEXT DOB BEFORE the
+        encryption loop runs (or cleared to None on parse failure /
+        explicit None). This is the single source of truth for the
+        derived components — never derived from ciphertext.
       - Empty / None inputs pass through unchanged.
     """
     if not updates:
         return updates
 
     out = dict(updates)
+
+    # Derive dob_year / dob_month FIRST — must read the plaintext DOB
+    # before the encryption loop below replaces it with ciphertext.
+    # When the caller explicitly clears date_of_birth (None), wipe the
+    # components too so they don't go stale. When the caller passes
+    # already-encrypted ciphertext (defensive — e.g. a re-save path),
+    # leave existing components alone — we can't parse ciphertext.
+    if "date_of_birth" in out:
+        dob_value = out["date_of_birth"]
+        if dob_value is None:
+            out["dob_year"] = None
+            out["dob_month"] = None
+        elif not _looks_encrypted(dob_value):
+            year, month = _derive_dob_components(dob_value)
+            out["dob_year"] = year
+            out["dob_month"] = month
+        # else: already encrypted — preserve existing components.
 
     for field in LEAD_PHI_FIELDS:
         if field not in out:
@@ -151,11 +178,6 @@ def safe_lead_set(updates: Optional[dict]) -> Optional[dict]:
         if v is None or _looks_encrypted(v):
             continue
         out[field] = phi_encryption.encrypt(str(v))
-
-    if "date_of_birth" in out:
-        year, month = _derive_dob_components(out["date_of_birth"])
-        out["dob_year"] = year
-        out["dob_month"] = month
 
     return out
 

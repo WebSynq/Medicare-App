@@ -15,6 +15,8 @@ import json
 import os
 import pytest
 
+from encryption import safe_lead_load
+
 
 # ── Health ──────────────────────────────────────────────────────────────────
 def test_root(client, db):
@@ -1960,6 +1962,10 @@ async def test_import_valid_csv(client, db, admin_headers):
     # Spot-check a row: agency_id stamped, created_via marker present,
     # status defaults to "new".
     sample = await db.leads.find_one({"email": "mira@example.com"}, {"_id": 0})
+    # Raw mongomock read returns ciphertext for encrypted PHI (date_of_birth
+    # in Phase 2). Production reads go through safe_lead_load — mirror that
+    # here so the assertion compares plaintext to plaintext.
+    sample = safe_lead_load(sample)
     assert sample is not None
     assert sample["agency_id"] == "ghw_001"
     assert sample["created_via"] == "csv_import"

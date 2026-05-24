@@ -75,8 +75,12 @@ def _build_update(doc: dict) -> dict | None:
         if _needs_encryption(v):
             update[field] = phi_encryption.encrypt(v)
 
+    # Derive dob_year / dob_month from the PLAINTEXT source DOB only.
+    # On a partial-state row (DOB already ciphertext from a prior run),
+    # skip derivation — parsing ciphertext would yield (None, None)
+    # and wipe correct existing components.
     dob = doc.get("date_of_birth")
-    if dob is not None:
+    if dob is not None and not (isinstance(dob, str) and dob.startswith(_FERNET_PREFIX)):
         year, month = _derive_dob_components(dob)
         if doc.get("dob_year") != year:
             update["dob_year"] = year
