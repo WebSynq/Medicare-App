@@ -607,6 +607,20 @@ _PROD_INDEXES = [
     ("leads", "status", {"background": True}),
     ("leads", [("created_at", -1)], {"background": True}),
     ("leads", "tcpa_consent", {"background": True}),
+    # leads full-text search — replaces the $or-of-$regex pattern in
+    # list_leads's `q` parameter that used to scan first_name/last_name/
+    # email/phone unindexed. $text gives tokenized matching (case-
+    # insensitive, word-boundary aware) at index speed.
+    #
+    # MongoDB allows ONLY ONE $text index per collection — don't add a
+    # second one. Per-field weights aren't set (all equal) — revisit
+    # if agents want name matches ranked higher than email/phone.
+    ("leads", [
+        ("first_name", "text"),
+        ("last_name", "text"),
+        ("email", "text"),
+        ("phone", "text"),
+    ], {"background": True, "name": "leads_text_search"}),
 
     # production_records
     ("production_records", "agent_id", {"background": True}),
@@ -642,6 +656,28 @@ _PROD_INDEXES = [
     # documents
     ("documents", "agent_id", {"background": True}),
     ("documents", "lead_id", {"background": True}),
+
+    # notes — soft-delete-aware (deleted=True rows are tombstones; the
+    # list endpoint excludes them). Insert always stamps deleted:False
+    # (notes_router.py:147), making the partial index #3 valid for
+    # every non-deleted row.
+    #
+    # 1) note_id unique — _fetch_note_or_idor + the post-update fresh
+    #    fetch both look up by note_id. Without this index every note
+    #    fetch is a COLLSCAN.
+    ("notes", "note_id", {"unique": True, "background": True}),
+    # 2) (agent_id, lead_id) compound — list_notes filters on both
+    #    together; the pair is more selective than either alone.
+    ("notes", [("agent_id", 1), ("lead_id", 1)], {"background": True}),
+    # 3) Partial on lead_id where deleted=False — forward-looking for
+    #    cross-agent "all live notes on this lead" lookups (e.g. admin
+    #    debug views). Today's list query uses $ne:True so the planner
+    #    won't pick this up — switch to deleted:False if you want to
+    #    activate it for that path.
+    ("notes", "lead_id", {
+        "background": True,
+        "partialFilterExpression": {"deleted": False},
+    }),
 
     # appointments — agent_id+date compound powers the Calendar page's
     # per-agent month/week/day range queries (start_date/end_date filter

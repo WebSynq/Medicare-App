@@ -841,16 +841,22 @@ async def list_leads(
         # endpoint to power a true dropdown at scale.)
         query["plan_type_premium"] = product
     if q:
-        # Escape regex metacharacters — prior behaviour passed user input
-        # straight into MongoDB $regex, exposing the API to ReDoS via patterns
-        # like (a+)+$ and to result leakage via PCRE feature abuse.
-        safe = re.escape(q.strip())
-        query["$or"] = [
-            {"first_name": {"$regex": safe, "$options": "i"}},
-            {"last_name": {"$regex": safe, "$options": "i"}},
-            {"email": {"$regex": safe, "$options": "i"}},
-            {"phone": {"$regex": safe, "$options": "i"}},
-        ]
+        # $text uses the leads_text_search index over first_name,
+        # last_name, email, phone. Tokenized + case-insensitive +
+        # index-served (the prior $or-of-$regex was a full COLLSCAN
+        # over the agent's leads — multi-second at 20k).
+        #
+        # Behavior shift from the old $regex: $text matches whole
+        # tokens with light stemming, NOT arbitrary substrings.
+        # "mira" matches "Mira Holt" but "ira" does not match "Mira".
+        # Phone digits tokenize on punctuation — "555-0010" splits
+        # into "555" and "0010"; full no-dash "5550010" won't match.
+        # If those edges hurt UX in practice, add a digits-only
+        # fallback path using the `phone` regex (phone field is
+        # already indexed). $text is parameterized so no re.escape
+        # is needed — special characters have $text-specific meaning
+        # (quotes = phrase, `-foo` = exclude) but aren't an injection.
+        query["$text"] = {"$search": q.strip()}
 
     # count_documents uses the `agent_id` single-field index automatically.
     # A future compound (agent_id, status, created_at) index would let this
