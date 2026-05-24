@@ -287,6 +287,11 @@ class Lead(LeadBase):
     status: str = "new"  # new, contacted, qualified, enrolled, lost
     soa_signed: bool = False
     soa_signed_at: Optional[str] = None
+    # Server-stamped on the first transition into status="enrolled" — see
+    # leads_router.update_lead / update_lead_stage. Write-once: preserved
+    # across later edits so the conversion-rate dashboards report the
+    # original enrollment moment, not the latest mutation.
+    enrolled_at: Optional[str] = None
     document_ids: List[str] = []
     # Workspace-isolation scoping (Phase 2). agent_id is the canonical key
     # used by deps.agent_filter; agent_email/agent_name are denormalized so

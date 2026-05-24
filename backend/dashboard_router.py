@@ -845,8 +845,9 @@ async def lead_sources(
 
     Each source row carries total / enrolled / conversion_rate
     (one-decimal percent) and an optional avg_days_to_enroll computed
-    as (updated_at - created_at) for enrolled rows — a proxy until we
-    stamp an explicit enrolled_at on the lead. Sources sort by total
+    as (enrolled_at - created_at) for enrolled rows. Pre-backfill
+    rows without enrolled_at fall back to updated_at so historical
+    sources don't suddenly drop to None. Sources sort by total
     descending. Leads with a null/blank source land in an "Unknown"
     bucket so they stay visible instead of silently disappearing.
     """
@@ -859,7 +860,7 @@ async def lead_sources(
         query["created_at"] = {"$gte": start.isoformat()}
 
     proj = {"_id": 0, "lead_source": 1, "status": 1,
-            "created_at": 1, "updated_at": 1}
+            "created_at": 1, "updated_at": 1, "enrolled_at": 1}
     by_source: Dict[str, Dict[str, Any]] = {}
 
     async for ld in db.leads.find(query, proj):
@@ -878,9 +879,11 @@ async def lead_sources(
         if ld.get("status") == "enrolled":
             bucket["enrolled"] += 1
             created = _parse_iso(ld.get("created_at"))
-            updated = _parse_iso(ld.get("updated_at"))
-            if created and updated and updated >= created:
-                days = (updated - created).total_seconds() / 86400.0
+            # Prefer the write-once enrolled_at; fall back to updated_at
+            # for legacy rows the backfill hasn't visited yet.
+            enrolled = _parse_iso(ld.get("enrolled_at")) or _parse_iso(ld.get("updated_at"))
+            if created and enrolled and enrolled >= created:
+                days = (enrolled - created).total_seconds() / 86400.0
                 bucket["_enroll_days_sum"] += days
                 bucket["_enroll_days_count"] += 1
 

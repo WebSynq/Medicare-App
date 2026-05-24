@@ -914,9 +914,19 @@ async def update_lead(
     if current_user.get("role") == "agent" and "agent_assigned_id" in updates:
         raise HTTPException(status_code=403, detail="Agents cannot reassign leads")
     # Phase 2 IDOR check: fetch, then verify ownership before mutating.
-    existing = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0, "id": 1, "agent_id": 1}))
+    # Also pull status + enrolled_at so we can stamp the enrollment
+    # timestamp on the first transition into "enrolled".
+    existing = safe_lead_load(await db.leads.find_one(
+        {"id": lead_id},
+        {"_id": 0, "id": 1, "agent_id": 1, "status": 1, "enrolled_at": 1},
+    ))
     _idor_or_403(existing, current_user)
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # Write-once enrollment timestamp. Stamps on the FIRST transition
+    # into enrolled; preserved on subsequent moves out-and-back-in so
+    # the original enrollment moment isn't lost to a mis-click.
+    if updates.get("status") == "enrolled" and not existing.get("enrolled_at"):
+        updates["enrolled_at"] = updates["updated_at"]
     await db.leads.update_one({"id": lead_id}, {"$set": safe_lead_set(updates)})
     await write_audit(db, "lead_updated", actor_email=current_user["email"],
                       actor_id=current_user["id"], target_type="lead", target_id=lead_id,
@@ -1061,14 +1071,19 @@ async def update_lead_stage(
         )
 
     existing = safe_lead_load(await db.leads.find_one(
-        {"id": lead_id}, {"_id": 0, "id": 1, "agent_id": 1, "status": 1},
+        {"id": lead_id},
+        {"_id": 0, "id": 1, "agent_id": 1, "status": 1, "enrolled_at": 1},
     ))
     _idor_or_403(existing, current_user)
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    stage_updates: dict = {"status": status, "updated_at": now_iso}
+    # Write-once enrollment timestamp — see update_lead for rationale.
+    if status == "enrolled" and not existing.get("enrolled_at"):
+        stage_updates["enrolled_at"] = now_iso
     await db.leads.update_one(
         {"id": lead_id},
-        {"$set": safe_lead_set({"status": status, "updated_at": now_iso})},
+        {"$set": safe_lead_set(stage_updates)},
     )
     await write_audit(
         db, "lead_stage_changed",
