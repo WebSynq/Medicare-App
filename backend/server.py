@@ -607,6 +607,16 @@ _PROD_INDEXES = [
     ("leads", "status", {"background": True}),
     ("leads", [("created_at", -1)], {"background": True}),
     ("leads", "tcpa_consent", {"background": True}),
+    # `state` powers the IL birthday-rule queries (birthday_rule_router,
+    # agency_dashboard's IL window panels, today_router's urgent calls).
+    # Filtered with an $or over 5 case variants — Mongo uses the index
+    # per $or branch (index union), so the $or doesn't defeat it.
+    # Single-field rather than a compound because admins' agency-wide
+    # views skip agent_id scope entirely; a standalone state index
+    # serves both per-agent and agency-wide paths.
+    # TODO: normalize the state field on write (uppercase 2-letter
+    # code) + one-shot backfill, then the $or collapses to one predicate.
+    ("leads", "state", {"background": True}),
     # leads full-text search — replaces the $or-of-$regex pattern in
     # list_leads's `q` parameter that used to scan first_name/last_name/
     # email/phone unindexed. $text gives tokenized matching (case-
