@@ -39,6 +39,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   CalendarDays,
+  Cloud,
   Settings as SettingsIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -148,33 +149,45 @@ function GoogleCalendarCard() {
   }
 
   return (
-    <Card>
+    <Card data-testid="integration-google-calendar">
       <CardContent className="p-5 space-y-4">
         <div className="flex items-start gap-3">
           <div className="w-9 h-9 rounded-lg bg-secondary grid place-items-center flex-shrink-0">
             <CalendarDays className="w-4 h-4" />
           </div>
           <div className="flex-1 min-w-0">
-            <h3 className="text-sm font-semibold">Calendar Integration</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold">Google Calendar</h3>
+              {loading ? (
+                <Badge className="rounded-full bg-gray-100 text-gray-700 border-0 text-[10px]">
+                  Loading…
+                </Badge>
+              ) : status?.connected ? (
+                <Badge className="rounded-full bg-emerald-100 text-emerald-900 border-0 text-[10px]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 mr-1.5" />
+                  Connected
+                </Badge>
+              ) : (
+                <Badge className="rounded-full bg-gray-100 text-gray-700 border-0 text-[10px]">
+                  Not Connected
+                </Badge>
+              )}
+            </div>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Sync new appointments to your Google Calendar automatically.
+              Sync your appointments to Google Calendar automatically. When
+              you book an appointment in the portal, it appears on your
+              Google Calendar instantly.
             </p>
+            {status?.connected && status.connected_at && (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Connected {new Date(status.connected_at).toLocaleDateString()}
+              </p>
+            )}
           </div>
         </div>
 
-        {loading ? (
-          <div className="text-xs text-muted-foreground">Loading…</div>
-        ) : status?.connected ? (
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 text-sm text-emerald-700">
-              <CheckCircle2 className="w-4 h-4" />
-              <span>Connected</span>
-              {status.connected_at && (
-                <span className="text-xs text-muted-foreground">
-                  · {new Date(status.connected_at).toLocaleDateString()}
-                </span>
-              )}
-            </div>
+        {!loading && (
+          status?.connected ? (
             <Button
               type="button"
               variant="outline"
@@ -185,16 +198,17 @@ function GoogleCalendarCard() {
             >
               {busy ? "Working…" : "Disconnect"}
             </Button>
-          </div>
-        ) : (
-          <Button
-            type="button"
-            onClick={connect}
-            disabled={busy}
-            data-testid="gcal-connect"
-          >
-            {busy ? "Redirecting…" : "Connect Google Calendar"}
-          </Button>
+          ) : (
+            <Button
+              type="button"
+              onClick={connect}
+              disabled={busy}
+              size="sm"
+              data-testid="gcal-connect"
+            >
+              {busy ? "Redirecting…" : "Connect Google Calendar"}
+            </Button>
+          )
         )}
       </CardContent>
     </Card>
@@ -449,8 +463,6 @@ function ProfileTab({ me, refresh }) {
           </form>
         </CardContent>
       </Card>
-
-      <GoogleCalendarCard />
     </div>
   );
 }
@@ -1190,11 +1202,17 @@ function BackupCard() {
 }
 
 // ── Integrations tab (admin only) ────────────────────────────────────────
-function IntegrationsTab() {
+function IntegrationsTab({ isAdmin }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
+    // The /integrations/status endpoint is admin-only — skip the fetch
+    // entirely for non-admin users so we don't surface a needless 403.
+    if (!isAdmin) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const { data } = await api.get("/integrations/status");
@@ -1208,118 +1226,186 @@ function IntegrationsTab() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  if (loading || !data) {
-    return (
-      <Card>
-        <CardContent className="p-6 text-sm text-muted-foreground">
-          Loading…
-        </CardContent>
-      </Card>
-    );
-  }
-
-  const cards = [
-    {
-      key: "ghl",
-      title: "GoHighLevel",
-      info: data.ghl,
-      lines: [
-        `Location: ${data.ghl?.metadata?.location_id || "—"}`,
-        data.ghl?.metadata?.mock_mode ? "Mock mode" : "Live",
-      ],
-    },
-    {
-      key: "bedrock",
-      title: "AWS Bedrock",
-      info: data.bedrock,
-      lines: [
-        `Model: ${data.bedrock?.metadata?.model || "—"}`,
-        `Region: ${data.bedrock?.metadata?.region || "—"}`,
-      ],
-    },
-    {
-      key: "s3",
-      title: "S3 Storage",
-      info: data.s3,
-      lines: [
-        `Bucket: ${data.s3?.metadata?.bucket || "—"}`,
-        `Region: ${data.s3?.metadata?.region || "—"}`,
-      ],
-    },
-    {
-      key: "comtrack",
-      title: "ComTrack",
-      info: data.comtrack,
-      lines: [
-        data.comtrack?.metadata?.last_successful_sync
-          ? `Last sync: ${fmtDateTime(
-              data.comtrack.metadata.last_successful_sync
-            )}`
-          : "No successful sync yet",
-      ],
-    },
-  ];
-
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-muted-foreground">
-          Checked {fmtDateTime(data.checked_at)} · All checks are read-only.
-        </p>
-        <Button variant="outline" size="sm" onClick={load}>
-          <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Refresh
-        </Button>
-      </div>
-      <div className="grid md:grid-cols-2 gap-4">
-        {cards.map(({ key, title, info, lines }) => (
-          <Card key={key} data-testid={`integration-${key}`}>
-            <CardContent className="p-5 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Plug className="w-4 h-4 text-muted-foreground" />
-                  <h3 className="text-sm font-semibold">{title}</h3>
-                </div>
-                {info?.status === "ok" && (
-                  <Badge className="rounded-full bg-emerald-100 text-emerald-900 border-0">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 mr-1.5" />
-                    Connected
-                  </Badge>
-                )}
-                {info?.status === "error" && (
-                  <Badge className="rounded-full bg-red-100 text-red-900 border-0">
-                    <span className="w-1.5 h-1.5 rounded-full bg-red-600 mr-1.5" />
-                    Error
-                  </Badge>
-                )}
-                {info?.status === "not_configured" && (
-                  <Badge className="rounded-full bg-amber-100 text-amber-900 border-0">
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-600 mr-1.5" />
-                    Not configured
-                  </Badge>
-                )}
-              </div>
-              <p className="text-xs text-muted-foreground">{info?.detail}</p>
-              <ul className="text-xs space-y-1 text-foreground/80">
-                {lines.filter(Boolean).map((line, i) => (
-                  <li key={i} className="font-mono">
-                    {line}
-                  </li>
-                ))}
-              </ul>
-              {key === "ghl" && <GhlSyncNow />}
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+    <div className="space-y-8">
+      {/* ── Your Connections — per-agent, visible to everyone ─────── */}
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-sm font-semibold">Your Connections</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Personal calendar and productivity tools you connect to your
+            individual account.
+          </p>
+        </div>
+        <div className="grid md:grid-cols-2 gap-4">
+          <GoogleCalendarCard />
+          <ComingSoonCard
+            icon={Building2}
+            title="Google Workspace"
+            description="Connect your Google Workspace account for team directory, shared calendars, and Drive document storage."
+            testId="integration-google-workspace"
+          />
+          <ComingSoonCard
+            icon={Cloud}
+            title="iCloud Calendar"
+            description="Sync appointments to Apple Calendar via iCloud."
+            testId="integration-icloud"
+          />
+        </div>
+      </section>
 
-      <GhlWebhookStatus />
+      {/* ── Platform — agency-wide ops integrations, admin only ───── */}
+      {isAdmin && (
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-semibold">Platform</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Agency-wide service connections.{" "}
+                {data?.checked_at && (
+                  <span>Checked {fmtDateTime(data.checked_at)} · </span>
+                )}
+                All checks are read-only.
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+              <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Refresh
+            </Button>
+          </div>
+
+          {loading || !data ? (
+            <Card>
+              <CardContent className="p-6 text-sm text-muted-foreground">
+                Loading…
+              </CardContent>
+            </Card>
+          ) : (
+            <>
+              <div className="grid md:grid-cols-2 gap-4">
+                {[
+                  {
+                    key: "ghl",
+                    title: "GoHighLevel",
+                    info: data.ghl,
+                    lines: [
+                      `Location: ${data.ghl?.metadata?.location_id || "—"}`,
+                      data.ghl?.metadata?.mock_mode ? "Mock mode" : "Live",
+                    ],
+                  },
+                  {
+                    key: "bedrock",
+                    title: "AWS Bedrock",
+                    info: data.bedrock,
+                    lines: [
+                      `Model: ${data.bedrock?.metadata?.model || "—"}`,
+                      `Region: ${data.bedrock?.metadata?.region || "—"}`,
+                    ],
+                  },
+                  {
+                    key: "s3",
+                    title: "S3 Storage",
+                    info: data.s3,
+                    lines: [
+                      `Bucket: ${data.s3?.metadata?.bucket || "—"}`,
+                      `Region: ${data.s3?.metadata?.region || "—"}`,
+                    ],
+                  },
+                  {
+                    key: "comtrack",
+                    title: "ComTrack",
+                    info: data.comtrack,
+                    lines: [
+                      data.comtrack?.metadata?.last_successful_sync
+                        ? `Last sync: ${fmtDateTime(data.comtrack.metadata.last_successful_sync)}`
+                        : "No successful sync yet",
+                    ],
+                  },
+                ].map(({ key, title, info, lines }) => (
+                  <Card key={key} data-testid={`integration-${key}`}>
+                    <CardContent className="p-5 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Plug className="w-4 h-4 text-muted-foreground" />
+                          <h3 className="text-sm font-semibold">{title}</h3>
+                        </div>
+                        {info?.status === "ok" && (
+                          <Badge className="rounded-full bg-emerald-100 text-emerald-900 border-0">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 mr-1.5" />
+                            Connected
+                          </Badge>
+                        )}
+                        {info?.status === "error" && (
+                          <Badge className="rounded-full bg-red-100 text-red-900 border-0">
+                            <span className="w-1.5 h-1.5 rounded-full bg-red-600 mr-1.5" />
+                            Error
+                          </Badge>
+                        )}
+                        {info?.status === "not_configured" && (
+                          <Badge className="rounded-full bg-amber-100 text-amber-900 border-0">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-600 mr-1.5" />
+                            Not configured
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">{info?.detail}</p>
+                      <ul className="text-xs space-y-1 text-foreground/80">
+                        {lines.filter(Boolean).map((line, i) => (
+                          <li key={i} className="font-mono">
+                            {line}
+                          </li>
+                        ))}
+                      </ul>
+                      {key === "ghl" && <GhlSyncNow />}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+
+              <GhlWebhookStatus />
+            </>
+          )}
+        </section>
+      )}
     </div>
+  );
+}
+
+
+// ── Coming-Soon placeholder card ────────────────────────────────────────
+// Matches GoogleCalendarCard's visual structure (icon tile + title +
+// description + status badge + button) so the three "Your Connections"
+// cards line up cleanly in the grid.
+function ComingSoonCard({ icon: Icon, title, description, testId }) {
+  return (
+    <Card data-testid={testId}>
+      <CardContent className="p-5 space-y-4">
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 rounded-lg bg-secondary grid place-items-center flex-shrink-0">
+            <Icon className="w-4 h-4" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold">{title}</h3>
+              <Badge className="rounded-full bg-blue-100 text-blue-900 border-0 text-[10px]">
+                Coming Soon
+              </Badge>
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {description}
+            </p>
+          </div>
+        </div>
+        <Button type="button" disabled variant="outline" size="sm">
+          Connect
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1907,8 +1993,9 @@ export default function Settings() {
   const requestedTab = searchParams.get("tab") || "";
   const initialTab = useMemo(() => {
     if (!SETTINGS_TAB_IDS.has(requestedTab)) return "profile";
-    // Gate admin-only tabs.
-    if (!isAdmin && (requestedTab === "agency" || requestedTab === "integrations" || requestedTab === "team")) {
+    // Gate admin-only tabs. (integrations is visible to everyone — admins
+    // additionally see the Platform section inside it.)
+    if (!isAdmin && (requestedTab === "agency" || requestedTab === "team")) {
       return "profile";
     }
     if (requestedTab === "compliance" && !canSeeCompliance) return "profile";
@@ -1950,8 +2037,8 @@ export default function Settings() {
             Account &amp; Agency Settings
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Manage your profile, security, audit trail
-            {isAdmin && ", agency, integrations, and team"}.
+            Manage your profile, security, audit trail, integrations
+            {isAdmin && ", agency, and team"}.
           </p>
         </div>
 
@@ -1973,11 +2060,9 @@ export default function Settings() {
                 Agency
               </TabsTrigger>
             )}
-            {isAdmin && (
-              <TabsTrigger value="integrations" data-testid="tab-integrations">
-                Integrations
-              </TabsTrigger>
-            )}
+            <TabsTrigger value="integrations" data-testid="tab-integrations">
+              Integrations
+            </TabsTrigger>
             {isAdmin && (
               <TabsTrigger value="team" data-testid="tab-team">
                 Team
@@ -2004,11 +2089,9 @@ export default function Settings() {
               <AgencyTab />
             </TabsContent>
           )}
-          {isAdmin && (
-            <TabsContent value="integrations" className="mt-4">
-              <IntegrationsTab />
-            </TabsContent>
-          )}
+          <TabsContent value="integrations" className="mt-4">
+            <IntegrationsTab isAdmin={isAdmin} />
+          </TabsContent>
           {isAdmin && (
             <TabsContent value="team" className="mt-4">
               <TeamTab />

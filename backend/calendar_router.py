@@ -83,12 +83,18 @@ def _redirect_uri() -> str:
     ).strip()
 
 
-def _frontend_settings_url(suffix: str = "") -> str:
-    """Resolve the frontend Settings URL — uses FRONTEND_URL when set so
-    staging/preview deploys land back on the right host."""
+def _frontend_settings_url(calendar_status: str = "connected") -> str:
+    """Resolve the post-OAuth landing URL — always lands on the Integrations
+    tab so the user sees the status update next to the Connect button.
+
+    `calendar_status` ends up in `?calendar=<status>` so the SPA can toast
+    success / cancellation / error. The tab param is read by the Settings
+    page's `initialTab` memo (see Settings.jsx); the calendar param is
+    stripped after the toast by GoogleCalendarCard's useEffect.
+    """
     from deps import get_frontend_url
     base = (get_frontend_url() or "https://app.ghwcrm.com").rstrip("/")
-    return f"{base}/settings{suffix}"
+    return f"{base}/settings?tab=integrations&calendar={calendar_status}"
 
 
 def _sign_state(user_id: str) -> str:
@@ -167,7 +173,7 @@ async def google_callback(
     if error:
         logger.info("google_calendar OAuth user-cancelled: %s", error)
         return RedirectResponse(
-            url=_frontend_settings_url(f"?calendar=cancelled"),
+            url=_frontend_settings_url("cancelled"),
             status_code=302,
         )
     if not code or not state:
@@ -201,7 +207,7 @@ async def google_callback(
     except Exception as exc:
         logger.warning("google_calendar token exchange failed: %s", exc)
         return RedirectResponse(
-            url=_frontend_settings_url("?calendar=error"),
+            url=_frontend_settings_url("error"),
             status_code=302,
         )
 
@@ -212,7 +218,7 @@ async def google_callback(
         # in /connect so this should never happen — defend anyway.
         logger.warning("google_calendar callback for %s missing refresh_token", user_id)
         return RedirectResponse(
-            url=_frontend_settings_url("?calendar=error"),
+            url=_frontend_settings_url("error"),
             status_code=302,
         )
 
@@ -239,7 +245,7 @@ async def google_callback(
     )
 
     return RedirectResponse(
-        url=_frontend_settings_url("?calendar=connected"),
+        url=_frontend_settings_url("connected"),
         status_code=302,
     )
 
