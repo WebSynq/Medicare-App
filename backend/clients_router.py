@@ -17,7 +17,8 @@ import logging
 
 from fastapi import APIRouter, Depends
 
-from deps import get_db, get_current_user, agent_filter
+from deps import get_db, get_phi_db, get_current_user, agent_filter
+from encryption import safe_lead_load
 
 
 logger = logging.getLogger("gruening.clients")
@@ -51,7 +52,7 @@ def _is_inactive(status: str) -> bool:
 @router.get("/{contact_id}/policies")
 async def get_client_policies(
     contact_id: str,
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
 ):
     """All policies on file, newest first.
@@ -72,7 +73,7 @@ async def get_client_policies(
     # Try the URL segment as a portal lead id first. If it matches a
     # lead row, also union in the contact id stored on that lead so
     # pre-Phase-2 policies (with only ghl_contact_id stamped) surface.
-    lead = await db.leads.find_one({"id": contact_id}, {"_id": 0, "id": 1, "ghl_contact_id": 1})
+    lead = safe_lead_load(await db.leads.find_one({"id": contact_id}, {"_id": 0, "id": 1, "ghl_contact_id": 1}))
     if lead:
         or_terms = [{"lead_id": lead["id"]}]
         if lead.get("ghl_contact_id"):

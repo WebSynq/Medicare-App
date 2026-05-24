@@ -7,6 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from datetime import datetime, timezone
 
 from security import decode_token  # noqa: F401 — used by get_current_user + get_optional_user
+from encryption import safe_lead_load
 
 
 # Cookie name for the httpOnly access token. Reading the cookie before the
@@ -30,18 +31,94 @@ def _extract_token(request: Request, header_token: Optional[str]) -> Optional[st
     return request.cookies.get(ACCESS_TOKEN_COOKIE)
 
 
-_mongo_client: Optional[AsyncIOMotorClient] = None
+# ═══════════════════════════════════════════════════════
+# COLLECTION ARCHITECTURE — READ BEFORE ADDING COLLECTIONS
+# ═══════════════════════════════════════════════════════
+# leads      — Medicare beneficiary CRM records. One doc per prospect.
+#              Keyed on agent_id + GHL contact sync. Owns: lead status,
+#              enrollment pipeline, TCPA consent, source attribution.
+#              DO NOT store application/policy data here.
+#
+# clients    — GHL contact persistence layer. One doc per GHL contact,
+#              upserted on ghl_contact_id. Written by application_router
+#              at submission time. DO NOT merge with leads.
+#
+# policies   — Application submission history. One doc per submitted
+#              application. Insert-only (never updated after write).
+#              Keyed on application_id. Owns: carrier, plan, premium,
+#              effective date, and any ACH/banking fields.
+#
+# RULE: If you are unsure which collection a field belongs to —
+#       leads = WHO the client is (CRM)
+#       clients = GHL sync record (integration layer)
+#       policies = WHAT they bought (transaction record)
+# ═══════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════
+# TWO MOTOR CLIENTS — DEFAULT vs PHI
+# ═══════════════════════════════════════════════════════
+# default_client — connection pool used by every router that does NOT
+#                  touch the `leads` collection. readPreference is
+#                  primaryPreferred so non-PHI list endpoints can use
+#                  secondary capacity when the primary is under load.
+#
+# phi_client     — connection pool used by every router/route that
+#                  reads or writes `leads`. readPreference is primary
+#                  so PHI reads never come from a (possibly stale)
+#                  secondary — a compliance posture statement, not a
+#                  correctness statement (ciphertext is ciphertext
+#                  whether stale or fresh).
+#
+# Both clients share write concern (w=majority, journal=True),
+# readConcernLevel=majority, and identical connection-pool settings.
+# Only readPreference differs.
+#
+# Pick the right Depends in each route:
+#     Depends(get_db)      → no leads access in the route body
+#     Depends(get_phi_db)  → ANY db.leads.* access in the route body
+# ═══════════════════════════════════════════════════════
+_default_client: Optional[AsyncIOMotorClient] = None
+_phi_client: Optional[AsyncIOMotorClient] = None
+
+
+def _build_client(read_preference: str) -> AsyncIOMotorClient:
+    return AsyncIOMotorClient(
+        os.environ["MONGO_URL"],
+        w="majority",
+        journal=True,
+        readConcernLevel="majority",
+        readPreference=read_preference,
+        maxPoolSize=100,
+        minPoolSize=5,
+        waitQueueTimeoutMS=5000,
+        maxIdleTimeMS=60000,
+        serverSelectionTimeoutMS=5000,
+        connectTimeoutMS=10000,
+    )
 
 
 def get_mongo_client() -> AsyncIOMotorClient:
-    global _mongo_client
-    if _mongo_client is None:
-        _mongo_client = AsyncIOMotorClient(os.environ["MONGO_URL"])
-    return _mongo_client
+    """Default (non-PHI) Motor client. Kept for back-compat with scripts
+    and the legacy single-client call sites."""
+    global _default_client
+    if _default_client is None:
+        _default_client = _build_client("primaryPreferred")
+    return _default_client
+
+
+def get_phi_mongo_client() -> AsyncIOMotorClient:
+    """PHI Motor client — primary-only reads."""
+    global _phi_client
+    if _phi_client is None:
+        _phi_client = _build_client("primary")
+    return _phi_client
 
 
 def get_db() -> AsyncIOMotorDatabase:
     return get_mongo_client()[os.environ["DB_NAME"]]
+
+
+def get_phi_db() -> AsyncIOMotorDatabase:
+    return get_phi_mongo_client()[os.environ["DB_NAME"]]
 
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
@@ -243,12 +320,12 @@ async def resolve_lead_id_for_policy(
     proj = {"_id": 0, "id": 1}
     pid = policy.get("lead_id")
     if pid:
-        ld = await db.leads.find_one({**scope, "id": pid}, proj)
+        ld = safe_lead_load(await db.leads.find_one({**scope, "id": pid}, proj))
         if ld:
             return ld["id"]
     gcid = policy.get("ghl_contact_id")
     if gcid:
-        ld = await db.leads.find_one({**scope, "ghl_contact_id": gcid}, proj)
+        ld = safe_lead_load(await db.leads.find_one({**scope, "ghl_contact_id": gcid}, proj))
         if ld:
             return ld["id"]
     cn = policy.get("contact_name")
@@ -256,9 +333,9 @@ async def resolve_lead_id_for_policy(
         parts = cn.strip().rsplit(" ", 1)
         if len(parts) == 2:
             fn, ln = parts
-            ld = await db.leads.find_one(
+            ld = safe_lead_load(await db.leads.find_one(
                 {**scope, "first_name": fn, "last_name": ln}, proj,
-            )
+            ))
             if ld:
                 return ld["id"]
     return None

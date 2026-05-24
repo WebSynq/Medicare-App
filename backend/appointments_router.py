@@ -37,9 +37,11 @@ from deps import (
     get_agency_id,
     get_current_user,
     get_db,
+    get_phi_db,
     get_effective_agent,
     write_audit,
 )
+from encryption import safe_lead_load
 
 
 logger = logging.getLogger("gruening.appointments")
@@ -172,7 +174,7 @@ async def _resolve_lead(
     it (or is privileged). Returns the lead doc so we can denormalize
     client_name onto the appointment row.
     """
-    lead = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    lead = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0}))
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
     role = effective.get("role")
@@ -320,7 +322,7 @@ def _estimate_commission(lead: Optional[Dict[str, Any]]) -> Optional[float]:
 async def create_appointment(
     request: Request,
     body: AppointmentCreate = Body(...),
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     effective: dict = Depends(get_effective_agent),
 ):
     """Create an appointment. Linked to a lead when ``lead_id`` is sent
@@ -438,7 +440,7 @@ async def list_appointments(
 async def estimate_commission(
     request: Request,
     body: AppointmentEstimateRequest = Body(...),
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     effective: dict = Depends(get_effective_agent),
 ):
     """Return the auto-estimated commission for a lead without

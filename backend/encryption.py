@@ -1,0 +1,203 @@
+"""
+backend/encryption.py — application-level PHI encryption (Phase 1).
+
+Single enforcement point for `leads` PHI. Use `safe_lead_set` on every
+write (insert doc and update $set dict) and `safe_lead_load` on every
+read result. Pydantic validators are NOT used because `update_one`
+with a raw `$set` dict bypasses them.
+
+Fields encrypted on `leads`:
+  - mbi_number
+  - medicare_part_a_effective
+  - medicare_part_b_effective
+
+`date_of_birth` is intentionally NOT encrypted in Phase 1 — it is
+queried by value in ~9 router call sites (birthday rules, enrollment
+windows, appointment filters). Fernet ciphertext is non-deterministic
+so encrypting DOB would silently zero-out those query results. The
+helper instead stamps `dob_year` and `dob_month` as plaintext integers
+whenever `date_of_birth` is set, so future-Phase-2 DOB encryption can
+keep enrollment-window queries working.
+
+Env vars:
+  PHI_FIELD_KEY — URL-safe base64 Fernet key. Generate with:
+    python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+"""
+import logging
+import os
+from datetime import date
+from typing import Optional
+
+from cryptography.fernet import Fernet, InvalidToken
+
+
+logger = logging.getLogger("gruening.encryption")
+
+
+# Fields on the `leads` collection that hold PHI and must be encrypted
+# at rest. Order is stable; do not depend on it elsewhere.
+LEAD_PHI_FIELDS = [
+    "mbi_number",
+    "medicare_part_a_effective",
+    "medicare_part_b_effective",
+]
+
+# Live PHI discovery (2026-05) found no banking fields in `policies` or
+# `application_extracted_data` yet. Populate when extracted EFT data
+# starts landing — paths will be nested (e.g. "all_fields.routing_number",
+# "by_doc.eft_form.account_number") and need a different helper than the
+# flat lead helpers below.
+POLICY_PHI_FIELDS: list[str] = []
+EXTRACTED_DATA_PHI_PATHS: list[str] = []
+
+
+# Fernet v1 tokens always begin with 'gAAAA' — that's the base64url
+# encoding of version byte 0x80 plus payload padding. Used both as an
+# idempotency guard (don't double-encrypt) and as a read-side
+# detection heuristic (don't try to decrypt a legacy plaintext row).
+_FERNET_PREFIX = "gAAAA"
+
+
+class PHIEncryption:
+    """Fernet-backed encryptor.
+
+    The key is loaded lazily on first encrypt/decrypt so that:
+      - importing this module never crashes (tests that don't touch
+        PHI don't need PHI_FIELD_KEY configured),
+      - a misconfigured production deployment fails loudly on the
+        first PHI write/read rather than masking the error.
+    """
+
+    def __init__(self) -> None:
+        self._fernet: Optional[Fernet] = None
+
+    def _get_fernet(self) -> Fernet:
+        if self._fernet is None:
+            key = os.environ.get("PHI_FIELD_KEY")
+            if not key:
+                raise ValueError(
+                    "PHI_FIELD_KEY environment variable is not set. "
+                    "Generate with: python -c \"from cryptography.fernet "
+                    "import Fernet; print(Fernet.generate_key().decode())\""
+                )
+            self._fernet = Fernet(key.encode())
+        return self._fernet
+
+    def encrypt(self, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return self._get_fernet().encrypt(value.encode()).decode()
+
+    def decrypt(self, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return self._get_fernet().decrypt(value.encode()).decode()
+
+
+# Module-level singleton — import this, don't instantiate elsewhere.
+phi_encryption = PHIEncryption()
+
+
+def _looks_encrypted(v) -> bool:
+    """True iff v is a string shaped like a Fernet token."""
+    return isinstance(v, str) and v.startswith(_FERNET_PREFIX)
+
+
+def _derive_dob_components(dob_value) -> tuple[Optional[int], Optional[int]]:
+    """Parse an ISO date string → (year, month).
+
+    Returns (None, None) on any failure. Never raises — a malformed DOB
+    must not block a lead write. Accepts the canonical "YYYY-MM-DD"
+    form plus longer strings ("YYYY-MM-DDTHH:..." get truncated to 10).
+    """
+    if dob_value is None or not isinstance(dob_value, str):
+        return (None, None)
+    try:
+        d = date.fromisoformat(dob_value.strip()[:10])
+    except ValueError:
+        return (None, None)
+    return (d.year, d.month)
+
+
+def safe_lead_set(updates: Optional[dict]) -> Optional[dict]:
+    """Return a shallow copy of `updates` with PHI encrypted in place
+    and dob_year/dob_month stamped if date_of_birth is being set.
+
+    Use on EVERY db.leads write:
+        await db.leads.insert_one(safe_lead_set(doc))
+        await db.leads.update_one(filter, {"$set": safe_lead_set(updates)})
+
+    Behavior:
+      - PHI keys (LEAD_PHI_FIELDS) with non-None values are encrypted.
+      - Values that already look like Fernet ciphertext are left alone
+        (idempotency / defense against double-encryption during
+        partial rollouts).
+      - date_of_birth is NEVER encrypted (Phase 1 — see module docstring).
+      - When date_of_birth is present in the dict, dob_year and
+        dob_month are stamped (or set to None on parse failure / explicit
+        clear) so the helper is the single source of truth for the
+        derived components.
+      - Empty / None inputs pass through unchanged.
+    """
+    if not updates:
+        return updates
+
+    out = dict(updates)
+
+    for field in LEAD_PHI_FIELDS:
+        if field not in out:
+            continue
+        v = out[field]
+        if v is None or _looks_encrypted(v):
+            continue
+        out[field] = phi_encryption.encrypt(str(v))
+
+    if "date_of_birth" in out:
+        year, month = _derive_dob_components(out["date_of_birth"])
+        out["dob_year"] = year
+        out["dob_month"] = month
+
+    return out
+
+
+def safe_lead_load(doc: Optional[dict]) -> Optional[dict]:
+    """Return a shallow copy of `doc` with PHI keys decrypted in place.
+
+    Use on EVERY db.leads read:
+        lead = safe_lead_load(await db.leads.find_one(...))
+        leads = [safe_lead_load(d) for d in await cursor.to_list(None)]
+
+    Behavior:
+      - None passes through.
+      - PHI keys whose values look like ciphertext are decrypted.
+      - PHI keys whose values are None or plaintext are left untouched
+        (handles legacy rows mid-rollout — the encrypt_existing_phi.py
+        backfill will close this window).
+      - If a value looks like ciphertext but decryption fails
+        (key mismatch / corruption), the field is set to None and a
+        WARNING is logged. Returning ciphertext to the SPA would leak
+        a base64 blob into the UI; returning None is recoverable and
+        surfaces in monitoring.
+    """
+    if doc is None:
+        return None
+
+    out = dict(doc)
+
+    for field in LEAD_PHI_FIELDS:
+        if field not in out:
+            continue
+        v = out[field]
+        if v is None or not _looks_encrypted(v):
+            continue
+        try:
+            out[field] = phi_encryption.decrypt(v)
+        except InvalidToken:
+            logger.warning(
+                "InvalidToken decrypting leads.%s — wrong key or "
+                "corrupted ciphertext. Returning None to caller.",
+                field,
+            )
+            out[field] = None
+
+    return out

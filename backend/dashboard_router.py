@@ -26,9 +26,11 @@ from deps import (
     agent_filter,
     get_current_user,
     get_db,
+    get_phi_db,
     get_effective_agent,
     write_audit,
 )
+from encryption import safe_lead_load
 
 
 logger = logging.getLogger("gruening.dashboard")
@@ -242,6 +244,7 @@ async def _lead_stats(db, scope: dict) -> Dict[str, Any]:
     soa_signed_mtd = 0
     mtd_start = _period_start("mtd")
     async for d in cursor:
+        d = safe_lead_load(d)
         counts[(d.get("status") or "new").lower()] += 1
         signed_dt = _parse_iso(d.get("soa_signed_at"))
         if d.get("soa_signed") and signed_dt and mtd_start and signed_dt >= mtd_start:
@@ -443,6 +446,7 @@ async def _alerts(db, scope: dict) -> List[Dict[str, Any]]:
         "_id": 0, "id": 1, "first_name": 1, "last_name": 1,
         "state": 1, "date_of_birth": 1, "ghl_contact_id": 1,
     }):
+        ld = safe_lead_load(ld)
         leads_by_id[ld["id"]] = ld
         if ld.get("ghl_contact_id"):
             leads_by_contact[ld["ghl_contact_id"]] = ld
@@ -658,6 +662,7 @@ async def _admin_agent_breakdown(db) -> List[Dict[str, Any]]:
         {"agent_id": {"$in": list(by_id.keys())}},
         {"_id": 0, "agent_id": 1, "status": 1},
     ):
+        ld = safe_lead_load(ld)
         leads_total[ld["agent_id"]] += 1
         if (ld.get("status") or "").lower() == "enrolled":
             leads_enrolled[ld["agent_id"]] += 1
@@ -715,7 +720,7 @@ async def dashboard_stats(
     period: str = Query("mtd", description="mtd|ytd|last30|last90|all"),
     current_user: dict = Depends(get_current_user),
     effective: dict = Depends(get_effective_agent),
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
 ):
     """Aggregated stats for the dashboard.
 
@@ -833,7 +838,7 @@ async def _active_team_today(db) -> int:
 async def lead_sources(
     request: Request,
     period: str = Query("mtd", description="mtd|ytd|last30|last90|all"),
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
 ):
     """Grouped lead-source roll-up scoped by agent_filter.
@@ -858,6 +863,7 @@ async def lead_sources(
     by_source: Dict[str, Dict[str, Any]] = {}
 
     async for ld in db.leads.find(query, proj):
+        ld = safe_lead_load(ld)
         raw = ld.get("lead_source")
         src = (raw or "").strip() if isinstance(raw, str) else ""
         key = src or "Unknown"

@@ -31,9 +31,11 @@ from deps import (
     get_agency_id,
     get_current_user,
     get_db,
+    get_phi_db,
     get_effective_agent,
     write_audit,
 )
+from encryption import safe_lead_load
 
 
 logger = logging.getLogger("gruening.notes")
@@ -88,7 +90,7 @@ async def _resolve_lead_or_403(
     """Confirm the lead exists and the effective agent owns it
     (privileged roles bypass the ownership check). 404 missing /
     403 not-yours, same shape as leads_router._idor_or_403."""
-    lead = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    lead = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0}))
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
     role = effective.get("role")
@@ -117,7 +119,7 @@ async def _fetch_note_or_idor(
 async def create_note(
     request: Request,
     body: NoteCreate = Body(...),
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     effective: dict = Depends(get_effective_agent),
 ):
     """Create a note or task tied to a lead the effective agent owns."""
@@ -168,7 +170,7 @@ async def create_note(
 async def list_notes(
     request: Request,
     lead_id: str = Query(..., min_length=1, max_length=128),
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
 ):
     """List notes + tasks for a single lead, newest first. Tombstones

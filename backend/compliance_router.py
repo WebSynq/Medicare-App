@@ -19,8 +19,10 @@ from fastapi.responses import StreamingResponse
 from deps import (
     COMPLIANCE_ROLES,
     get_db,
+    get_phi_db,
     require_roles,
 )
+from encryption import safe_lead_load
 
 
 router = APIRouter(prefix="/compliance", tags=["compliance"])
@@ -45,7 +47,7 @@ def _parse_iso(s: Optional[str]) -> Optional[datetime]:
 @router.get("/soa")
 async def list_soa(
     _user: dict = Depends(require_roles(*COMPLIANCE_ROLES)),
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
     status: Optional[str] = Query(None, description="signed | pending | expired"),
     agent_email: Optional[str] = None,
     limit: int = Query(500, le=2000),
@@ -67,6 +69,7 @@ async def list_soa(
          "agent_id": 1, "agent_email": 1, "agent_name": 1,
          "soa_signed": 1, "soa_signed_at": 1, "created_at": 1},
     ):
+        ld = safe_lead_load(ld)
         leads_index[ld["id"]] = ld
 
     records: List[Dict[str, Any]] = []
@@ -103,6 +106,7 @@ async def list_soa(
          "agent_name": 1, "agent_email": 1, "created_at": 1,
          "status": 1},
     ):
+        ld = safe_lead_load(ld)
         if (ld.get("status") or "").lower() in ("lost", "not_interested"):
             continue
         records.append({
@@ -161,7 +165,7 @@ async def list_soa(
 @router.get("/tcpa")
 async def list_tcpa(
     _user: dict = Depends(require_roles(*COMPLIANCE_ROLES)),
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
     limit: int = Query(500, le=2000),
 ) -> Dict[str, Any]:
     """TCPA consent dashboard.
@@ -187,6 +191,7 @@ async def list_tcpa(
 
     leads: List[Dict[str, Any]] = []
     async for ld in cursor:
+        ld = safe_lead_load(ld)
         leads.append({
             "id": ld.get("id"),
             "name": f"{ld.get('first_name', '')} {ld.get('last_name', '')}".strip() or "—",
@@ -249,7 +254,7 @@ async def export_soa(
 @router.get("/export/tcpa.csv")
 async def export_tcpa(
     _user: dict = Depends(require_roles(*COMPLIANCE_ROLES)),
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
 ) -> StreamingResponse:
     """TCPA consent log — every lead with consent status + provenance."""
     rows: List[List[Any]] = [[
@@ -264,6 +269,7 @@ async def export_tcpa(
          "tcpa_consent_timestamp": 1, "tcpa_consent_ip": 1, "lead_source": 1,
          "agent_name": 1, "created_at": 1},
     ):
+        ld = safe_lead_load(ld)
         rows.append([
             ld.get("id"),
             f"{ld.get('first_name', '')} {ld.get('last_name', '')}".strip(),

@@ -20,7 +20,8 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from deps import get_current_user, get_db, require_roles
+from deps import get_current_user, get_db, get_phi_db, require_roles
+from encryption import safe_lead_load
 
 
 logger = logging.getLogger("gruening.agency")
@@ -193,6 +194,7 @@ async def _pipeline(db) -> Dict[str, Any]:
         {"_id": 0, "id": 1, "first_name": 1, "last_name": 1,
          "status": 1, "updated_at": 1, "agent_name": 1},
     ):
+        ld = safe_lead_load(ld)
         st = (ld.get("status") or "new").lower()
         counts[st] += 1
         upd = _parse_iso(ld.get("updated_at"))
@@ -252,6 +254,7 @@ async def _agent_cards(db) -> List[Dict[str, Any]]:
         {"created_at": {"$gte": week_ago.isoformat()}},
         {"_id": 0, "agent_id": 1},
     ):
+        ld = safe_lead_load(ld)
         if ld.get("agent_id"):
             leads_week[ld["agent_id"]] += 1
 
@@ -332,7 +335,7 @@ async def _recent_activity(db, limit: int = 50,
 @router.get("/stats")
 async def agency_stats(
     _admin: dict = Depends(require_roles("admin", "owner")),
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
 ):
     """Single payload that powers the Agency command-center page.
 

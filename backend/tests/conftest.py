@@ -28,6 +28,10 @@ os.environ["COMTRACK_API_KEY"] = ""
 # Disable the daily ComTrack scheduler — pytest must never spin up a
 # background AsyncIOScheduler that would leak between tests.
 os.environ["DISABLE_SCHEDULER"] = "1"
+# PHI encryption key — generated per-session so no real key ever lands in
+# the test process. encryption.py lazy-loads it on first PHI write/read.
+from cryptography.fernet import Fernet as _Fernet  # noqa: E402
+os.environ.setdefault("PHI_FIELD_KEY", _Fernet.generate_key().decode())
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -55,14 +59,18 @@ def _fake_get_db():
 
 
 deps.get_mongo_client = _fake_get_mongo_client
+deps.get_phi_mongo_client = _fake_get_mongo_client
 deps.get_db = _fake_get_db
+deps.get_phi_db = _fake_get_db
 
 # Now safe to import server — its startup handler will use the patched get_db.
 import server  # noqa: E402
 
 
-# Dependency override too, so endpoints that re-import get_db get the mock.
+# Dependency override too, so endpoints that re-import get_db / get_phi_db
+# get the same mongomock DB.
 server.app.dependency_overrides[deps.get_db] = _fake_get_db
+server.app.dependency_overrides[deps.get_phi_db] = _fake_get_db
 
 
 # slowapi: disable per-IP rate limits across all routers so the suite can hit

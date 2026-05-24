@@ -21,7 +21,7 @@ from sentry_sdk.integrations.starlette import StarletteIntegration
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-from deps import get_db  # noqa: E402
+from deps import get_db, get_phi_db  # noqa: E402
 from auth_router import router as auth_router  # noqa: E402
 from leads_router import router as leads_router  # noqa: E402
 from documents_router import router as documents_router  # noqa: E402
@@ -795,7 +795,9 @@ async def on_startup():
     app.state.comtrack_scheduler = start_comtrack_scheduler(get_db)
     app.state.statement_scheduler = start_statement_scheduler(get_db)
     app.state.backup_scheduler = start_backup_scheduler(get_db)
-    app.state.notifications_scheduler = start_notifications_scheduler(get_db)
+    # notifications scheduler reads db.leads (birthday windows, stale leads)
+    # via _gen_birthday_windows / _gen_stale_leads — hand it the PHI client.
+    app.state.notifications_scheduler = start_notifications_scheduler(get_phi_db)
 
 
 @app.on_event("shutdown")

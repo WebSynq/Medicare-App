@@ -17,6 +17,7 @@ from slowapi.util import get_remote_address
 from models import Lead, LeadCreate, LeadUpdate
 from deps import (
     get_db,
+    get_phi_db,
     get_current_user,
     get_effective_agent,
     agent_filter,
@@ -27,6 +28,7 @@ from deps import (
     write_audit,
     FULL_AGENCY_SCOPE_ROLES,
 )
+from encryption import safe_lead_set, safe_lead_load
 from ghl_client import GHLClient
 from pdf_export import generate_lead_pdf
 
@@ -171,7 +173,7 @@ async def _sync_lead_to_ghl(
     error message, writes a ghl_sync_failed audit event, and re-raises so the
     caller can choose how to respond.
     """
-    doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    doc = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0}))
     if not doc:
         raise HTTPException(status_code=404, detail="Lead not found")
 
@@ -207,13 +209,13 @@ async def _sync_lead_to_ghl(
         now_iso = datetime.now(timezone.utc).isoformat()
         await db.leads.update_one(
             {"id": lead_id},
-            {"$set": {
+            {"$set": safe_lead_set({
                 "ghl_contact_id": contact_id,
                 "ghl_sync_status": sync_status,
                 "ghl_sync_error": None,
                 "ghl_synced_at": now_iso,
                 "updated_at": now_iso,
-            }},
+            })},
         )
         await write_audit(db, "ghl_sync", actor_email=actor_email,
                           actor_id=actor_id, target_type="lead", target_id=lead_id,
@@ -226,9 +228,9 @@ async def _sync_lead_to_ghl(
         error_category = type(e).__name__
         await db.leads.update_one(
             {"id": lead_id},
-            {"$set": {"ghl_sync_status": "error",
+            {"$set": safe_lead_set({"ghl_sync_status": "error",
                       "ghl_sync_error": f"upstream_{error_category}",
-                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+                      "updated_at": datetime.now(timezone.utc).isoformat()})},
         )
         await write_audit(db, "ghl_sync_failed", actor_email=actor_email,
                           actor_id=actor_id, target_type="lead", target_id=lead_id,
@@ -241,7 +243,7 @@ async def _sync_lead_to_ghl(
 async def create_lead(
     payload: LeadCreate,
     request: Request,
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
     effective: dict = Depends(get_effective_agent),
 ):
@@ -283,7 +285,7 @@ async def create_lead(
     # Single-tenant today; flips the multi-tenant cut into a filter
     # change rather than a schema rebuild.
     doc["agency_id"] = get_agency_id()
-    await db.leads.insert_one(doc.copy())
+    await db.leads.insert_one(safe_lead_set(doc.copy()))
     await write_audit(db, "lead_created", actor_email=current_user.get("email"),
                       actor_id=current_user.get("id"),
                       target_type="lead", target_id=lead.id, request=request,
@@ -319,7 +321,7 @@ async def create_lead(
 
     # Auto-create SOA for Medicare-product leads. Never blocks — returns
     # None on non-Medicare leads or any internal failure.
-    fresh = await db.leads.find_one({"id": lead.id}, {"_id": 0})
+    fresh = safe_lead_load(await db.leads.find_one({"id": lead.id}, {"_id": 0}))
     soa_link = await _auto_create_soa_for_medicare_lead(
         db, fresh, effective, request,
     )
@@ -454,7 +456,7 @@ def _split_full_name(raw):
 async def import_leads_csv(
     request: Request,
     csv_file: UploadFile = File(...),
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
     effective: dict = Depends(get_effective_agent),
 ):
@@ -537,6 +539,7 @@ async def import_leads_csv(
         {"agent_id": effective_id, "email": {"$nin": [None, ""]}},
         {"_id": 0, "email": 1},
     ):
+        ld = safe_lead_load(ld)
         em = (ld.get("email") or "").lower().strip()
         if em:
             existing_emails.add(em)
@@ -605,7 +608,7 @@ async def import_leads_csv(
         doc["created_via"] = "csv_import"
         doc["created_at"] = now_iso
         doc["updated_at"] = now_iso
-        await db.leads.insert_one(doc.copy())
+        await db.leads.insert_one(safe_lead_set(doc.copy()))
         imported += 1
 
     await write_audit(
@@ -684,7 +687,7 @@ def _pipeline_card(lead: dict) -> dict:
 @limiter.limit("60/hour")
 async def get_pipeline(
     request: Request,
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
 ):
     """Lead pipeline grouped by status, optimized for the Kanban board.
@@ -710,6 +713,7 @@ async def get_pipeline(
     buckets: Dict[str, List[dict]] = {s["id"]: [] for s in _PIPELINE_STAGES}
     total_leads = 0
     async for ld in db.leads.find(scope, proj).sort("updated_at", -1):
+        ld = safe_lead_load(ld)
         status = (ld.get("status") or "new").lower()
         if status not in buckets:
             # Unknown / legacy statuses roll up under "new" so they're
@@ -762,7 +766,7 @@ async def get_pipeline(
 async def list_leads(
     status: Optional[str] = None,
     q: Optional[str] = Query(None, description="Search first/last/email", max_length=64),
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user=Depends(get_current_user),
 ):
     query: dict = {**agent_filter(current_user)}
@@ -780,18 +784,18 @@ async def list_leads(
             {"phone": {"$regex": safe, "$options": "i"}},
         ]
     cursor = db.leads.find(query, {"_id": 0}).sort("created_at", -1).limit(500)
-    return [Lead(**doc) async for doc in cursor]
+    return [Lead(**safe_lead_load(doc)) async for doc in cursor]
 
 
 @router.get("/{lead_id}", response_model=Lead)
 async def get_lead(
     lead_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user=Depends(get_current_user),
 ):
     # Fetch first, then IDOR-check. Admin/compliance bypass; agents 403 on
     # another agent's lead, 404 on missing.
-    doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    doc = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0}))
     doc = _idor_or_403(doc, current_user)
     return Lead(**doc)
 
@@ -842,7 +846,7 @@ async def _push_lead_update_to_ghl(
     on success. Status changes also drive a pipeline-stage move when
     ``GHL_PIPELINE_ID`` is configured.
     """
-    doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    doc = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0}))
     if not doc or not doc.get("ghl_contact_id"):
         return
     contact_id = doc["ghl_contact_id"]
@@ -876,10 +880,10 @@ async def _push_lead_update_to_ghl(
     succeeded = succeeded and ((stage_result is not None) if "status" in updates and _STATUS_TO_GHL_STAGE.get(updates["status"]) else True)
     await db.leads.update_one(
         {"id": lead_id},
-        {"$set": {
+        {"$set": safe_lead_set({
             "ghl_synced_at": now_iso,
             "ghl_sync_status": "synced" if succeeded else "error",
-        }},
+        })},
     )
     await write_audit(
         db,
@@ -900,7 +904,7 @@ async def update_lead(
     lead_id: str,
     payload: LeadUpdate,
     request: Request,
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user=Depends(get_current_user),
 ):
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
@@ -910,10 +914,10 @@ async def update_lead(
     if current_user.get("role") == "agent" and "agent_assigned_id" in updates:
         raise HTTPException(status_code=403, detail="Agents cannot reassign leads")
     # Phase 2 IDOR check: fetch, then verify ownership before mutating.
-    existing = await db.leads.find_one({"id": lead_id}, {"_id": 0, "id": 1, "agent_id": 1})
+    existing = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0, "id": 1, "agent_id": 1}))
     _idor_or_403(existing, current_user)
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-    await db.leads.update_one({"id": lead_id}, {"$set": updates})
+    await db.leads.update_one({"id": lead_id}, {"$set": safe_lead_set(updates)})
     await write_audit(db, "lead_updated", actor_email=current_user["email"],
                       actor_id=current_user["id"], target_type="lead", target_id=lead_id,
                       request=request, metadata={"fields": list(updates.keys())})
@@ -930,7 +934,7 @@ async def update_lead(
     except Exception as e:
         logger.warning("GHL PATCH mirror failed for lead %s: %s", lead_id, e)
 
-    doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    doc = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0}))
     return Lead(**doc)
 
 
@@ -953,7 +957,7 @@ async def transfer_lead(
     lead_id: str,
     request: Request,
     body: LeadTransferRequest = Body(...),
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user: dict = Depends(require_roles("admin", "coach", "owner")),
 ):
     """Reassign a lead to a different agent. admin + coach only.
@@ -963,7 +967,7 @@ async def transfer_lead(
     accounting account (those roles read the agency book; they don't
     own individual leads in their personal scope).
     """
-    lead = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    lead = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0}))
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
 
@@ -997,7 +1001,7 @@ async def transfer_lead(
 
     await db.leads.update_one(
         {"id": lead_id},
-        {"$set": {
+        {"$set": safe_lead_set({
             "agent_id": new_agent["id"],
             "agent_name": new_agent_name,
             "agent_email": (new_agent.get("email") or "").lower() or None,
@@ -1005,7 +1009,7 @@ async def transfer_lead(
             "transferred_from": old_agent_id,
             "transfer_reason": reason,
             "updated_at": now_iso,
-        }},
+        })},
     )
 
     await write_audit(
@@ -1024,7 +1028,7 @@ async def transfer_lead(
         },
     )
 
-    fresh = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    fresh = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0}))
     return Lead(**fresh)
 
 
@@ -1034,7 +1038,7 @@ async def update_lead_stage(
     lead_id: str,
     request: Request,
     body: LeadStageUpdate = Body(...),
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
 ):
     """Move a lead between Kanban stages. Higher rate limit than the
@@ -1056,15 +1060,15 @@ async def update_lead_stage(
             ),
         )
 
-    existing = await db.leads.find_one(
+    existing = safe_lead_load(await db.leads.find_one(
         {"id": lead_id}, {"_id": 0, "id": 1, "agent_id": 1, "status": 1},
-    )
+    ))
     _idor_or_403(existing, current_user)
 
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.leads.update_one(
         {"id": lead_id},
-        {"$set": {"status": status, "updated_at": now_iso}},
+        {"$set": safe_lead_set({"status": status, "updated_at": now_iso})},
     )
     await write_audit(
         db, "lead_stage_changed",
@@ -1078,7 +1082,7 @@ async def update_lead_stage(
         },
     )
 
-    fresh = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    fresh = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0}))
     # Same projection the pipeline endpoint uses so the SPA can drop
     # the returned dict straight into its column-cards state without
     # mapping fields a second time.
@@ -1089,11 +1093,11 @@ async def update_lead_stage(
 async def export_lead_pdf(
     lead_id: str,
     request: Request,
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user=Depends(get_current_user),
 ):
     """Render the lead's intake record as a downloadable PDF."""
-    lead_doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    lead_doc = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0}))
     lead_doc = _idor_or_403(lead_doc, current_user)
     soa_doc = await db.soa_records.find_one({"lead_id": lead_id}, {"_id": 0})
 
@@ -1118,13 +1122,13 @@ async def export_lead_pdf(
 async def sync_to_ghl(
     lead_id: str,
     request: Request,
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user=Depends(get_current_user),
 ):
     # Gate access — agents may only sync their own leads. Phase 2 IDOR.
-    owned = await db.leads.find_one(
+    owned = safe_lead_load(await db.leads.find_one(
         {"id": lead_id}, {"_id": 0, "id": 1, "agent_id": 1},
-    )
+    ))
     _idor_or_403(owned, current_user)
 
     try:
@@ -1136,5 +1140,5 @@ async def sync_to_ghl(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"GHL sync failed: {e}")
 
-    doc = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    doc = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0}))
     return Lead(**doc)

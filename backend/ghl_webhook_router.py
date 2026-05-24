@@ -31,7 +31,8 @@ from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from deps import get_db, require_roles, write_audit
+from deps import get_db, get_phi_db, require_roles, write_audit
+from encryption import safe_lead_set, safe_lead_load
 from ghl_client import GHLClient
 
 
@@ -295,19 +296,19 @@ def _lead_fields_from_contact(contact: GHLContact) -> Dict[str, Any]:
 async def _find_existing_lead(db, contact: GHLContact) -> Optional[dict]:
     """Dedup by GHL contact id first, then email, then phone."""
     if contact.id:
-        existing = await db.leads.find_one(
+        existing = safe_lead_load(await db.leads.find_one(
             {"ghl_contact_id": contact.id}, {"_id": 0},
-        )
+        ))
         if existing:
             return existing
     email = (contact.email or "").strip().lower()
     if email:
-        existing = await db.leads.find_one({"email": email}, {"_id": 0})
+        existing = safe_lead_load(await db.leads.find_one({"email": email}, {"_id": 0}))
         if existing:
             return existing
     phone = (contact.phone or "").strip()
     if phone:
-        existing = await db.leads.find_one({"phone": phone}, {"_id": 0})
+        existing = safe_lead_load(await db.leads.find_one({"phone": phone}, {"_id": 0}))
         if existing:
             return existing
     return None
@@ -351,7 +352,7 @@ async def _handle_contact_create(
         "updated_at": now,
         **_lead_fields_from_contact(contact),
     }
-    await db.leads.insert_one(lead.copy())
+    await db.leads.insert_one(safe_lead_set(lead.copy()))
     await write_audit(
         db, "ghl_lead_created",
         actor_email=None,
@@ -459,7 +460,7 @@ async def _handle_contact_update(
     if not updates:
         return {"action": "no_changes", "lead_id": existing["id"]}
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-    await db.leads.update_one({"id": existing["id"]}, {"$set": updates})
+    await db.leads.update_one({"id": existing["id"]}, {"$set": safe_lead_set(updates)})
     # Tag with the conflict outcome so we can build SLO-style dashboards
     # later — "how often does GHL win", "are agents losing edits", etc.
     conflict_label = (
@@ -494,7 +495,7 @@ async def _handle_opportunity_event(
     opp = payload.opportunity or GHLOpportunity()
     if not contact.id:
         return {"action": "skipped_no_contact_id"}
-    lead = await db.leads.find_one({"ghl_contact_id": contact.id}, {"_id": 0})
+    lead = safe_lead_load(await db.leads.find_one({"ghl_contact_id": contact.id}, {"_id": 0}))
     if not lead:
         return {"action": "skipped_lead_not_found"}
     now = datetime.now(timezone.utc).isoformat()
@@ -508,7 +509,7 @@ async def _handle_opportunity_event(
     # Drop None values so we don't overwrite real data with blanks when
     # GHL only sends a partial update.
     updates = {k: v for k, v in updates.items() if v is not None or k == "updated_at"}
-    await db.leads.update_one({"id": lead["id"]}, {"$set": updates})
+    await db.leads.update_one({"id": lead["id"]}, {"$set": safe_lead_set(updates)})
     await write_audit(
         db, "ghl_opportunity_updated",
         actor_email=None, actor_id=None,
@@ -527,7 +528,7 @@ async def _handle_opportunity_event(
 # ── Webhook entrypoint ────────────────────────────────────────────────────
 @router.post("/webhook")
 @limiter.limit("200/minute")
-async def ghl_webhook(request: Request, db=Depends(get_db)):
+async def ghl_webhook(request: Request, db=Depends(get_phi_db)):
     """Inbound GHL event sink. Always 200 — GHL retries on non-2xx."""
     raw = await request.body()
     sig = (
@@ -636,7 +637,7 @@ async def ghl_webhook(request: Request, db=Depends(get_db)):
 async def webhook_config(
     request: Request,
     _admin: dict = Depends(require_roles("admin", "owner")),
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
 ):
     """Returns the URL to paste into GHL and stats on inbound traffic.
 
@@ -672,7 +673,7 @@ async def webhook_config(
 async def sync_contacts(
     request: Request,
     current_user: dict = Depends(require_roles("admin", "owner")),
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
 ):
     """Pull the current page of GHL contacts and reconcile against our
     leads collection.

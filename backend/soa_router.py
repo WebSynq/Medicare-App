@@ -9,7 +9,8 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field
 
 from models import SOASignRequest, SOARecord
-from deps import get_db, get_current_user, get_frontend_url, write_audit, get_client_ip
+from deps import get_db, get_phi_db, get_current_user, get_frontend_url, write_audit, get_client_ip
+from encryption import safe_lead_set, safe_lead_load
 from ghl_client import GHLClient
 
 
@@ -21,7 +22,7 @@ router = APIRouter(prefix="/soa", tags=["soa"])
 async def sign_soa(
     payload: SOASignRequest,
     request: Request,
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
 ):
     """Record a Scope of Appointment signature.
@@ -38,7 +39,7 @@ async def sign_soa(
     if current_user.get("role") == "agent":
         lead_filter["agent_assigned_id"] = current_user["id"]
 
-    lead = await db.leads.find_one(lead_filter, {"_id": 0, "id": 1})
+    lead = safe_lead_load(await db.leads.find_one(lead_filter, {"_id": 0, "id": 1}))
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
 
@@ -65,7 +66,7 @@ async def sign_soa(
     await db.soa_records.insert_one(record.copy())
     await db.leads.update_one(
         {"id": payload.lead_id},
-        {"$set": {"soa_signed": True, "soa_signed_at": now, "updated_at": now}},
+        {"$set": safe_lead_set({"soa_signed": True, "soa_signed_at": now, "updated_at": now})},
     )
     await write_audit(
         db, "soa_signed",
@@ -145,17 +146,17 @@ async def _resolve_public_soa(db, token: str) -> Dict[str, Any]:
 @router.get("/public/{token}")
 async def get_public_soa(
     token: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
 ):
     """Render-time payload for the public SOA page. Returns only the
     minimum fields the page needs (agent + client first name +
     product list + expiry). No PII beyond what's already on the link
     the client received."""
     rec = await _resolve_public_soa(db, token)
-    lead = await db.leads.find_one(
+    lead = safe_lead_load(await db.leads.find_one(
         {"id": rec.get("lead_id")},
         {"_id": 0, "first_name": 1, "last_name": 1},
-    ) or {}
+    )) or {}
     return {
         "agent_name": rec.get("agent_name") or "Your GHW agent",
         "first_name": lead.get("first_name") or "",
@@ -169,7 +170,7 @@ async def sign_public_soa(
     token: str,
     payload: PublicSignRequest,
     request: Request,
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
 ):
     """Record the client's e-signature on a pending SOA. Updates the
     soa_records row (status / signed_at / signed_name / signed_ip),
@@ -199,11 +200,11 @@ async def sign_public_soa(
     # read lead.soa_signed continue to work.
     await db.leads.update_one(
         {"id": rec["lead_id"]},
-        {"$set": {
+        {"$set": safe_lead_set({
             "soa_signed": True,
             "soa_signed_at": now_iso,
             "updated_at": now_iso,
-        }},
+        })},
     )
     await write_audit(
         db, "soa_signed_public",
@@ -218,9 +219,9 @@ async def sign_public_soa(
     )
 
     # Best-effort GHL: replace the pending tag with a signed tag.
-    lead = await db.leads.find_one(
+    lead = safe_lead_load(await db.leads.find_one(
         {"id": rec.get("lead_id")}, {"_id": 0, "ghl_contact_id": 1},
-    )
+    ))
     if lead and lead.get("ghl_contact_id"):
         try:
             ghl = GHLClient()
@@ -236,12 +237,12 @@ async def sign_public_soa(
 @router.get("/by-lead-list/{lead_id}")
 async def list_soa_for_lead(
     lead_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
 ):
     """All SOA rows for a lead. Used by the ClientProfile SOA section.
     Agent scoping is enforced via the parent lead's agent_id."""
-    lead = await db.leads.find_one({"id": lead_id}, {"_id": 0, "agent_id": 1})
+    lead = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0, "agent_id": 1}))
     if not lead:
         raise HTTPException(404, "Lead not found")
     role = current_user.get("role")
@@ -268,13 +269,13 @@ async def send_new_soa(
     lead_id: str,
     payload: SendSOARequest,
     request: Request,
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
 ):
     """Create a fresh SOA record + public link for an existing lead.
     Used when the original pending SOA expired, was revoked, or the
     agent wants to send a follow-up for new products."""
-    lead = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    lead = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0}))
     if not lead:
         raise HTTPException(404, "Lead not found")
     role = current_user.get("role")

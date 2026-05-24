@@ -32,9 +32,11 @@ from deps import (
     agent_filter,
     get_current_user,
     get_db,
+    get_phi_db,
     resolve_lead_id_for_policy,
     write_audit,
 )
+from encryption import safe_lead_load
 # Re-use the birthday-rule evaluator so the urgent-call window math stays
 # in one place (handles Feb 29, year rollover, last-birthday computation).
 from birthday_rule_router import _evaluate_lead, _today_utc
@@ -98,6 +100,7 @@ async def _urgent_calls(db, scope: dict, today: date) -> List[Dict[str, Any]]:
         "status": {"$nin": ["lost", "not_interested"]},
         "date_of_birth": {"$ne": None},
     }, proj):
+        ld = safe_lead_load(ld)
         item = _evaluate_lead(ld, today)
         if not item or item.get("_bucket") != "urgent":
             continue
@@ -195,6 +198,7 @@ async def _stale_leads(db, scope: dict, now_dt: datetime) -> List[Dict[str, Any]
         "status": {"$in": ["new", "contacted"]},
         "updated_at": {"$lt": cutoff_iso},
     }, proj):
+        ld = safe_lead_load(ld)
         upd = _parse_iso_datetime(ld.get("updated_at"))
         if not upd:
             continue
@@ -280,7 +284,7 @@ async def _todays_appointments(db, scope: dict, today: date) -> List[Dict[str, A
 @limiter.limit("60/hour")
 async def today_actions(
     request: Request,
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
 ):
     """Single-call aggregator for the Today page."""

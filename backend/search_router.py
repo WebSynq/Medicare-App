@@ -29,8 +29,10 @@ from deps import (
     agent_filter,
     get_current_user,
     get_db,
+    get_phi_db,
     write_audit,
 )
+from encryption import safe_lead_load
 
 
 logger = logging.getLogger("gruening.search")
@@ -64,7 +66,7 @@ async def search(
     request: Request,
     q: str = Query(..., min_length=1, max_length=128),
     limit: int = Query(10, ge=1, le=50),
-    db: AsyncIOMotorDatabase = Depends(get_db),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
 ):
     """Search across leads, appointments, and notes.
@@ -106,6 +108,7 @@ async def search(
         .sort("updated_at", -1)
         .limit(_PER_COLLECTION_LIMIT)
     ):
+        ld = safe_lead_load(ld)
         name = _full_name(ld)
         subtitle_bits = [
             ld.get("current_carrier"),

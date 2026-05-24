@@ -19,7 +19,8 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends
 
-from deps import agent_filter, get_current_user, get_db
+from deps import agent_filter, get_current_user, get_db, get_phi_db
+from encryption import safe_lead_load
 
 
 logger = logging.getLogger("gruening.birthday_rule")
@@ -163,7 +164,7 @@ def _evaluate_lead(lead: Dict[str, Any], today: date) -> Optional[Dict[str, Any]
 @router.get("/alerts")
 async def birthday_alerts(
     current_user: dict = Depends(get_current_user),
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
 ):
     """Three buckets of IL leads keyed by window status.
 
@@ -197,6 +198,7 @@ async def birthday_alerts(
         "urgent": [], "soon": [], "upcoming": [],
     }
     async for ld in db.leads.find(query, proj):
+        ld = safe_lead_load(ld)
         item = _evaluate_lead(ld, today)
         if not item:
             continue

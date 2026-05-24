@@ -44,6 +44,7 @@ from deps import (
     get_db,
     write_audit,
 )
+from encryption import safe_lead_load
 
 
 logger = logging.getLogger("gruening.notifications")
@@ -311,6 +312,7 @@ async def _gen_birthday_windows(db) -> int:
         },
         proj,
     ):
+        ld = safe_lead_load(ld)
         dob = _parse_dob(ld.get("date_of_birth"))
         if not dob:
             continue
@@ -362,6 +364,7 @@ async def _gen_stale_leads(db) -> int:
         },
         proj,
     ):
+        ld = safe_lead_load(ld)
         agent_id = ld.get("agent_id")
         lead_id = ld.get("id")
         if not agent_id or not lead_id:

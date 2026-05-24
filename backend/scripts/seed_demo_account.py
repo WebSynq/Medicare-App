@@ -33,6 +33,8 @@ if str(ROOT / "backend") not in sys.path:
 
 from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
 
+from encryption import safe_lead_set  # noqa: E402
+
 
 DEMO_EMAIL = "tdcs.az.tim@gmail.com"
 AGENCY_ID = "ghw_001"
@@ -315,7 +317,7 @@ async def _run() -> int:
 
     # 3. Build + insert leads.
     lead_docs = [_build_lead(spec, agent_id) for spec in LEADS]
-    await db.leads.insert_many(lead_docs)
+    await db.leads.insert_many([safe_lead_set(d) for d in lead_docs])
     leads_by_idx = {spec[0]: lead_docs[i] for i, spec in enumerate(LEADS)}
 
     # 4. Appointments linked to specific leads.

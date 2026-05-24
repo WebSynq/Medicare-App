@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from deps import get_db, get_effective_agent, agent_filter
+from deps import get_db, get_phi_db, get_effective_agent, agent_filter
+from encryption import safe_lead_set, safe_lead_load
 from auth_router import get_current_user
 from ghl_client import GHLClient
 from extraction_schemas import (
@@ -993,15 +994,15 @@ async def _find_or_create_lead_for_submission(
     # 1) Find by GHL contact id
     existing = None
     if payload.contact_id:
-        existing = await db.leads.find_one(
+        existing = safe_lead_load(await db.leads.find_one(
             {"ghl_contact_id": payload.contact_id}, {"_id": 0},
-        )
+        ))
     # 2) Email
     if not existing and email:
-        existing = await db.leads.find_one({"email": email}, {"_id": 0})
+        existing = safe_lead_load(await db.leads.find_one({"email": email}, {"_id": 0}))
     # 3) Phone
     if not existing and phone:
-        existing = await db.leads.find_one({"phone": phone}, {"_id": 0})
+        existing = safe_lead_load(await db.leads.find_one({"phone": phone}, {"_id": 0}))
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -1014,7 +1015,7 @@ async def _find_or_create_lead_for_submission(
         if payload.contact_id and not existing.get("ghl_contact_id"):
             updates["ghl_contact_id"] = payload.contact_id
         if len(updates) > 1:  # more than just updated_at
-            await db.leads.update_one({"id": existing["id"]}, {"$set": updates})
+            await db.leads.update_one({"id": existing["id"]}, {"$set": safe_lead_set(updates)})
         return {
             "lead_id": existing["id"],
             "lead_name": (
@@ -1056,7 +1057,7 @@ async def _find_or_create_lead_for_submission(
         if plucked.get(k):
             lead_doc[k] = plucked[k]
 
-    await db.leads.insert_one(lead_doc.copy())
+    await db.leads.insert_one(safe_lead_set(lead_doc.copy()))
 
     # Best-effort GHL push when we don't already have a GHL contact id.
     # create_contact is the "never throw" helper from ghl_client — it
@@ -1072,11 +1073,11 @@ async def _find_or_create_lead_for_submission(
     if ghl_id and ghl_id != lead_doc.get("ghl_contact_id"):
         await db.leads.update_one(
             {"id": new_lead_id},
-            {"$set": {
+            {"$set": safe_lead_set({
                 "ghl_contact_id": ghl_id,
                 "ghl_sync_status": "synced",
                 "ghl_synced_at": now_iso,
-            }},
+            })},
         )
 
     return {
@@ -1090,7 +1091,7 @@ async def _find_or_create_lead_for_submission(
 @router.post("/submit")
 async def submit_application(
     payload: SubmitApplicationRequest,
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
     effective: dict = Depends(get_effective_agent),
 ):
@@ -1446,9 +1447,9 @@ async def _import_ghl_contact_to_portal(
     if not ghl_id:
         return None
     try:
-        existing = await db.leads.find_one(
+        existing = safe_lead_load(await db.leads.find_one(
             {"ghl_contact_id": ghl_id}, {"_id": 0, "id": 1},
-        )
+        ))
         if existing:
             return existing["id"]
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -1479,7 +1480,7 @@ async def _import_ghl_contact_to_portal(
             "created_at": now_iso,
             "updated_at": now_iso,
         }
-        await db.leads.insert_one(lead_doc.copy())
+        await db.leads.insert_one(safe_lead_set(lead_doc.copy()))
         return new_id
     except Exception as e:
         logger.warning("Auto-import GHL contact to portal failed: %s", e)
@@ -1527,7 +1528,7 @@ async def get_extracted_data(
 @router.get("/search-contacts")
 async def search_contacts(
     query: str,
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
     effective: dict = Depends(get_effective_agent),
 ):

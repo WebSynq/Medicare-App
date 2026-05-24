@@ -31,7 +31,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from deps import get_db, require_roles, write_audit
+from deps import get_db, get_phi_db, require_roles, write_audit
+from encryption import safe_lead_load
 # Re-use the birthday helpers so "windows open now" matches what the
 # birthday-rule panel shows agents.
 from birthday_rule_router import (
@@ -163,6 +164,7 @@ async def _agents_with_activity(db, start: Optional[datetime],
             {"$count": "n"},
         ]
     async for row in db.leads.aggregate(pipeline):
+        row = safe_lead_load(row)
         return int(row.get("n", 0))
     return 0
 
@@ -205,6 +207,7 @@ async def _stale_agent_count(db) -> int:
         {"$count": "n"},
     ]
     async for row in db.leads.aggregate(pipeline):
+        row = safe_lead_load(row)
         return int(row.get("n", 0))
     return 0
 
@@ -224,6 +227,7 @@ async def _birthday_open_count(db) -> int:
             "email": 1, "phone": 1, "date_of_birth": 1,
             "current_carrier": 1, "current_plan": 1, "agent_name": 1}
     async for ld in db.leads.find(query, proj):
+        ld = safe_lead_load(ld)
         item = _birthday_eval_lead(ld, today)
         if item and item.get("_bucket") == "urgent":
             n += 1
@@ -256,7 +260,7 @@ async def kpis(
     request: Request,
     period: str = Query("mtd", pattern="^(mtd|last30|last90|ytd|all)$"),
     current_user: dict = Depends(require_roles(*AGENCY_ROLES)),
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
 ):
     """Top-of-page KPI card data. Window-aware counts plus
     period-over-period trend percentages on the three flow metrics
@@ -400,7 +404,7 @@ async def agent_performance(
     request: Request,
     period: str = Query("mtd", pattern="^(mtd|last30|last90|ytd|all)$"),
     current_user: dict = Depends(require_roles(*AGENCY_ROLES)),
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
 ):
     """Sortable agent roster with leads / enrolled / revenue and a
     period-over-period trend on enrolled count.
@@ -471,6 +475,7 @@ async def agent_performance(
         {"$group": {"_id": "$agent_id",
                      "last": {"$max": "$created_at"}}},
     ]):
+        row = safe_lead_load(row)
         last_active[row["_id"]] = row.get("last")
 
     # Team-size rollup (users.parent_agent_id == agent.id).
@@ -543,7 +548,7 @@ async def charts(
     request: Request,
     period: str = Query("mtd", pattern="^(mtd|last30|last90|ytd|all)$"),
     current_user: dict = Depends(require_roles(*AGENCY_ROLES)),
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
 ):
     """Chart-ready aggregates. ``enrollments_by_week`` is always the
     LAST 12 WEEKS regardless of ``period`` — that chart's purpose is
@@ -567,6 +572,7 @@ async def charts(
         {"_id": 0, "created_at": 1},
     )
     async for ld in cursor:
+        ld = safe_lead_load(ld)
         raw = ld.get("created_at") or ""
         # Tolerant date pull — ISO datetime string or BSON datetime.
         try:
@@ -627,6 +633,7 @@ async def charts(
                     "lead_source": {"$ne": None, "$ne": ""}}},
         {"$group": {"_id": "$lead_source", "n": {"$sum": 1}}},
     ]):
+        row = safe_lead_load(row)
         totals[row["_id"]] = int(row.get("n", 0))
     async for row in db.leads.aggregate([
         {"$match": {**source_match,
@@ -634,6 +641,7 @@ async def charts(
                     "status": "enrolled"}},
         {"$group": {"_id": "$lead_source", "n": {"$sum": 1}}},
     ]):
+        row = safe_lead_load(row)
         enrolled[row["_id"]] = int(row.get("n", 0))
 
     leads_by_source = []
@@ -669,7 +677,7 @@ async def charts(
 async def alerts(
     request: Request,
     current_user: dict = Depends(require_roles(*AGENCY_ROLES)),
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
 ):
     """Three alert buckets agency leadership should action right now:
     stale leads (per-agent counts), birthday windows currently open,
@@ -694,6 +702,7 @@ async def alerts(
         {"$sort": {"count": -1}},
         {"$limit": 20},
     ]):
+        row = safe_lead_load(row)
         stale_rows.append({"agent_id": row["_id"],
                            "count": int(row.get("count", 0))})
     # Enrich with agent names — one round trip.
@@ -720,6 +729,7 @@ async def alerts(
             "email": 1, "phone": 1, "date_of_birth": 1,
             "current_carrier": 1, "current_plan": 1, "agent_name": 1}
     async for ld in db.leads.find(query, proj):
+        ld = safe_lead_load(ld)
         item = _birthday_eval_lead(ld, today)
         if not item or item.get("_bucket") != "urgent":
             continue
@@ -801,7 +811,7 @@ async def drilldown(
     agent_id: Optional[str] = Query(None, max_length=64),
     page: int = Query(1, ge=1, le=1000),
     current_user: dict = Depends(require_roles(*AGENCY_ROLES)),
-    db=Depends(get_db),
+    db=Depends(get_phi_db),
 ):
     """Paginated detail behind any KPI card.
 
@@ -829,6 +839,7 @@ async def drilldown(
              "agent_name": 1, "status": 1, "lead_source": 1,
              "created_at": 1, "phone": 1, "email": 1},
         ).sort("created_at", -1).limit(_PAGE_SIZE * 50):
+            ld = safe_lead_load(ld)
             rows.append({
                 "lead_id": ld.get("id"),
                 "client_name": f"{ld.get('first_name','')} "
@@ -850,6 +861,7 @@ async def drilldown(
              "agent_name": 1, "current_carrier": 1, "current_plan": 1,
              "created_at": 1, "plan_type_premium": 1},
         ).sort("created_at", -1).limit(_PAGE_SIZE * 50):
+            ld = safe_lead_load(ld)
             rows.append({
                 "lead_id": ld.get("id"),
                 "client_name": f"{ld.get('first_name','')} "
@@ -926,6 +938,7 @@ async def drilldown(
                 "email": 1, "phone": 1, "date_of_birth": 1,
                 "current_carrier": 1, "current_plan": 1, "agent_name": 1}
         async for ld in db.leads.find(query, proj):
+            ld = safe_lead_load(ld)
             item = _birthday_eval_lead(ld, today)
             if not item or item.get("_bucket") != "urgent":
                 continue
@@ -979,6 +992,7 @@ async def drilldown(
              "agent_name": 1, "status": 1, "lead_source": 1,
              "updated_at": 1, "phone": 1},
         ).sort("updated_at", 1).limit(_PAGE_SIZE * 50):
+            ld = safe_lead_load(ld)
             last = ld.get("updated_at") or ""
             rows.append({
                 "lead_id": ld.get("id"),
