@@ -1,4 +1,5 @@
 """Lead CRUD + GHL sync."""
+import asyncio
 import io
 import logging
 import os
@@ -653,6 +654,12 @@ _PIPELINE_STAGES = [
 ]
 _VALID_STAGE_IDS = {s["id"] for s in _PIPELINE_STAGES}
 
+# Hard cap on cards per Kanban column. Agents glance at the top of each
+# stack; loading 5,000+ cards per column is wasted bandwidth + 5s of
+# Fernet decrypts. Counts above the cap surface a "Showing first N of X
+# — use filters to narrow" caption in the SPA.
+_STAGE_CAP = 200
+
 
 class LeadStageUpdate(BaseModel):
     status: str = Field(..., min_length=1, max_length=32)
@@ -710,35 +717,69 @@ async def get_pipeline(
         "created_at": 1, "updated_at": 1,
         "agent_name": 1, "client_success_rep": 1,
     }
-    buckets: Dict[str, List[dict]] = {s["id"]: [] for s in _PIPELINE_STAGES}
-    total_leads = 0
-    async for ld in db.leads.find(scope, proj).sort("updated_at", -1):
-        ld = safe_lead_load(ld)
-        status = (ld.get("status") or "new").lower()
-        if status not in buckets:
-            # Unknown / legacy statuses roll up under "new" so they're
-            # visible — better than silently dropping the lead.
-            status = "new"
-        buckets[status].append(_pipeline_card(ld))
-        total_leads += 1
+
+    async def _stage_payload(stage_id: str):
+        """Two queries per stage, fired in parallel: full count + a
+        cap-limited card list sorted newest-first. Both use the `status`
+        index; a future (agent_id, status, updated_at) compound would
+        tighten the sort scan further."""
+        stage_filter = {**scope, "status": stage_id}
+        count_task = db.leads.count_documents(stage_filter)
+        cursor = (
+            db.leads.find(stage_filter, proj)
+            .sort("updated_at", -1)
+            .limit(_STAGE_CAP)
+        )
+        docs_task = cursor.to_list(length=_STAGE_CAP)
+        count, docs = await asyncio.gather(count_task, docs_task)
+        cards = [_pipeline_card(safe_lead_load(d)) for d in docs]
+        return stage_id, count, cards
+
+    # All 7 stages + 1 drift-detection query, fired in parallel via the
+    # phi_client pool (maxPoolSize=100, plenty of headroom for 15
+    # concurrent queries). Drops the worst-case 20,000-doc scan down to
+    # 7 indexed lookups × 200 docs each.
+    stage_tasks = [_stage_payload(s["id"]) for s in _PIPELINE_STAGES]
+    unknown_count_task = db.leads.count_documents(
+        {**scope, "status": {"$nin": list(_VALID_STAGE_IDS)}}
+    )
+    *stage_results, unknown_count = await asyncio.gather(
+        *stage_tasks, unknown_count_task,
+    )
+    by_stage = {sid: (count, cards) for sid, count, cards in stage_results}
+
+    # Surface data-quality drift loudly without dropping the leads —
+    # they just don't render in any column. A separate cleanup pass
+    # (e.g. a one-off script that re-buckets them) is the right fix.
+    if unknown_count:
+        logger.warning(
+            "pipeline: %d leads in scope have an unknown status "
+            "(not in %s). These leads do NOT appear on the Kanban. "
+            "Run a status-cleanup script to re-bucket them.",
+            unknown_count, sorted(_VALID_STAGE_IDS),
+        )
 
     stages = []
+    total_leads = 0
     total_pipeline_value = 0.0
     for meta in _PIPELINE_STAGES:
-        leads_in_stage = buckets[meta["id"]]
+        count, cards = by_stage[meta["id"]]
         # estimated_commission is always None on cards today, so this
         # roll-up is 0 until the commission-on-lead work lands. Keep
         # the field so the SPA contract doesn't churn later.
         stage_total = sum(
-            (c.get("estimated_commission") or 0.0) for c in leads_in_stage
+            (c.get("estimated_commission") or 0.0) for c in cards
         )
+        total_leads += count
         total_pipeline_value += stage_total
         stages.append({
             "id": meta["id"],
             "label": meta["label"],
             "color": meta["color"],
-            "leads": leads_in_stage,
-            "count": len(leads_in_stage),
+            "leads": cards,
+            "count": count,                    # full stage count, accurate at any scale
+            "truncated": count > len(cards),   # NEW — SPA caption trigger
+            "cap": _STAGE_CAP,                 # NEW — for the caption text
             "total_commission": round(stage_total, 2),
         })
 
@@ -749,6 +790,7 @@ async def get_pipeline(
         request=request,
         metadata={
             "total_leads": total_leads,
+            "unknown_status_count": unknown_count,
             "role": current_user.get("role"),
         },
     )

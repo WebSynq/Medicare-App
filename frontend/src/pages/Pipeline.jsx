@@ -256,6 +256,12 @@ function StageColumn({ stage, onCardClick, showAgent }) {
                   />
                 ))
               )}
+              {stage.truncated && (
+                <div className="text-[11px] text-muted-foreground italic px-2 pt-1 text-center">
+                  Showing first {stage.cap} of {stage.count.toLocaleString()} —
+                  use filters to narrow
+                </div>
+              )}
               {provided.placeholder}
             </CardContent>
           </Card>

@@ -2449,9 +2449,14 @@ async def test_pipeline_grouped_by_stage(client, db, admin_headers):
 
 
 @pytest.mark.asyncio
-async def test_pipeline_unknown_status_rolls_up_to_new(client, db, admin_headers):
-    """A lead with a status outside the seven pipeline ids must surface
-    under "new" rather than silently vanish."""
+async def test_pipeline_unknown_status_surfaces_in_audit_not_in_board(
+    client, db, admin_headers,
+):
+    """A lead with a status outside the seven pipeline ids does NOT
+    render on the Kanban (per-stage queries only ask for known status
+    ids). It IS counted in the pipeline_viewed audit row's
+    `unknown_status_count` metadata so data-quality drift is visible
+    to ops. Cleanup scripts re-bucket those leads explicitly."""
     admin = await db.users.find_one({"role": "admin"}, {"_id": 0})
     await db.leads.insert_one({
         "id": "pipe-legacy",
@@ -2462,10 +2467,21 @@ async def test_pipeline_unknown_status_rolls_up_to_new(client, db, admin_headers
         "updated_at": "2026-01-01T00:00:00+00:00",
     })
     body = client.get("/api/leads/pipeline", headers=admin_headers).json()
-    new_ids = [c["lead_id"] for c in next(
-        s["leads"] for s in body["stages"] if s["id"] == "new"
-    )]
-    assert "pipe-legacy" in new_ids
+
+    # Not on the Kanban — none of the seven stages contains it.
+    all_card_ids = [
+        c["lead_id"] for s in body["stages"] for c in s["leads"]
+    ]
+    assert "pipe-legacy" not in all_card_ids
+
+    # But the drift IS surfaced in the audit log so the operator can
+    # see + clean up the orphan.
+    audit = await db.audit_logs.find_one(
+        {"event_type": "pipeline_viewed"},
+        sort=[("timestamp", -1)],
+    )
+    assert audit is not None
+    assert audit["metadata"].get("unknown_status_count", 0) >= 1
 
 
 @pytest.mark.asyncio
