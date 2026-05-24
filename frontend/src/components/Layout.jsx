@@ -142,15 +142,27 @@ function NavItem({ to, icon: Icon, label, onClick, testId, collapsed }) {
       onClick={onClick}
       data-testid={testId}
       aria-label={collapsed ? label : undefined}
-      className={({ isActive }) =>
-        [
-          "group flex items-center gap-3 text-sm rounded-md border-l-2 transition-colors",
-          collapsed ? "px-2.5 py-2 justify-center" : "px-3 py-2",
+      className={({ isActive }) => {
+        // Collapsed mode is icon-only — drop the left border (which
+        // off-centers the icon by 1px when justify-centered) and the
+        // gap (no label to space against). Active state becomes a
+        // pure background fill — the left-border stage marker only
+        // reads as intentional alongside text.
+        if (collapsed) {
+          return [
+            "group flex items-center justify-center py-3 rounded-md transition-colors",
+            isActive
+              ? "bg-[#e85d2f]/15 text-white"
+              : "text-white/55 hover:text-white hover:bg-white/5",
+          ].join(" ");
+        }
+        return [
+          "group flex items-center gap-3 text-sm rounded-md border-l-2 px-3 py-2 transition-colors",
           isActive
             ? "border-[#e85d2f] bg-[#e85d2f]/10 text-white"
             : "border-transparent text-white/55 hover:text-white hover:bg-white/5",
-        ].join(" ")
-      }
+        ].join(" ");
+      }}
     >
       <Icon className="w-4 h-4 flex-shrink-0" />
       {!collapsed && <span className="truncate">{label}</span>}
@@ -595,7 +607,7 @@ function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggle
                   type="button"
                   onClick={onOpenSearch}
                   aria-label="Open quick search (Cmd+K)"
-                  className="w-full grid place-items-center py-2 rounded-md bg-white/5 hover:bg-white/10 text-white/70 hover:text-white transition-colors"
+                  className="w-full grid place-items-center py-3 rounded-md bg-white/5 hover:bg-white/10 text-white/70 hover:text-white transition-colors"
                   data-testid="sidebar-search-collapsed"
                 >
                   <SearchIcon className="w-4 h-4" />
@@ -779,7 +791,7 @@ function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggle
           <Tooltip delayDuration={120}>
             <TooltipTrigger asChild>
               <div
-                className="grid place-items-center py-2 rounded-md bg-white/5"
+                className="grid place-items-center py-3 rounded-md bg-white/5"
                 aria-label={`${displayName} (${role || "agent"})`}
               >
                 <div
@@ -823,7 +835,7 @@ function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggle
                 type="button"
                 onClick={onSignOut}
                 aria-label="Sign out"
-                className="mt-2 w-full grid place-items-center py-2 text-white/65 hover:text-white hover:bg-white/5 rounded-md transition-colors"
+                className="mt-2 w-full grid place-items-center py-3 text-white/65 hover:text-white hover:bg-white/5 rounded-md transition-colors"
                 data-testid="logout-btn"
               >
                 <LogOut className="w-4 h-4" />
