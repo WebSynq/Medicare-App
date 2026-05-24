@@ -66,6 +66,12 @@ class UserBase(BaseModel):
     status: UserStatus = "active"
     agency_name: Optional[str] = None
     phone: Optional[str] = None
+    # IANA timezone string (e.g. "America/Chicago"). Used by the Google
+    # Calendar sync to stamp event `timeZone` correctly per agent so a
+    # 10:00 AM appointment lands at the agent's local 10:00 AM, not the
+    # calendar's primary tz fallback. Defaulted to GHW's HQ tz for
+    # legacy rows that never saved one through Settings → Profile.
+    timezone: Optional[str] = "America/Chicago"
     # Agent identity for downstream lookups (ComTrack, carrier portals, etc.).
     # We resolve agent identity from these server-side fields only — never from
     # request body or query params — so a JWT cannot impersonate another agent.

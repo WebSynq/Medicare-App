@@ -224,6 +224,7 @@ function ProfileTab({ me, refresh }) {
     full_name: me?.full_name || "",
     email: me?.email || "",
     phone: me?.phone || "",
+    timezone: me?.timezone || "America/Chicago",
     agent_npn: me?.agent_npn || "",
     agency_name: me?.agency_name || "",
     current_password: "",
@@ -236,10 +237,11 @@ function ProfileTab({ me, refresh }) {
       full_name: me?.full_name || "",
       email: me?.email || "",
       phone: me?.phone || "",
+      timezone: me?.timezone || "America/Chicago",
       agent_npn: me?.agent_npn || "",
       agency_name: me?.agency_name || "",
     }));
-  }, [me?.full_name, me?.email, me?.phone, me?.agent_npn, me?.agency_name]);
+  }, [me?.full_name, me?.email, me?.phone, me?.timezone, me?.agent_npn, me?.agency_name]);
 
   async function saveProfile(e) {
     e.preventDefault();
@@ -254,6 +256,7 @@ function ProfileTab({ me, refresh }) {
         full_name: profileForm.full_name,
         email: profileForm.email,
         phone: profileForm.phone,
+        timezone: profileForm.timezone,
         agent_npn: profileForm.agent_npn,
       };
       const { data } = await api.patch("/profile/me", body);
@@ -352,6 +355,31 @@ function ProfileTab({ me, refresh }) {
                 }
                 data-testid="profile-phone"
               />
+            </div>
+            <div>
+              <Label htmlFor="p-tz">Your Timezone</Label>
+              <Select
+                value={profileForm.timezone}
+                onValueChange={(v) =>
+                  setProfileForm({ ...profileForm, timezone: v })
+                }
+              >
+                <SelectTrigger id="p-tz" data-testid="profile-timezone">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="America/New_York">Eastern (America/New_York)</SelectItem>
+                  <SelectItem value="America/Chicago">Central (America/Chicago)</SelectItem>
+                  <SelectItem value="America/Denver">Mountain (America/Denver)</SelectItem>
+                  <SelectItem value="America/Phoenix">Arizona — no DST (America/Phoenix)</SelectItem>
+                  <SelectItem value="America/Los_Angeles">Pacific (America/Los_Angeles)</SelectItem>
+                  <SelectItem value="America/Anchorage">Alaska (America/Anchorage)</SelectItem>
+                  <SelectItem value="Pacific/Honolulu">Hawaii (Pacific/Honolulu)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Used for calendar sync and appointment scheduling
+              </p>
             </div>
             <div>
               <Label htmlFor="p-npn">Agent NPN</Label>

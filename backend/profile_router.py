@@ -21,6 +21,7 @@ import io
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -53,6 +54,7 @@ def _profile_dict(user: dict) -> dict:
         "agent_id": user.get("agent_id") or user.get("id"),
         "agent_npn": user.get("agent_npn"),
         "phone": user.get("phone"),
+        "timezone": user.get("timezone") or "America/Chicago",
         "role": user.get("role"),
         "is_active": user.get("is_active", True),
         "status": user.get("status", "active"),
@@ -79,6 +81,7 @@ class ProfilePatch(BaseModel):
     email: Optional[EmailStr] = None
     full_name: Optional[str] = None
     phone: Optional[str] = None
+    timezone: Optional[str] = None
     agent_npn: Optional[str] = None
     new_password: Optional[str] = None
 
@@ -123,6 +126,22 @@ async def update_my_profile(
     if payload.phone is not None and (payload.phone or None) != fresh.get("phone"):
         updates["phone"] = payload.phone.strip() or None
         fields_changed.append("phone")
+
+    if payload.timezone is not None and payload.timezone != fresh.get("timezone"):
+        tz = payload.timezone.strip()
+        # Validate against the IANA database via stdlib zoneinfo. Accepts
+        # anything Google's Calendar API will accept — no allowlist to
+        # maintain when the frontend dropdown adds an option.
+        try:
+            ZoneInfo(tz)
+        except ZoneInfoNotFoundError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown timezone: {tz!r}. Expected an IANA tz string "
+                       "(e.g. 'America/Chicago').",
+            ) from exc
+        updates["timezone"] = tz
+        fields_changed.append("timezone")
 
     if payload.agent_npn is not None and payload.agent_npn != fresh.get("agent_npn"):
         npn = payload.agent_npn.strip() or None

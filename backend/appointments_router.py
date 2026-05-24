@@ -344,7 +344,8 @@ async def _sync_to_google_calendar(appointment_id: str, agent_id: str) -> None:
         user = await db.users.find_one(
             {"id": agent_id},
             {"_id": 0, "google_calendar_connected": 1,
-             "google_calendar_refresh_token": 1},
+             "google_calendar_refresh_token": 1,
+             "timezone": 1},
         )
         if not user or not user.get("google_calendar_connected"):
             return  # silent: agent hasn't connected Google Calendar
@@ -416,17 +417,16 @@ async def _sync_to_google_calendar(appointment_id: str, agent_id: str) -> None:
 
         # Note: do NOT add the client email as an attendee — per spec,
         # the calendar event lives only on the agent's calendar.
-        # Local-naive datetimes paired with the user's timezone field
-        # would be the cleanest path. We don't store agent timezone yet,
-        # so the simpler safe choice is to send naive datetimes with
-        # the calendar's default timezone (Google falls back to the
-        # primary calendar's tz, which matches what the agent sees in
-        # the UI).
+        # Pair the naive datetime with the agent's saved timezone (IANA
+        # string from Settings → Profile). Falls back to America/Chicago
+        # for the brief window between deploy and the agent saving a tz.
+        # Google Calendar API field name is camelCase `timeZone`.
+        agent_tz = user.get("timezone") or "America/Chicago"
         event_body = {
             "summary": f"{type_label} with {client_name}",
             "description": description,
-            "start": {"dateTime": start_dt.isoformat()},
-            "end": {"dateTime": end_dt.isoformat()},
+            "start": {"dateTime": start_dt.isoformat(), "timeZone": agent_tz},
+            "end": {"dateTime": end_dt.isoformat(), "timeZone": agent_tz},
         }
 
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
