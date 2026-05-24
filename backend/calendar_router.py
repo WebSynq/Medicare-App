@@ -225,13 +225,35 @@ async def google_callback(
     encrypted_refresh = phi_encryption.encrypt(refresh_token)
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    await db.users.update_one(
+    result = await db.users.update_one(
         {"id": user_id},
         {"$set": {
             "google_calendar_refresh_token": encrypted_refresh,
             "google_calendar_connected": True,
             "google_calendar_connected_at": now_iso,
         }},
+    )
+
+    # Observability — surface the case where the state JWT's user_id
+    # doesn't match any document (e.g. stale session JWT after a user
+    # doc rebuild, or duplicate-account drift). Without this log the
+    # callback silently succeeds and the agent sees "Connected ✓" in
+    # the UI while no DB write actually happened.
+    if result.matched_count == 0:
+        logger.warning(
+            "google_calendar callback matched zero users for id=%s — OAuth "
+            "consent succeeded but the connection was NOT persisted. "
+            "Likely a stale session JWT or a duplicate user document. "
+            "Run scripts/check_google_calendar_flag.py to inspect.",
+            user_id,
+        )
+        return RedirectResponse(
+            url=_frontend_settings_url("error"),
+            status_code=302,
+        )
+
+    logger.info(
+        "google_calendar connected for user=%s at=%s", user_id, now_iso,
     )
 
     await write_audit(

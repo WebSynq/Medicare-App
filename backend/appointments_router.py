@@ -392,6 +392,10 @@ async def _sync_to_google_calendar(appointment_id: str, agent_id: str) -> None:
         # Lazy import — google-* aren't installed in the local pytest env,
         # but production has them via requirements.txt. Importing inside
         # the function keeps module load clean either way.
+        # `os` is stdlib and always available, but appointments_router
+        # doesn't import it at the module top — bring it in here so the
+        # env-var lookups below resolve.
+        import os
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
 
