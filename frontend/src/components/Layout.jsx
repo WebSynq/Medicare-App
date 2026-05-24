@@ -45,6 +45,7 @@ import ChatWidget from "@/components/ChatWidget";
 import CommandPalette from "@/components/CommandPalette";
 import GlobalSearch from "@/components/GlobalSearch";
 import NotificationPanel from "@/components/NotificationPanel";
+import FeedbackButton from "@/components/FeedbackButton";
 
 // Width tokens for the two sidebar states. Pulled to the top so the
 // fixed sidebar, the main content padding, and the layout reserve stay
@@ -1451,6 +1452,10 @@ export function AppLayout({ children }) {
       {/* Floating AI assistant — rendered outside main so it stays put
           regardless of page-level scroll containers. */}
       <ChatWidget />
+
+      {/* Floating feedback button — POSTs to /api/feedback which forwards
+          to the GHL feedback workflow + writes an audit row. */}
+      <FeedbackButton />
     </div>
   );
 }
