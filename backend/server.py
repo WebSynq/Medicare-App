@@ -57,6 +57,7 @@ from search_router import router as search_router  # noqa: E402
 from notifications_router import router as notifications_router  # noqa: E402
 from agency_dashboard_router import router as agency_dashboard_router  # noqa: E402
 from feedback_router import router as feedback_router  # noqa: E402
+from calendar_router import router as calendar_router, ics_router as calendar_ics_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
 
 
@@ -182,6 +183,10 @@ app.include_router(notifications_router, prefix="/api")
 app.include_router(agency_dashboard_router, prefix="/api")
 # feedback_router declares its own /api/feedback prefix — no prefix here.
 app.include_router(feedback_router)
+# calendar_router declares /api/calendar; ics_router declares /api/appointments
+# for the per-appointment .ics download. Both self-prefix → no prefix here.
+app.include_router(calendar_router)
+app.include_router(calendar_ics_router)
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
@@ -451,6 +456,12 @@ _CSRF_EXEMPT_PREFIXES = (
     # Per-user scoped via agent_filter + IDOR check, role-gated for
     # admin / coach / owner on impersonating writes.
     "/api/appointments/",
+    # Per-agent Google Calendar OAuth. DELETE /disconnect is the only
+    # state-changing method here today; the rest are GETs. JWT-auth +
+    # the OAuth state JWT (callback) carry the authority. Prefix
+    # exempt so adding e.g. a manual re-sync POST later doesn't need
+    # another middleware edit.
+    "/api/calendar/",
     # Notes + tasks CRUD — POST create, PATCH complete, DELETE.
     # Per-user scoped via agent_filter + IDOR check; lead-ownership
     # check on every write.

@@ -45,6 +45,13 @@ services:
         value: "2021-07-28"
       - key: GHL_FEEDBACK_WEBHOOK_URL
         sync: false          # GHL Workflow → Webhook Trigger capture URL; feedback_router POSTs here
+      # Google Calendar per-agent OAuth (calendar_router)
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        value: https://api.ghwcrm.com/api/calendar/google/callback
       - key: SEED_ADMIN_EMAIL
         value: admin@grueninghw.com
       - key: SEED_ADMIN_PASSWORD

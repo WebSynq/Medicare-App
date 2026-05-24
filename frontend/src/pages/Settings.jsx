@@ -38,6 +38,7 @@ import {
   ExternalLink,
   AlertTriangle,
   CheckCircle2,
+  CalendarDays,
   Settings as SettingsIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -71,6 +72,135 @@ function dayDiff(iso) {
   const ms = d.getTime() - Date.now();
   return Math.round(ms / 86400000);
 }
+
+// ── Google Calendar (per-agent OAuth) ────────────────────────────────────
+// Reads /api/calendar/google/status on mount; on connect, redirects to the
+// Google consent URL from /connect; on disconnect, clears the token via
+// DELETE /disconnect. Also handles ?calendar=connected|cancelled|error
+// landed by the backend callback's RedirectResponse.
+function GoogleCalendarCard() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [status, setStatus] = useState(null);   // { connected, connected_at }
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get("/calendar/google/status");
+      setStatus(data);
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.detail || "Couldn't check calendar status",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  // Show a toast for the redirect-back states from the backend callback,
+  // then strip the query param so a refresh doesn't re-fire the toast.
+  useEffect(() => {
+    const flag = searchParams.get("calendar");
+    if (!flag) return;
+    if (flag === "connected") toast.success("Google Calendar connected.");
+    else if (flag === "cancelled") toast.info("Google Calendar connection cancelled.");
+    else if (flag === "error") toast.error("Couldn't connect Google Calendar. Try again.");
+    const next = new URLSearchParams(searchParams);
+    next.delete("calendar");
+    setSearchParams(next, { replace: true });
+    // Refresh status — the toast above implies a state change.
+    refresh();
+  }, [searchParams, setSearchParams, refresh]);
+
+  async function connect() {
+    setBusy(true);
+    try {
+      const { data } = await api.get("/calendar/google/connect");
+      if (data?.auth_url) {
+        window.location.href = data.auth_url;
+      } else {
+        toast.error("No auth URL returned");
+        setBusy(false);
+      }
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Connect failed");
+      setBusy(false);
+    }
+  }
+
+  async function disconnect() {
+    if (!window.confirm("Disconnect Google Calendar? Future appointments won't sync until you reconnect.")) return;
+    setBusy(true);
+    try {
+      await api.delete("/calendar/google/disconnect");
+      toast.success("Google Calendar disconnected.");
+      await refresh();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Disconnect failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-5 space-y-4">
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 rounded-lg bg-secondary grid place-items-center flex-shrink-0">
+            <CalendarDays className="w-4 h-4" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-sm font-semibold">Calendar Integration</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Sync new appointments to your Google Calendar automatically.
+            </p>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="text-xs text-muted-foreground">Loading…</div>
+        ) : status?.connected ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm text-emerald-700">
+              <CheckCircle2 className="w-4 h-4" />
+              <span>Connected</span>
+              {status.connected_at && (
+                <span className="text-xs text-muted-foreground">
+                  · {new Date(status.connected_at).toLocaleDateString()}
+                </span>
+              )}
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={disconnect}
+              disabled={busy}
+              data-testid="gcal-disconnect"
+            >
+              {busy ? "Working…" : "Disconnect"}
+            </Button>
+          </div>
+        ) : (
+          <Button
+            type="button"
+            onClick={connect}
+            disabled={busy}
+            data-testid="gcal-connect"
+          >
+            {busy ? "Redirecting…" : "Connect Google Calendar"}
+          </Button>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 
 // ── Profile tab ──────────────────────────────────────────────────────────
 function ProfileTab({ me, refresh }) {
@@ -319,6 +449,8 @@ function ProfileTab({ me, refresh }) {
           </form>
         </CardContent>
       </Card>
+
+      <GoogleCalendarCard />
     </div>
   );
 }

@@ -374,6 +374,18 @@ function NewAppointmentSheet({ open, onOpenChange, onCreated, prefillLeadId }) {
       onCreated?.();
       onOpenChange(false);
     } catch (err) {
+      // Diagnostic logging for the create-appointment failure mode.
+      // Logs status + body + the payload we sent so the server-side
+      // audit log can be cross-referenced with what the browser
+      // actually attempted. Stays in the browser console only.
+      console.error("[appointments] POST /appointments failed", {
+        status: err?.response?.status,
+        statusText: err?.response?.statusText,
+        body: err?.response?.data,
+        sentPayload: payload,
+        requestUrl: err?.config?.url,
+        message: err?.message,
+      });
       toast.error(err?.response?.data?.detail || "Failed to schedule");
     } finally {
       setSaving(false);
@@ -904,6 +916,26 @@ export default function AppointmentsList() {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="inline-flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 w-7 p-0"
+                          onClick={() => {
+                            // window.open hits the API origin via the
+                            // full backend URL; cookie auth (SameSite=None;
+                            // Secure) rides along. Server returns the file
+                            // with Content-Disposition: attachment so the
+                            // tab closes immediately after download.
+                            window.open(
+                              `${process.env.REACT_APP_BACKEND_URL}/api/appointments/${a.appointment_id}/ics`,
+                            );
+                          }}
+                          title="Add to Calendar"
+                          aria-label="Download .ics"
+                          data-testid={`appt-ics-${a.appointment_id}`}
+                        >
+                          <CalendarIcon className="w-3.5 h-3.5" />
+                        </Button>
                         {a.lead_id && (
                           <Button asChild size="sm" variant="outline" className="h-7 text-xs">
                             <Link to={`/clients/${a.lead_id}`}>

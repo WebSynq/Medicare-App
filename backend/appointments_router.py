@@ -24,7 +24,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field, field_validator
 from slowapi import Limiter
@@ -102,7 +102,11 @@ class AppointmentCreate(BaseModel):
     schema can't express that conditional without a model_validator, so
     both fields are nominally optional at the Pydantic layer.
     """
-    lead_id: Optional[str] = Field(None, max_length=128)
+    # min_length=1 means an empty-string lead_id is rejected at the
+    # Pydantic boundary with a clear 422 instead of falling through to
+    # _resolve_lead and producing a cryptic "Lead not found" — pass
+    # null (or omit the field entirely) for the walk-in flow.
+    lead_id: Optional[str] = Field(None, min_length=1, max_length=128)
     client_name: Optional[str] = Field(None, max_length=200)
     appointment_date: str
     appointment_time: str
@@ -179,7 +183,18 @@ async def _resolve_lead(
         raise HTTPException(status_code=404, detail="Lead not found")
     role = effective.get("role")
     if role not in FULL_AGENCY_SCOPE_ROLES and lead.get("agent_id") != effective["id"]:
-        # Agents can only book appointments against leads they own.
+        # Common race: agent searched the typeahead, leadership transferred
+        # the lead between the search and the submit. We can detect this
+        # specific case via `transferred_from` (stamped by the leads
+        # transfer endpoint) — surface a recovery-oriented message so the
+        # agent knows to refresh rather than thinking it's a permissions
+        # bug. Other cases (stale URL share, direct-typed lead_id from a
+        # lead they never owned) fall through to the generic IDOR 403.
+        if lead.get("transferred_from") == effective["id"]:
+            raise HTTPException(
+                status_code=403,
+                detail="This client has been reassigned. Refresh the page and search again.",
+            )
         raise HTTPException(status_code=403, detail="Lead is not in your book")
     return lead
 
@@ -316,11 +331,128 @@ def _estimate_commission(lead: Optional[Dict[str, Any]]) -> Optional[float]:
     return float(commission)
 
 
+# ── Google Calendar sync (background, fire-and-forget) ──────────────────
+# Called as a BackgroundTask after a successful appointment create.
+# NEVER raises — calendar sync failures must not surface to the user as
+# a failed appointment. The appointment is already persisted by the
+# time this runs; the worst case is "appointment exists in our DB but
+# not on the agent's Google Calendar" which an operator can re-sync.
+async def _sync_to_google_calendar(appointment_id: str, agent_id: str) -> None:
+    from deps import get_phi_db as _get_phi_db
+    db = _get_phi_db()
+    try:
+        user = await db.users.find_one(
+            {"id": agent_id},
+            {"_id": 0, "google_calendar_connected": 1,
+             "google_calendar_refresh_token": 1},
+        )
+        if not user or not user.get("google_calendar_connected"):
+            return  # silent: agent hasn't connected Google Calendar
+        encrypted_token = user.get("google_calendar_refresh_token")
+        if not encrypted_token:
+            logger.warning(
+                "google_calendar marked connected for %s but token missing",
+                agent_id,
+            )
+            return
+
+        from encryption import phi_encryption
+        refresh_token = phi_encryption.decrypt(encrypted_token)
+
+        appt = await db.appointments.find_one(
+            {"appointment_id": appointment_id}, {"_id": 0},
+        )
+        if not appt:
+            logger.warning("google sync: appointment %s vanished", appointment_id)
+            return
+
+        # Build start/end datetimes from the stored date + time strings.
+        try:
+            y, mo, d = (int(p) for p in appt["appointment_date"].split("-"))
+            hh, mm = (int(p) for p in appt["appointment_time"].split(":"))
+            start_dt = datetime(y, mo, d, hh, mm)
+        except (ValueError, KeyError):
+            logger.warning("google sync: bad date/time for %s", appointment_id)
+            return
+        duration = int(appt.get("duration_minutes") or 30)
+        end_dt = start_dt + timedelta(minutes=duration)
+
+        type_label = {
+            "initial_consultation": "Initial Consultation",
+            "plan_review": "Plan Review",
+            "enrollment": "Enrollment",
+            "annual_review": "Annual Review",
+            "follow_up": "Follow-up",
+            "other": "Appointment",
+        }.get(appt.get("type"), "Appointment")
+        client_name = appt.get("client_name") or "Client"
+        notes = (appt.get("notes") or "").strip()
+        description = (notes + "\n" if notes else "") + "Booked via GHW Agent Portal"
+
+        # Lazy import — google-* aren't installed in the local pytest env,
+        # but production has them via requirements.txt. Importing inside
+        # the function keeps module load clean either way.
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+
+        client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+        if not client_id or not client_secret:
+            logger.warning("google sync: GOOGLE_CLIENT_ID/SECRET not configured")
+            return
+
+        creds = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=["https://www.googleapis.com/auth/calendar.events"],
+        )
+
+        # Note: do NOT add the client email as an attendee — per spec,
+        # the calendar event lives only on the agent's calendar.
+        # Local-naive datetimes paired with the user's timezone field
+        # would be the cleanest path. We don't store agent timezone yet,
+        # so the simpler safe choice is to send naive datetimes with
+        # the calendar's default timezone (Google falls back to the
+        # primary calendar's tz, which matches what the agent sees in
+        # the UI).
+        event_body = {
+            "summary": f"{type_label} with {client_name}",
+            "description": description,
+            "start": {"dateTime": start_dt.isoformat()},
+            "end": {"dateTime": end_dt.isoformat()},
+        }
+
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        created = service.events().insert(
+            calendarId="primary", body=event_body,
+        ).execute()
+        event_id = created.get("id")
+
+        if event_id:
+            await db.appointments.update_one(
+                {"appointment_id": appointment_id},
+                {"$set": {
+                    "google_calendar_event_id": event_id,
+                    "google_calendar_synced_at": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
+    except Exception as exc:                                # noqa: BLE001
+        logger.warning(
+            "google_calendar sync failed for appointment %s (agent %s): %s",
+            appointment_id, agent_id, exc,
+        )
+        # Swallow: never let the calendar fan-out turn into a user error.
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────
 @router.post("", status_code=201)
 @limiter.limit("60/hour")
 async def create_appointment(
     request: Request,
+    background: BackgroundTasks,
     body: AppointmentCreate = Body(...),
     db: AsyncIOMotorDatabase = Depends(get_phi_db),
     effective: dict = Depends(get_effective_agent),
@@ -396,6 +528,17 @@ async def create_appointment(
             "impersonated_by": effective.get("_impersonated_by"),
         },
     )
+
+    # Fan out to Google Calendar after the response is sent. The helper
+    # is no-op if the agent hasn't connected Google; on any failure it
+    # logs and swallows so it never converts a successful POST into a
+    # 5xx for the user.
+    background.add_task(
+        _sync_to_google_calendar,
+        doc["appointment_id"],
+        effective["id"],
+    )
+
     return _public(doc)
 
 
