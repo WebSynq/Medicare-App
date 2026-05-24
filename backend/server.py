@@ -363,6 +363,12 @@ _CSRF_EXEMPT_PATHS = {
     # cross-site POST without the JWT can't impersonate the agent). Fans
     # out to the GHL feedback workflow + writes an audit row regardless.
     "/api/feedback",
+    # Bare appointments POST (create). The /api/appointments/ prefix
+    # below covers PATCH /api/appointments/{id} and DELETE, but the
+    # bare `/api/appointments` doesn't match a trailing-slash prefix
+    # check — explicit entry. Same forge-resistant rationale as the
+    # other resource roots above.
+    "/api/appointments",
     # Dashboard + calculator + compliance read/write endpoints added
     # in recent commits. CSRF only fires on state-changing verbs (POST /
     # PATCH / DELETE / PUT), so the GETs in this group are a no-op

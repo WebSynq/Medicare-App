@@ -320,8 +320,12 @@ export default function NewAppointmentSheet({
       return;
     }
     setSaving(true);
+    // Declared outside the try so the catch's diagnostic console.error
+    // can reference it. `const payload = {...}` inside the try block
+    // would be block-scoped and trigger ReferenceError in the catch.
+    let payload = null;
     try {
-      const payload = {
+      payload = {
         client_name: name,
         appointment_date: format(date, "yyyy-MM-dd"),
         appointment_time: time,
