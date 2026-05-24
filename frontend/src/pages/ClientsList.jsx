@@ -102,8 +102,18 @@ export default function ClientsList() {
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
   const [status, setStatus] = useState("all");
-  const [product, setProduct] = useState("all");
+  // Product filter is now a free-text exact match sent to the server.
+  // Empty string = no filter. Replaces the prior client-side Select
+  // (which derived options from the loaded set and broke at pagination
+  // scale). A future /api/leads/distinct-products endpoint could
+  // restore a true dropdown.
+  const [product, setProduct] = useState("");
   const [page, setPage] = useState(1);
+  // Server-driven pagination envelope state.
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  const [hasNext, setHasNext] = useState(false);
+  const [hasPrev, setHasPrev] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
 
   // Debounce search box (server query)
@@ -115,12 +125,17 @@ export default function ClientsList() {
   const load = async () => {
     setLoading(true);
     try {
-      const params = {};
+      const params = { page, limit: PAGE_SIZE };
       if (status !== "all") params.status = status;
       if (debouncedQ.trim()) params.q = debouncedQ.trim();
+      if (product.trim()) params.product = product.trim();
       const res = await api.get("/leads", { params });
-      setLeads(res.data || []);
-      setPage(1);
+      // Envelope shape: {leads, total, page, limit, pages, has_next, has_prev}
+      setLeads(res.data?.leads || []);
+      setTotal(res.data?.total ?? 0);
+      setTotalPages(res.data?.pages ?? 0);
+      setHasNext(res.data?.has_next ?? false);
+      setHasPrev(res.data?.has_prev ?? false);
     } catch (e) {
       toast.error("Failed to load clients");
     } finally {
@@ -128,43 +143,31 @@ export default function ClientsList() {
     }
   };
 
+  // Filter change → reset to page 1. The load effect below picks up
+  // the change and re-fetches once (React batches the page+filter
+  // dep-change into a single render).
+  useEffect(() => {
+    setPage(1);
+  }, [status, debouncedQ, product]);
+
   useEffect(() => {
     load();
-    // load reads `status` and `debouncedQ` from closure, so depending on those
-    // is sufficient. eslint just can't tell because load is defined inline.
+    // load reads page/status/debouncedQ/product from closure.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, debouncedQ]);
+  }, [status, debouncedQ, product, page]);
 
-  // Available product options derived from the loaded set (omit filter when empty)
-  const productOptions = useMemo(() => {
-    const set = new Set();
-    leads.forEach((l) => {
-      if (l.plan_type_premium) set.add(l.plan_type_premium);
-    });
-    return Array.from(set).sort();
-  }, [leads]);
-
-  const filtered = useMemo(() => {
-    if (product === "all") return leads;
-    return leads.filter((l) => l.plan_type_premium === product);
-  }, [leads, product]);
-
-  const stats = useMemo(() => {
-    const total = leads.length;
+  // Per-page rollups for the secondary stat cards. These reflect ONLY
+  // the leads on the current page (max PAGE_SIZE). Total Clients uses
+  // the envelope `total` for an accurate full-set count. A future
+  // /api/leads/stats endpoint would let these three be agency-wide too.
+  const pageStats = useMemo(() => {
     const newThisMonth = leads.filter((l) => isThisMonth(l.created_at)).length;
     const soa = leads.filter((l) => l.soa_signed).length;
     const synced = leads.filter(
       (l) => l.ghl_sync_status === "synced" || l.ghl_sync_status === "mock"
     ).length;
-    return { total, newThisMonth, soa, synced };
+    return { newThisMonth, soa, synced };
   }, [leads]);
-
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  // Clamp page when filters shrink the result set
-  useEffect(() => {
-    if (page > pageCount) setPage(pageCount);
-  }, [page, pageCount]);
 
   return (
     <div className="p-6 md:p-8">
@@ -203,16 +206,20 @@ export default function ClientsList() {
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-          <StatCard label="Total Clients" value={stats.total} icon={Users2} />
+          <StatCard label="Total Clients" value={total} icon={Users2} />
           <StatCard
-            label="New This Month"
-            value={stats.newThisMonth}
+            label="New This Month (this page)"
+            value={pageStats.newThisMonth}
             icon={Sparkles}
           />
-          <StatCard label="SOA Signed" value={stats.soa} icon={FileSignature} />
           <StatCard
-            label="Synced to GHL"
-            value={stats.synced}
+            label="SOA Signed (this page)"
+            value={pageStats.soa}
+            icon={FileSignature}
+          />
+          <StatCard
+            label="Synced to GHL (this page)"
+            value={pageStats.synced}
             icon={ShieldCheck}
           />
         </div>
@@ -248,34 +255,23 @@ export default function ClientsList() {
                   ))}
                 </SelectContent>
               </Select>
-              {productOptions.length > 0 && (
-                <Select value={product} onValueChange={setProduct}>
-                  <SelectTrigger
-                    className="w-52 h-10"
-                    data-testid="clients-product-filter"
-                  >
-                    <SelectValue placeholder="All products" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All products</SelectItem>
-                    {productOptions.map((p) => (
-                      <SelectItem key={p} value={p}>
-                        {p}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
+              <Input
+                placeholder="Filter by product (exact)"
+                className="w-52 h-10"
+                value={product}
+                onChange={(e) => setProduct(e.target.value)}
+                data-testid="clients-product-filter"
+              />
             </div>
           </CardContent>
         </Card>
 
         <ScrollableCard
           title="Clients"
-          count={filtered.length}
+          count={total}
           height="calc(100vh - 280px)"
           loading={loading}
-          isEmpty={!loading && pageRows.length === 0}
+          isEmpty={!loading && leads.length === 0}
           emptyState="No clients match these filters."
           testId="clients-list-card"
         >
@@ -296,7 +292,7 @@ export default function ClientsList() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {pageRows.map((l) => (
+                  {leads.map((l) => (
                     <TableRow
                       key={l.id}
                       className="hover:bg-secondary/40"
@@ -407,31 +403,30 @@ export default function ClientsList() {
             </div>
           </ScrollableCard>
 
-          {filtered.length > PAGE_SIZE && (
+          {total > 0 && (
             <div className="flex items-center justify-between pt-3 text-sm">
               <div className="text-muted-foreground">
                 Showing {(page - 1) * PAGE_SIZE + 1}–
-                {Math.min(page * PAGE_SIZE, filtered.length)} of{" "}
-                {filtered.length}
+                {Math.min(page * PAGE_SIZE, total)} of {total.toLocaleString()}
               </div>
               <div className="flex items-center gap-2">
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page === 1}
+                  disabled={!hasPrev || loading}
                   data-testid="clients-prev"
                 >
                   Previous
                 </Button>
                 <span className="text-xs text-muted-foreground">
-                  Page {page} of {pageCount}
+                  Page {page} of {totalPages || 1}
                 </span>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-                  disabled={page >= pageCount}
+                  onClick={() => setPage((p) => p + 1)}
+                  disabled={!hasNext || loading}
                   data-testid="clients-next"
                 >
                   Next

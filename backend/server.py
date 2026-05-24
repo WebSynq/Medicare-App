@@ -594,6 +594,12 @@ app.add_middleware(CSRFMiddleware)
 # on older clusters.
 _PROD_INDEXES = [
     # leads
+    # `id` is the app-level UUID used by 44 find_one({"id": …}) sites
+    # (every IDOR check, every PATCH refresh, every detail load). Without
+    # this index those queries are full COLLSCANs — at 1.5M docs they
+    # take seconds each. unique=True is safe because Lead.id is generated
+    # by uuid4 in the model (models.py).
+    ("leads", "id", {"unique": True, "background": True}),
     ("leads", "agent_id", {"background": True}),
     ("leads", "ghl_contact_id", {"background": True}),
     ("leads", "email", {"background": True}),

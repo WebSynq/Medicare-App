@@ -3657,7 +3657,9 @@ async def test_team_scoped_reads_parent_data(client, db, admin_headers):
     r2 = client.get("/api/leads",
                     headers={"Authorization": f"Bearer {va_token}"})
     assert r2.status_code == 200, r2.text
-    ids = [ld["id"] for ld in r2.json()]
+    # Pagination envelope shape: {leads: [...], total, page, limit, pages, has_next, has_prev}
+    body = r2.json()
+    ids = [ld["id"] for ld in body["leads"]]
     assert parent_lead_id in ids, (
         f"VA should see parent agent's leads via parent_agent_id "
         f"scope, got {ids}"

@@ -762,16 +762,42 @@ async def get_pipeline(
     }
 
 
-@router.get("", response_model=List[Lead])
+@router.get("")
 async def list_leads(
     status: Optional[str] = None,
-    q: Optional[str] = Query(None, description="Search first/last/email", max_length=64),
+    product: Optional[str] = Query(None, max_length=128, description="Exact-match filter on plan_type_premium"),
+    q: Optional[str] = Query(None, max_length=64, description="Search first/last/email/phone"),
+    page: int = Query(1, ge=1, description="1-indexed page number"),
+    limit: int = Query(50, ge=1, le=200, description="Results per page (1–200, default 50)"),
     db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user=Depends(get_current_user),
 ):
+    """Paginated client list.
+
+    Response shape (envelope object, NOT a bare array — change from the
+    pre-pagination contract):
+        {
+          leads: [Lead, …],
+          total: int,
+          page: int,
+          limit: int,
+          pages: int,        # ceil(total/limit); 0 when total=0
+          has_next: bool,
+          has_prev: bool,
+        }
+
+    Filters (status, q) apply server-side and narrow `total` accordingly,
+    so "Showing X-Y of Z" in the SPA always reflects the filtered set.
+    """
     query: dict = {**agent_filter(current_user)}
     if status:
         query["status"] = status
+    if product:
+        # Exact match on the free-text product label stored on the lead.
+        # The SPA sends a typed string; agents type the label they want
+        # to filter by. (Future: add a /api/leads/distinct-products
+        # endpoint to power a true dropdown at scale.)
+        query["plan_type_premium"] = product
     if q:
         # Escape regex metacharacters — prior behaviour passed user input
         # straight into MongoDB $regex, exposing the API to ReDoS via patterns
@@ -783,8 +809,31 @@ async def list_leads(
             {"email": {"$regex": safe, "$options": "i"}},
             {"phone": {"$regex": safe, "$options": "i"}},
         ]
-    cursor = db.leads.find(query, {"_id": 0}).sort("created_at", -1).limit(500)
-    return [Lead(**safe_lead_load(doc)) async for doc in cursor]
+
+    # count_documents uses the `agent_id` single-field index automatically.
+    # A future compound (agent_id, status, created_at) index would let this
+    # hint into an optimal plan — not added in this change.
+    total = await db.leads.count_documents(query)
+
+    skip = (page - 1) * limit
+    cursor = (
+        db.leads.find(query, {"_id": 0})
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(limit)
+    )
+    leads = [Lead(**safe_lead_load(doc)).model_dump() async for doc in cursor]
+    pages = (total + limit - 1) // limit  # ceil(total/limit); 0 when total=0
+
+    return {
+        "leads": leads,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": pages,
+        "has_next": page < pages,
+        "has_prev": page > 1,
+    }
 
 
 @router.get("/{lead_id}", response_model=Lead)
