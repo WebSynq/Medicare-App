@@ -631,6 +631,16 @@ _PROD_INDEXES = [
     ("documents", "agent_id", {"background": True}),
     ("documents", "lead_id", {"background": True}),
 
+    # appointments — agent_id+date compound powers the Calendar page's
+    # per-agent month/week/day range queries (start_date/end_date filter
+    # via $gte/$lte). Standalone appointment_date index supports the
+    # admin-view aggregations that ignore agent scope.
+    ("appointments", [("agent_id", 1), ("appointment_date", 1)], {"background": True}),
+    ("appointments", "appointment_date", {"background": True}),
+    ("appointments", "lead_id", {"background": True}),
+    ("appointments", "status", {"background": True}),
+    ("appointments", "appointment_id", {"background": True, "unique": True, "sparse": True}),
+
     # users
     ("users", "email", {"background": True, "unique": True}),
     ("users", "role", {"background": True}),

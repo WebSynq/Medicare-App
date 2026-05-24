@@ -1,89 +1,177 @@
 /*
- * Page-local overrides for react-big-calendar. The library ships with
- * its own stylesheet (imported in CalendarPage.jsx) — these tweaks
- * blend its chrome with the shadcn/tailwind palette without forking
- * the upstream CSS. Selectors are nested under `.ghw-calendar` so
- * nothing leaks onto other pages.
+ * Page-local overrides for react-big-calendar + our custom layout.
+ * The library stylesheet is imported first in CalendarPage.jsx; these
+ * rules override the bits that don't match the app's palette.
+ *
+ * Scope: ALL .rbc-* selectors are global because rbc doesn't accept a
+ * scoping prop. We only mount BigCalendar on /calendar so the bleed
+ * risk is contained — if rbc shows up elsewhere later, prefix these.
  */
-.ghw-calendar {
-  font-family: inherit;
+
+/* ── Two-column layout (desktop) ────────────────────────────────────── */
+.cal-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
 }
 
-.ghw-calendar .rbc-toolbar {
+@media (min-width: 1024px) {
+  .cal-layout {
+    grid-template-columns: 1fr 280px;
+  }
+}
+
+.cal-main {
+  min-width: 0;        /* prevent flex/grid overflow from long event titles */
+}
+
+.cal-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Custom toolbar ─────────────────────────────────────────────────── */
+.cal-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 12px;
-  font-size: 14px;
+  font-family: Arial, sans-serif;
+}
+
+.cal-toolbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
-.ghw-calendar .rbc-toolbar button {
-  border: 1px solid hsl(var(--border));
+.cal-toolbar-label {
+  flex: 1;
+  text-align: center;
+  min-width: 0;
+}
+
+@media (max-width: 767px) {
+  .cal-toolbar-label {
+    flex-basis: 100%;
+    text-align: left;
+    order: 3;
+  }
+  .cal-toolbar-views {
+    justify-content: flex-start;
+  }
+}
+
+/* ── rbc overrides ─────────────────────────────────────────────────── */
+
+/* Hide the library's built-in toolbar — we render CalendarToolbar instead. */
+.rbc-toolbar {
+  display: none;
+}
+
+.rbc-calendar {
   background: transparent;
-  color: hsl(var(--foreground));
-  padding: 4px 10px;
-  border-radius: 6px;
+  font-family: Arial, sans-serif;
+}
+
+/* Day-of-week header strip (Sun–Sat across the top of month/week views) */
+.rbc-header {
+  background: #0B2545;
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 8px 4px;
+  border-bottom-color: #0B2545;
+}
+
+.rbc-header + .rbc-header {
+  border-left-color: rgba(255, 255, 255, 0.12);
+}
+
+/* "Today" highlight tint — subtle blue wash */
+.rbc-today {
+  background-color: #EFF4FB;
+}
+
+/* Time-grid background lines */
+.rbc-time-content {
+  border-top: 1px solid #e5e7eb;
+}
+
+.rbc-time-slot {
+  border-top-color: #f1f5f9;
+}
+
+.rbc-day-slot .rbc-time-slot {
+  border-top-color: transparent;
+}
+
+/* Event tile defaults — we set background/border per-event via
+   eventPropGetter; these set the typography + base radius. */
+.rbc-event {
+  border-radius: 4px;
   font-size: 12px;
   font-weight: 500;
-  transition: background-color 0.12s ease;
+  padding: 2px 6px;
+  border: none;
+  box-shadow: none;
 }
 
-.ghw-calendar .rbc-toolbar button:hover,
-.ghw-calendar .rbc-toolbar button:focus {
-  background: hsl(var(--secondary));
-  color: hsl(var(--foreground));
-}
-
-.ghw-calendar .rbc-toolbar button.rbc-active {
-  background: #e85d2f;
-  border-color: #e85d2f;
-  color: white;
-}
-
-.ghw-calendar .rbc-toolbar-label {
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-.ghw-calendar .rbc-header {
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-size: 10px;
-  font-weight: 600;
-  color: hsl(var(--muted-foreground));
-  border-bottom: 1px solid hsl(var(--border));
-  padding: 6px 4px;
-}
-
-.ghw-calendar .rbc-today {
-  background: rgba(232, 93, 47, 0.06);
-}
-
-.ghw-calendar .rbc-off-range-bg {
-  background: hsl(var(--secondary) / 0.4);
-}
-
-.ghw-calendar .rbc-event {
-  cursor: pointer;
-}
-
-.ghw-calendar .rbc-event.rbc-selected {
-  outline: 2px solid #e85d2f;
+.rbc-event:focus {
+  outline: 2px solid #0B2545;
   outline-offset: 1px;
 }
 
-.ghw-calendar .rbc-month-view,
-.ghw-calendar .rbc-time-view,
-.ghw-calendar .rbc-agenda-view {
-  border: 1px solid hsl(var(--border));
-  border-radius: 8px;
+.rbc-selected {
+  /* Slight darken via filter — keeps the per-event color logic in JS. */
+  filter: brightness(0.88);
+}
+
+/* "+N more" overflow chip on month view */
+.rbc-show-more {
+  color: #E85D2F;
+  font-weight: 600;
+  background: transparent;
+}
+
+.rbc-show-more:hover {
+  text-decoration: underline;
+}
+
+/* Month-view day cell — outline that matches the app's border color */
+.rbc-month-view,
+.rbc-time-view,
+.rbc-agenda-view {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
   overflow: hidden;
 }
 
-.ghw-calendar .rbc-day-bg + .rbc-day-bg,
-.ghw-calendar .rbc-month-row + .rbc-month-row {
-  border-color: hsl(var(--border));
+.rbc-month-row + .rbc-month-row,
+.rbc-day-bg + .rbc-day-bg {
+  border-color: #f1f5f9;
 }
 
-.ghw-calendar .rbc-show-more {
-  color: #e85d2f;
-  font-weight: 500;
+.rbc-off-range-bg {
+  background: #fafafa;
+}
+
+.rbc-off-range {
+  color: #9ca3af;
+}
+
+/* Agenda view — full-detail row layout */
+.rbc-agenda-table .rbc-header {
+  background: #0B2545;
+}
+
+.rbc-agenda-time-cell,
+.rbc-agenda-date-cell {
+  font-family: Arial, sans-serif;
+  font-size: 12px;
 }

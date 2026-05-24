@@ -1,12 +1,41 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { Calendar as BigCalendar, dateFnsLocalizer } from "react-big-calendar";
-import { format, parse, startOfWeek, getDay, addDays } from "date-fns";
+import { Link, useNavigate } from "react-router-dom";
+import { Calendar as BigCalendar, dateFnsLocalizer, Views } from "react-big-calendar";
+import {
+  format,
+  parse,
+  startOfWeek,
+  startOfMonth,
+  endOfMonth,
+  endOfWeek,
+  startOfDay,
+  endOfDay,
+  addMonths,
+  subMonths,
+  addWeeks,
+  subWeeks,
+  addDays,
+  subDays,
+  getDay,
+  isToday,
+  isSameDay,
+  isThisWeek,
+  isAfter,
+  parseISO,
+} from "date-fns";
 import enUS from "date-fns/locale/en-US";
 import {
+  ChevronLeft,
+  ChevronRight,
+  Plus,
   CalendarDays,
-  ArrowUpRight,
+  CheckCircle2,
+  XCircle,
+  Download,
   X as XIcon,
+  DollarSign,
+  User as UserIcon,
+  Clock,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -14,24 +43,22 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
-import { api, auth, COMMAND_CENTER_ROLES } from "@/lib/api";
-import { useAgent } from "@/context/AgentContext";
+import NewAppointmentSheet from "@/components/NewAppointmentSheet";
+import { api } from "@/lib/api";
 
-// react-big-calendar's stylesheet. Imported here only — its class names
-// (.rbc-*) are unique enough that they don't bleed onto pages that
-// don't render the calendar, but keeping the import local makes the
-// dependency obvious and dead-codes nicely if the page is split.
+// react-big-calendar's CSS — page-local import so it only loads here.
 import "react-big-calendar/lib/css/react-big-calendar.css";
 import "./CalendarPage.css";
 
-// ── Localizer ────────────────────────────────────────────────────────────
+
+// ── date-fns localizer (US, week starts Sunday) ─────────────────────────
 const locales = { "en-US": enUS };
 const localizer = dateFnsLocalizer({
   format,
@@ -41,13 +68,15 @@ const localizer = dateFnsLocalizer({
   locales,
 });
 
-// ── Colour anchors (kept in sync with the Today action centre legend) ──
-const COLORS = {
-  appointment: "#16a34a",      // green-600
-  appointmentMuted: "#9ca3af", // gray-400 for completed/cancelled/no-show
-  renewal: "#d97706",          // amber-600
-  birthday: "#dc2626",         // red-600
-  agencyEvent: "#94a3b8",      // slate-400 — AEP / OEP background bands
+
+// ── Event colour map (one per appointment type) ─────────────────────────
+const TYPE_COLOR = {
+  initial_consultation: "#1565C0", // blue
+  follow_up: "#2E7D32",            // green
+  annual_review: "#E65100",        // orange
+  enrollment: "#6A1B9A",           // purple
+  plan_review: "#00695C",          // teal
+  other: "#616161",                // gray
 };
 
 const TYPE_LABEL = {
@@ -59,452 +88,697 @@ const TYPE_LABEL = {
   other: "Other",
 };
 
+const STATUS_LABEL = {
+  scheduled: "Scheduled",
+  completed: "Completed",
+  cancelled: "Cancelled",
+  no_show: "No Show",
+};
+
+function fmtMoney(v) {
+  if (v == null || Number.isNaN(v)) return "$0";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(v);
+}
+
+
+// ── Date / time helpers ─────────────────────────────────────────────────
 function parseDateTime(dateStr, timeStr) {
-  // dateStr "2026-06-15", timeStr "10:30" — local-time interpretation
-  // matches how BigCalendar's date-fns localizer reads dates.
   if (!dateStr || !timeStr) return null;
   const [y, m, d] = dateStr.split("-").map(Number);
   const [hh, mm] = timeStr.split(":").map(Number);
   return new Date(y, (m || 1) - 1, d || 1, hh || 0, mm || 0);
 }
 
-function parseDateOnly(dateStr) {
-  if (!dateStr) return null;
-  const [y, m, d] = dateStr.split("-").map(Number);
-  return new Date(y, (m || 1) - 1, d || 1);
+function formatTime12h(d) {
+  if (!d) return "";
+  return format(d, "h:mm a");
 }
 
-// react-big-calendar treats `end` as exclusive for all-day events, so we
-// bump by one day to include the closing day visually.
-function endOfAllDay(date) {
-  return addDays(date, 1);
+// Compute the inclusive [start, end] dates we need to fetch for the
+// current view. Each view's window is widened a bit so the calendar's
+// "spillover" cells (last week of previous month visible in month view,
+// etc.) also show appointments.
+function viewWindow(date, view) {
+  if (view === Views.MONTH) {
+    const startMonth = startOfMonth(date);
+    const endMonth = endOfMonth(date);
+    return {
+      start: startOfWeek(startMonth, { weekStartsOn: 0 }),
+      end: endOfWeek(endMonth, { weekStartsOn: 0 }),
+    };
+  }
+  if (view === Views.WEEK) {
+    return {
+      start: startOfWeek(date, { weekStartsOn: 0 }),
+      end: endOfWeek(date, { weekStartsOn: 0 }),
+    };
+  }
+  if (view === Views.DAY) {
+    return { start: startOfDay(date), end: endOfDay(date) };
+  }
+  // Agenda — react-big-calendar's default is a 30-day forward window.
+  return { start: startOfDay(date), end: endOfDay(addDays(date, 30)) };
 }
 
+
+// ── Mobile detection (md breakpoint = 768px) ────────────────────────────
 function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(() =>
+  const [m, setM] = useState(() =>
     typeof window === "undefined" ? false : window.innerWidth < 768,
   );
   useEffect(() => {
     function onResize() {
-      setIsMobile(window.innerWidth < 768);
+      setM(window.innerWidth < 768);
     }
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  return isMobile;
+  return m;
 }
 
-function LegendDot({ color, label }) {
+
+// ── Custom toolbar — replaces the rbc default ───────────────────────────
+// rbc passes: { date, view, views, label, onNavigate, onView }
+function CalendarToolbar({
+  date,
+  view,
+  onNavigate,
+  onView,
+  label,
+  onNewAppointment,
+  isMobile,
+}) {
+  // Period label: rbc's default `label` is good for month/day but the
+  // week label is "May 22 – 28" without year — append year for clarity.
+  const periodLabel = useMemo(() => {
+    if (view === Views.WEEK) {
+      const start = startOfWeek(date, { weekStartsOn: 0 });
+      const end = endOfWeek(date, { weekStartsOn: 0 });
+      const sameMonth = start.getMonth() === end.getMonth();
+      const fmtStart = sameMonth ? "MMM d" : "MMM d";
+      const fmtEnd = sameMonth ? "d, yyyy" : "MMM d, yyyy";
+      return `${format(start, fmtStart)} – ${format(end, fmtEnd)}`;
+    }
+    if (view === Views.DAY) return format(date, "EEEE, MMM d, yyyy");
+    if (view === Views.MONTH) return format(date, "MMMM yyyy");
+    return label; // agenda
+  }, [date, view, label]);
+
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-      <span
-        className="inline-block w-2.5 h-2.5 rounded-full"
-        style={{ background: color }}
-      />
-      {label}
-    </span>
-  );
-}
-
-function EventDetailDialog({ event, onClose }) {
-  if (!event) return null;
-  const r = event.resource || {};
-  const kind = r.kind;
-  return (
-    <Dialog open={true} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <span
-              className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
-              style={{ background: event.color }}
-            />
-            {event.title}
-          </DialogTitle>
-          <DialogDescription>
-            {format(event.start, "EEEE, MMM d, yyyy")}
-            {!event.allDay && ` · ${format(event.start, "h:mm a")}`}
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-2 text-sm">
-          {kind === "appointment" && (
-            <>
-              <DetailRow label="Type" value={TYPE_LABEL[r.type] || r.type} />
-              <DetailRow
-                label="Duration"
-                value={r.duration_minutes ? `${r.duration_minutes} minutes` : "—"}
-              />
-              <DetailRow
-                label="Status"
-                value={(r.status || "").replace("_", " ")}
-                capitalize
-              />
-              {r.notes && <DetailRow label="Notes" value={r.notes} multiline />}
-            </>
-          )}
-          {kind === "renewal" && (
-            <>
-              <DetailRow label="Carrier" value={r.carrier || "—"} />
-              <DetailRow label="Product" value={r.product_label || "—"} />
-              <DetailRow
-                label="Days until renewal"
-                value={r.days_until_renewal ?? "—"}
-              />
-            </>
-          )}
-          {kind === "birthday" && (
-            <>
-              <DetailRow
-                label="Window"
-                value={`${event.start.toLocaleDateString()} – ${addDays(event.end, -1).toLocaleDateString()}`}
-              />
-              <DetailRow
-                label="Days remaining"
-                value={r.days_remaining_in_window ?? "—"}
-              />
-              {r.phone && <DetailRow label="Phone" value={r.phone} />}
-            </>
-          )}
-        </div>
-
-        <div className="flex justify-end gap-2 pt-2">
-          <Button variant="outline" size="sm" onClick={onClose}>
-            <XIcon className="w-3.5 h-3.5 mr-1" />
-            Close
+    <div className="cal-toolbar">
+      <div className="cal-toolbar-row cal-toolbar-nav">
+        <div className="inline-flex items-center gap-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onNavigate("PREV")}
+            aria-label="Previous"
+            data-testid="cal-prev"
+          >
+            <ChevronLeft className="w-4 h-4" />
           </Button>
-          {r.lead_id && (
-            <Button asChild size="sm" className="bg-[#e85d2f] hover:bg-[#c84416]">
-              <Link to={`/clients/${r.lead_id}`}>
-                View Client
-                <ArrowUpRight className="w-3.5 h-3.5 ml-1" />
-              </Link>
-            </Button>
-          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onNavigate("TODAY")}
+            data-testid="cal-today"
+          >
+            Today
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onNavigate("NEXT")}
+            aria-label="Next"
+            data-testid="cal-next"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </Button>
         </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
 
-function DetailRow({ label, value, multiline, capitalize }) {
-  return (
-    <div className="grid grid-cols-[110px_1fr] gap-2 items-start">
-      <span className="text-[11px] uppercase tracking-widest text-muted-foreground pt-0.5">
-        {label}
-      </span>
-      <span
-        className={`text-sm ${multiline ? "whitespace-pre-wrap" : "truncate"} ${
-          capitalize ? "capitalize" : ""
-        }`}
-      >
-        {value}
-      </span>
+        <div className="cal-toolbar-label text-sm font-semibold">
+          {periodLabel}
+        </div>
+
+        {!isMobile && <CalendarViewToolbarRight
+          view={view}
+          onView={onView}
+          onNewAppointment={onNewAppointment}
+        />}
+      </div>
+
+      {isMobile && (
+        <div className="cal-toolbar-row cal-toolbar-views">
+          <CalendarViewToolbarRight
+            view={view}
+            onView={onView}
+            onNewAppointment={onNewAppointment}
+            stacked
+          />
+        </div>
+      )}
     </div>
   );
 }
 
-// Two CMS enrollment windows we surface as background events all
-// year. The next future occurrence of each is added to the calendar
-// so leadership has a constant visual reminder of when they're open.
-function nextWindowOccurrences(today) {
-  const year = today.getFullYear();
-  const windows = [];
-  function pick(name, startMonth, startDay, endMonth, endDay) {
-    let start = new Date(year, startMonth, startDay);
-    let end = new Date(year, endMonth, endDay);
-    if (today > end) {
-      start = new Date(year + 1, startMonth, startDay);
-      end = new Date(year + 1, endMonth, endDay);
-    }
-    windows.push({ name, start, end });
-  }
-  // AEP: Oct 15 – Dec 7. OEP: Jan 1 – Mar 31.
-  pick("AEP", 9, 15, 11, 7);
-  pick("OEP", 0, 1, 2, 31);
-  return windows;
+function CalendarViewToolbarRight({ view, onView, onNewAppointment, stacked }) {
+  const buttons = [
+    { v: Views.MONTH, label: "Month" },
+    { v: Views.WEEK, label: "Week" },
+    { v: Views.DAY, label: "Day" },
+    { v: Views.AGENDA, label: "Agenda" },
+  ];
+  return (
+    <div className={`inline-flex items-center gap-2 ${stacked ? "flex-wrap" : ""}`}>
+      <div className="inline-flex rounded-md border border-border overflow-hidden">
+        {buttons.map((b) => (
+          <button
+            key={b.v}
+            type="button"
+            onClick={() => onView(b.v)}
+            className={
+              "px-3 py-1.5 text-xs transition-colors " +
+              (view === b.v
+                ? "bg-[#0B2545] text-white"
+                : "bg-background text-foreground/70 hover:bg-secondary")
+            }
+            data-testid={`cal-view-${b.v}`}
+          >
+            {b.label}
+          </button>
+        ))}
+      </div>
+      <Button
+        type="button"
+        size="sm"
+        onClick={onNewAppointment}
+        className="bg-[#e85d2f] hover:bg-[#c84416]"
+        data-testid="cal-new-appt"
+      >
+        <Plus className="w-3.5 h-3.5 mr-1" />
+        New Appointment
+      </Button>
+    </div>
+  );
 }
 
+
+// ── Appointment detail sheet (event click) ──────────────────────────────
+function AppointmentDetailSheet({ open, onOpenChange, appointment, onChanged }) {
+  const [busy, setBusy] = useState(false);
+
+  if (!appointment) {
+    return (
+      <Sheet open={open} onOpenChange={onOpenChange}>
+        <SheetContent side="right" className="w-full sm:max-w-md" />
+      </Sheet>
+    );
+  }
+
+  const start = parseDateTime(
+    appointment.appointment_date,
+    appointment.appointment_time,
+  );
+  const color = TYPE_COLOR[appointment.type] || TYPE_COLOR.other;
+
+  async function patchStatus(next) {
+    setBusy(true);
+    try {
+      await api.patch(`/appointments/${appointment.appointment_id}`, {
+        status: next,
+      });
+      toast.success(
+        next === "completed" ? "Marked complete" : "Cancelled",
+      );
+      onChanged?.();
+      onOpenChange(false);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Update failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function downloadIcs() {
+    window.open(
+      `${process.env.REACT_APP_BACKEND_URL}/api/appointments/${appointment.appointment_id}/ics`,
+    );
+  }
+
+  const canMutate = appointment.status === "scheduled";
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="w-full sm:max-w-md overflow-y-auto">
+        <SheetHeader className="mb-4">
+          <SheetTitle className="text-xl">{appointment.client_name}</SheetTitle>
+          <SheetDescription>Appointment details</SheetDescription>
+        </SheetHeader>
+
+        <div className="space-y-4 text-sm">
+          <div className="flex items-center gap-2">
+            <Badge
+              className="rounded-full border-0 text-white text-[11px]"
+              style={{ background: color }}
+            >
+              {TYPE_LABEL[appointment.type] || appointment.type}
+            </Badge>
+            <Badge variant="outline" className="rounded-full text-[11px] capitalize">
+              {STATUS_LABEL[appointment.status] || appointment.status}
+            </Badge>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+                Date
+              </div>
+              <div className="font-medium">
+                {start ? format(start, "EEE, MMM d, yyyy") : "—"}
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+                Time
+              </div>
+              <div className="font-medium tabular-nums">
+                {start ? format(start, "h:mm a") : "—"}
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+                Duration
+              </div>
+              <div className="font-medium tabular-nums">
+                {appointment.duration_minutes} min
+              </div>
+            </div>
+            {appointment.estimated_commission != null && (
+              <div>
+                <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+                  Est. Commission
+                </div>
+                <div className="font-medium tabular-nums flex items-center gap-0.5">
+                  <DollarSign className="w-3.5 h-3.5" />
+                  {fmtMoney(appointment.estimated_commission)}
+                </div>
+              </div>
+            )}
+            <div className="col-span-2">
+              <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+                Agent
+              </div>
+              <div className="font-medium flex items-center gap-1.5">
+                <UserIcon className="w-3.5 h-3.5" />
+                {appointment.agent_name || appointment.agent_email || "—"}
+              </div>
+            </div>
+          </div>
+
+          {appointment.notes && (
+            <div>
+              <div className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">
+                Notes
+              </div>
+              <div className="text-sm whitespace-pre-wrap bg-secondary/40 rounded-md p-3">
+                {appointment.notes}
+              </div>
+            </div>
+          )}
+
+          {appointment.lead_id && (
+            <Link
+              to={`/clients/${appointment.lead_id}`}
+              className="inline-flex items-center text-xs text-[#1565C0] hover:underline"
+              onClick={() => onOpenChange(false)}
+            >
+              Open client profile →
+            </Link>
+          )}
+
+          <div className="pt-2 border-t border-border space-y-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full justify-start"
+              onClick={downloadIcs}
+              data-testid="apptdet-ics"
+            >
+              <Download className="w-4 h-4 mr-2" /> Add to Calendar (.ics)
+            </Button>
+            {canMutate && (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full justify-start"
+                  onClick={() => patchStatus("completed")}
+                  disabled={busy}
+                  data-testid="apptdet-complete"
+                >
+                  <CheckCircle2 className="w-4 h-4 mr-2 text-emerald-600" />
+                  Mark Complete
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full justify-start text-rose-700 hover:text-rose-800"
+                  onClick={() => patchStatus("cancelled")}
+                  disabled={busy}
+                  data-testid="apptdet-cancel"
+                >
+                  <XCircle className="w-4 h-4 mr-2" />
+                  Cancel Appointment
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+
+// ── Right sidebar (desktop only) ────────────────────────────────────────
+function RightSidebar({ appointments, onPickAppointment }) {
+  const now = useMemo(() => new Date(), []);
+
+  const todays = useMemo(() => {
+    return appointments
+      .filter((a) => {
+        const d = parseDateTime(a.appointment_date, a.appointment_time);
+        return d && isToday(d);
+      })
+      .sort((a, b) =>
+        (a.appointment_time || "").localeCompare(b.appointment_time || ""),
+      );
+  }, [appointments]);
+
+  const thisWeek = useMemo(() => {
+    const inWeek = appointments.filter((a) => {
+      const d = parseDateTime(a.appointment_date, a.appointment_time);
+      return d && isThisWeek(d, { weekStartsOn: 0 });
+    });
+    return {
+      total: inWeek.length,
+      completed: inWeek.filter((a) => a.status === "completed").length,
+      upcoming: inWeek.filter((a) => a.status === "scheduled").length,
+    };
+  }, [appointments]);
+
+  const nextAppt = useMemo(() => {
+    const futureScheduled = appointments
+      .filter((a) => {
+        if (a.status !== "scheduled") return false;
+        const d = parseDateTime(a.appointment_date, a.appointment_time);
+        return d && isAfter(d, now);
+      })
+      .sort((a, b) => {
+        const da = parseDateTime(a.appointment_date, a.appointment_time);
+        const db = parseDateTime(b.appointment_date, b.appointment_time);
+        return da - db;
+      });
+    return futureScheduled[0] || null;
+  }, [appointments, now]);
+
+  return (
+    <aside className="cal-sidebar">
+      <Card>
+        <CardContent className="p-4 space-y-2">
+          <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+            Today
+          </div>
+          {todays.length === 0 ? (
+            <div className="text-sm text-muted-foreground">
+              No appointments today
+            </div>
+          ) : (
+            <ul className="space-y-2">
+              {todays.map((a) => (
+                <li key={a.appointment_id}>
+                  <button
+                    type="button"
+                    onClick={() => onPickAppointment(a)}
+                    className="w-full text-left rounded-md p-2 hover:bg-secondary/50 transition-colors"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-sm font-medium truncate">
+                        {a.client_name}
+                      </div>
+                      <span
+                        className="w-2 h-2 rounded-full flex-shrink-0"
+                        style={{ background: TYPE_COLOR[a.type] || TYPE_COLOR.other }}
+                        aria-hidden="true"
+                      />
+                    </div>
+                    <div className="text-[11px] text-muted-foreground tabular-nums flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      {formatTime12h(parseDateTime(a.appointment_date, a.appointment_time))}
+                      {" · "}
+                      {TYPE_LABEL[a.type] || a.type}
+                    </div>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-4 space-y-1">
+          <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+            This Week
+          </div>
+          <div className="text-2xl font-bold tabular-nums" style={{ fontFamily: "Outfit" }}>
+            {thisWeek.total}
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            {thisWeek.upcoming} upcoming · {thisWeek.completed} completed
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-4 space-y-2">
+          <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+            Next Appointment
+          </div>
+          {!nextAppt ? (
+            <div className="text-sm text-muted-foreground">
+              No upcoming appointments
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onPickAppointment(nextAppt)}
+              className="w-full text-left rounded-md p-2 hover:bg-secondary/50 transition-colors"
+            >
+              <div className="text-sm font-medium truncate">
+                {nextAppt.client_name}
+              </div>
+              <div className="text-[11px] text-muted-foreground tabular-nums">
+                {(() => {
+                  const d = parseDateTime(nextAppt.appointment_date, nextAppt.appointment_time);
+                  if (!d) return "—";
+                  return `${format(d, "EEE, MMM d")} · ${formatTime12h(d)}`;
+                })()}
+              </div>
+              <Badge
+                className="mt-1.5 rounded-full border-0 text-white text-[10px]"
+                style={{ background: TYPE_COLOR[nextAppt.type] || TYPE_COLOR.other }}
+              >
+                {TYPE_LABEL[nextAppt.type] || nextAppt.type}
+              </Badge>
+            </button>
+          )}
+        </CardContent>
+      </Card>
+    </aside>
+  );
+}
+
+
+// ── Main page ───────────────────────────────────────────────────────────
 export default function CalendarPage() {
   const isMobile = useIsMobile();
-  const me = auth.getUser();
-  const { selectedAgent } = useAgent();
-  const isAgencyView =
-    !selectedAgent && COMMAND_CENTER_ROLES.has(me?.role || "");
-
-  const [events, setEvents] = useState([]);
-  // Pre-filter appointment list so the summary widget can report
-  // agency-wide counts before we drop other-agent events from the
-  // grid in agency view.
-  const [todaySummary, setTodaySummary] = useState({
-    count: 0,
-    agentCount: 0,
-  });
-  const [loading, setLoading] = useState(true);
-  const [view, setView] = useState("month");
+  const [view, setView] = useState(() =>
+    typeof window !== "undefined" && window.innerWidth < 768
+      ? Views.AGENDA
+      : Views.WEEK,
+  );
   const [date, setDate] = useState(new Date());
-  const [selected, setSelected] = useState(null);
+  const [appointments, setAppointments] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // Sheet state.
+  const [newOpen, setNewOpen] = useState(false);
+  const [prefillDate, setPrefillDate] = useState(null);
+  const [prefillTime, setPrefillTime] = useState("");
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailAppt, setDetailAppt] = useState(null);
+
+  const win = useMemo(() => viewWindow(date, view), [date, view]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = {
+        start_date: format(win.start, "yyyy-MM-dd"),
+        end_date: format(win.end, "yyyy-MM-dd"),
+        limit: 1000,
+      };
+      const res = await api.get("/appointments", { params });
+      setAppointments(res.data?.appointments || []);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Failed to load calendar");
+      setAppointments([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [win.start, win.end]);
 
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      setLoading(true);
-      try {
-        // Three sources in parallel. Settle, not all — a partial outage
-        // (e.g. /renewals/alerts erroring) shouldn't blank the page;
-        // we just drop the failing kind from the calendar.
-        const [apptRes, renewalRes, birthdayRes] = await Promise.allSettled([
-          api.get("/appointments"),
-          api.get("/renewals/alerts"),
-          api.get("/birthday-rule/alerts"),
-        ]);
+    load();
+  }, [load]);
 
-        const out = [];
+  // Build rbc events. Only appointments — birthday + renewal alerts
+  // intentionally NOT pulled (those are action queues, not events).
+  const events = useMemo(() => {
+    const out = [];
+    for (const a of appointments) {
+      const start = parseDateTime(a.appointment_date, a.appointment_time);
+      if (!start) continue;
+      const end = new Date(start);
+      end.setMinutes(end.getMinutes() + (a.duration_minutes || 30));
+      const color = TYPE_COLOR[a.type] || TYPE_COLOR.other;
+      out.push({
+        id: a.appointment_id,
+        title: `${a.client_name} · ${formatTime12h(start)}`,
+        start,
+        end,
+        allDay: false,
+        color,
+        appointment: a,
+      });
+    }
+    return out;
+  }, [appointments]);
 
-        if (apptRes.status === "fulfilled") {
-          const rawList = apptRes.value.data?.appointments || [];
-          // Today summary uses the unfiltered roll-up so the widget
-          // reflects the whole agency, even when we hide other agents'
-          // events from the grid below.
-          if (isAgencyView) {
-            const todayIso = new Date().toISOString().slice(0, 10);
-            const todays = rawList.filter(
-              (a) =>
-                a.appointment_date === todayIso && a.status === "scheduled",
-            );
-            setTodaySummary({
-              count: todays.length,
-              agentCount: new Set(todays.map((a) => a.agent_id)).size,
-            });
-          }
-          // Agency view hides other agents' appointments so the grid
-          // doesn't turn into a merged dump — leadership pulls cross-
-          // agent scheduling from the Command Center, not from here.
-          const list = isAgencyView
-            ? rawList.filter((a) => a.agent_id === me?.id)
-            : rawList;
-          for (const a of list) {
-            const start = parseDateTime(a.appointment_date, a.appointment_time);
-            if (!start) continue;
-            const end = new Date(start);
-            end.setMinutes(end.getMinutes() + (a.duration_minutes || 30));
-            const active = a.status === "scheduled";
-            out.push({
-              id: `appt-${a.appointment_id}`,
-              title: `${a.client_name} — ${TYPE_LABEL[a.type] || a.type || "Appointment"}`,
-              start,
-              end,
-              allDay: false,
-              color: active ? COLORS.appointment : COLORS.appointmentMuted,
-              resource: { kind: "appointment", ...a },
-            });
-          }
-        }
-
-        if (renewalRes.status === "fulfilled") {
-          const list = renewalRes.value.data?.renewal_alerts || [];
-          for (const r of list) {
-            const d = parseDateOnly(r.renewal_date);
-            if (!d) continue;
-            out.push({
-              id: `renewal-${r.lead_id}-${r.renewal_date}`,
-              title: `${r.full_name} renewal`,
-              start: d,
-              end: endOfAllDay(d),
-              allDay: true,
-              color: COLORS.renewal,
-              resource: { kind: "renewal", ...r },
-            });
-          }
-        }
-
-        if (birthdayRes.status === "fulfilled") {
-          // Spec: urgent (window-open) entries only — soon/upcoming are
-          // reminders rather than calendar events.
-          const urgent = birthdayRes.value.data?.urgent || [];
-          for (const b of urgent) {
-            const opens = parseDateOnly(b.window_opens);
-            const closes = parseDateOnly(b.window_closes);
-            if (!opens || !closes) continue;
-            out.push({
-              id: `bday-${b.lead_id}`,
-              title: `${b.full_name} birthday window`,
-              start: opens,
-              end: endOfAllDay(closes),
-              allDay: true,
-              color: COLORS.birthday,
-              resource: { kind: "birthday", ...b },
-            });
-          }
-        }
-
-        // CMS enrollment windows (AEP + OEP) — multi-day grey background
-        // bands so leadership always sees when the next window opens.
-        for (const w of nextWindowOccurrences(new Date())) {
-          out.push({
-            id: `agency-${w.name}-${w.start.toISOString().slice(0, 10)}`,
-            title: `${w.name} · ${w.name === "AEP"
-              ? "Annual Enrollment Period"
-              : "Open Enrollment Period"}`,
-            start: w.start,
-            end: endOfAllDay(w.end),
-            allDay: true,
-            color: COLORS.agencyEvent,
-            resource: { kind: "agency_event", window: w.name },
-          });
-        }
-
-        if (!alive) return;
-        setEvents(out);
-        if (
-          apptRes.status === "rejected" &&
-          renewalRes.status === "rejected" &&
-          birthdayRes.status === "rejected"
-        ) {
-          toast.error("Couldn't load any calendar data");
-        }
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [isAgencyView, me?.id]);
-
-  const eventPropGetter = useCallback((event) => {
+  function eventPropGetter(event) {
+    const active = event.appointment?.status === "scheduled";
     return {
       style: {
         backgroundColor: event.color,
-        border: "none",
+        borderColor: event.color,
+        opacity: active ? 1 : 0.55,
         color: "white",
-        borderRadius: 4,
-        fontSize: 12,
-        padding: "2px 6px",
       },
     };
-  }, []);
+  }
 
-  // On phones we lock to the month view — week/agenda are unreadable in
-  // the narrow column layout. Desktop keeps the full set.
-  const views = useMemo(
-    () => (isMobile ? ["month"] : ["month", "week", "agenda"]),
-    [isMobile],
-  );
+  function handleSelectSlot(slotInfo) {
+    setPrefillDate(slotInfo.start);
+    setPrefillTime(format(slotInfo.start, "HH:mm"));
+    setNewOpen(true);
+  }
 
-  // Re-clamp the active view if the viewport shrinks while user is on
-  // week / agenda so we don't end up rendering a hidden view.
-  useEffect(() => {
-    if (isMobile && view !== "month") {
-      setView("month");
-    }
-  }, [isMobile, view]);
+  function handleSelectEvent(event) {
+    setDetailAppt(event.appointment);
+    setDetailOpen(true);
+  }
+
+  function openNewBlank() {
+    setPrefillDate(null);
+    setPrefillTime("");
+    setNewOpen(true);
+  }
 
   return (
-    <div className="p-6 md:p-8">
-      <main className="max-w-[1400px] mx-auto w-full">
-        <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <CalendarDays className="w-4 h-4 text-[#e85d2f]" />
-              <p className="text-xs uppercase tracking-widest text-muted-foreground">
-                Schedule
-              </p>
-            </div>
-            <h1
-              className="text-2xl font-bold tracking-tight"
-              style={{ fontFamily: "Outfit" }}
-            >
-              Calendar
-            </h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              {isAgencyView
-                ? "Your appointments + agency-wide renewals, birthday windows, and CMS enrollment periods."
-                : "Appointments, renewals, and birthday windows in one view."}
-            </p>
-            <ImpersonationBanner />
-          </div>
-          <div className="flex flex-wrap items-center gap-4">
-            <LegendDot color={COLORS.appointment} label="Appointment" />
-            <LegendDot color={COLORS.renewal} label="Renewal" />
-            <LegendDot color={COLORS.birthday} label="Birthday window" />
-            <LegendDot color={COLORS.agencyEvent} label="AEP / OEP" />
-          </div>
+    <div className="min-h-full bg-secondary/30 py-6">
+      <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="mb-4">
+          <h1 className="text-2xl font-bold" style={{ fontFamily: "Outfit" }}>
+            Calendar
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Your scheduled appointments. Click a slot to book.
+          </p>
+          <ImpersonationBanner />
         </div>
 
-        {isAgencyView && (
-          <Card className="mb-4 border-l-4" style={{ borderLeftColor: COLORS.appointment }}>
-            <CardContent className="p-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="text-sm">
-                <span className="font-semibold">
-                  {todaySummary.count} appointment{todaySummary.count === 1 ? "" : "s"} today
-                </span>
-                {todaySummary.agentCount > 0 && (
-                  <span className="text-muted-foreground">
-                    {" "}across {todaySummary.agentCount} agent
-                    {todaySummary.agentCount === 1 ? "" : "s"}
-                  </span>
-                )}
-                <span className="text-muted-foreground"> · agency-wide</span>
-              </div>
-              <Button
-                asChild
-                size="sm"
-                variant="outline"
-                className="h-8 text-xs"
-              >
-                <Link to="/agency-dashboard">
-                  View in Command Center
-                  <ArrowUpRight className="w-3 h-3 ml-1" />
-                </Link>
-              </Button>
+        <div className="cal-layout">
+          <Card className="cal-main">
+            <CardContent className="p-3 sm:p-4">
+              <BigCalendar
+                localizer={localizer}
+                events={events}
+                date={date}
+                view={view}
+                onNavigate={setDate}
+                onView={setView}
+                views={[Views.MONTH, Views.WEEK, Views.DAY, Views.AGENDA]}
+                selectable
+                onSelectSlot={handleSelectSlot}
+                onSelectEvent={handleSelectEvent}
+                eventPropGetter={eventPropGetter}
+                startAccessor="start"
+                endAccessor="end"
+                step={30}
+                timeslots={2}
+                style={{ height: isMobile ? "70vh" : "75vh" }}
+                components={{
+                  toolbar: (tbProps) => (
+                    <CalendarToolbar
+                      {...tbProps}
+                      onNewAppointment={openNewBlank}
+                      isMobile={isMobile}
+                    />
+                  ),
+                }}
+              />
+              {loading && (
+                <div className="text-[11px] text-muted-foreground mt-2">
+                  Loading…
+                </div>
+              )}
             </CardContent>
           </Card>
-        )}
 
-        <Card className="bg-surface">
-          <CardContent className="p-3 md:p-4">
-            {loading && events.length === 0 ? (
-              <div className="h-[600px] rounded bg-secondary/40 animate-pulse" />
-            ) : (
-              <div className="ghw-calendar" style={{ height: "min(75vh, 720px)" }}>
-                <BigCalendar
-                  localizer={localizer}
-                  events={events}
-                  startAccessor="start"
-                  endAccessor="end"
-                  view={view}
-                  onView={setView}
-                  date={date}
-                  onNavigate={setDate}
-                  views={views}
-                  popup
-                  eventPropGetter={eventPropGetter}
-                  onSelectEvent={setSelected}
-                  messages={{
-                    today: "Today",
-                    previous: "Back",
-                    next: "Next",
-                    month: "Month",
-                    week: "Week",
-                    agenda: "Agenda",
-                    noEventsInRange: "No events in this range.",
-                  }}
-                />
-              </div>
-            )}
-          </CardContent>
-        </Card>
+          {!isMobile && (
+            <RightSidebar
+              appointments={appointments}
+              onPickAppointment={(a) => {
+                setDetailAppt(a);
+                setDetailOpen(true);
+              }}
+            />
+          )}
+        </div>
+      </div>
 
-        {events.length === 0 && !loading && (
-          <div className="mt-3 text-xs text-muted-foreground text-center">
-            No appointments, renewals, or birthday windows yet — add some
-            from the Today page or schedule a call from Appointments.
-          </div>
-        )}
-      </main>
+      <NewAppointmentSheet
+        open={newOpen}
+        onOpenChange={setNewOpen}
+        onCreated={load}
+        prefillDate={prefillDate}
+        prefillTime={prefillTime}
+      />
 
-      <EventDetailDialog event={selected} onClose={() => setSelected(null)} />
+      <AppointmentDetailSheet
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        appointment={detailAppt}
+        onChanged={load}
+      />
     </div>
   );
 }

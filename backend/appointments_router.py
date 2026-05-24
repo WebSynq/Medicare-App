@@ -546,15 +546,20 @@ async def create_appointment(
 @limiter.limit("60/hour")
 async def list_appointments(
     request: Request,
-    date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    date: Optional[str] = Query(None, description="YYYY-MM-DD (exact-day match)"),
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD (inclusive)"),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD (inclusive)"),
     status: Optional[AppointmentStatus] = Query(None),
     lead_id: Optional[str] = Query(None, max_length=128),
     limit: int = Query(200, ge=1, le=1000),
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """List the caller's appointments. Optional date / status / lead_id
-    filters narrow the result for the same scope; they cannot widen it."""
+    """List the caller's appointments. Optional date / start_date / end_date
+    / status / lead_id filters narrow the result for the same scope; they
+    cannot widen it. `date` (exact-day) takes precedence over the range
+    pair when both are supplied — kept that way so the existing single-day
+    callers (TodayPage, audit links) continue to work unchanged."""
     query: Dict[str, Any] = dict(agent_filter(current_user))
     if date:
         # Validate so a malformed query param doesn't blow up the cursor.
@@ -563,6 +568,21 @@ async def list_appointments(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         query["appointment_date"] = date
+    elif start_date or end_date:
+        range_filter: Dict[str, str] = {}
+        if start_date:
+            try:
+                _validate_date(start_date)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"start_date: {exc}")
+            range_filter["$gte"] = start_date
+        if end_date:
+            try:
+                _validate_date(end_date)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"end_date: {exc}")
+            range_filter["$lte"] = end_date
+        query["appointment_date"] = range_filter
     if status:
         query["status"] = status
     if lead_id:
