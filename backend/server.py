@@ -354,6 +354,10 @@ _CSRF_EXEMPT_PATHS = {
     "/api/applications",
     "/api/documents",
     "/api/ghl",
+    # Agent feedback — JWT-authenticated POST, no IDOR surface (a forged
+    # cross-site POST without the JWT can't impersonate the agent). Fans
+    # out to the GHL feedback workflow + writes an audit row regardless.
+    "/api/feedback",
     # Dashboard + calculator + compliance read/write endpoints added
     # in recent commits. CSRF only fires on state-changing verbs (POST /
     # PATCH / DELETE / PUT), so the GETs in this group are a no-op

@@ -22,8 +22,11 @@ import {
  * feedback workflow and writes an audit row regardless of outcome).
  *
  * Positioning notes:
- *  - Desktop: bottom-right (`bottom-6 right-6`).
- *  - Mobile: lifted above the persistent MobileTabBar (`bottom-20 right-4`).
+ *  - Desktop: bottom-right, lifted ABOVE the ChatWidget FAB
+ *    (`md:bottom-24 md:right-6`). ChatWidget anchors at bottom-5 — we
+ *    clear it with a ~20px gap.
+ *  - Mobile: lifted further so it clears both the ChatWidget bubble
+ *    AND the persistent MobileTabBar (`bottom-28 right-4`).
  */
 export default function FeedbackButton() {
   const location = useLocation();
@@ -67,8 +70,8 @@ export default function FeedbackButton() {
         data-testid="feedback-button"
         aria-label="Send feedback"
         className="fixed z-50 rounded-full shadow-lg elev-2 px-4 h-12
-                   bottom-20 right-4
-                   md:bottom-6 md:right-6"
+                   bottom-28 right-4
+                   md:bottom-24 md:right-6"
         style={{ backgroundColor: "#e85d2f" }}
       >
         <MessageSquare className="w-4 h-4 mr-2" />
