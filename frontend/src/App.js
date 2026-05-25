@@ -9,6 +9,7 @@ import Register from "@/pages/Register";
 import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
 import SOAForm from "@/pages/SOAForm";
+import BookingPage from "@/pages/BookingPage";
 import MagicLinkVerify from "@/pages/MagicLinkVerify";
 import AgentDashboard from "@/pages/AgentDashboard";
 import TodayPage from "@/pages/TodayPage";
@@ -93,6 +94,9 @@ export default function App() {
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/soa/:token" element={<SOAForm />} />
+        {/* Public client-facing booking page. NO auth wrapper, NO
+            AppLayout — designed for 65+ users hitting the link cold. */}
+        <Route path="/book/:slug" element={<BookingPage />} />
         <Route path="/privacy" element={<PrivacyPolicy />} />
         <Route path="/security" element={<SecurityPage />} />
         {/* Magic-link verification — public route. Reads ?token from

@@ -114,6 +114,14 @@ class AppointmentCreate(BaseModel):
     type: AppointmentType = "initial_consultation"
     notes: Optional[str] = Field(None, max_length=500)
     estimated_commission: Optional[float] = Field(None, ge=0)
+    # Booking-flow extensions. Optional here so the existing agent-
+    # facing POST /api/appointments still works without them. The
+    # public POST /api/book/{slug} always stamps meeting_type +
+    # booking_reason + client_email so reminders / followups know how
+    # to reach the client.
+    meeting_type: Optional[Literal["phone", "video"]] = None
+    booking_reason: Optional[str] = Field(None, max_length=200)
+    client_email: Optional[str] = Field(None, max_length=320)
 
     @field_validator("appointment_date")
     @classmethod
@@ -141,6 +149,25 @@ class AppointmentUpdate(BaseModel):
     status: Optional[AppointmentStatus] = None
     notes: Optional[str] = Field(None, max_length=500)
     outcome: Optional[str] = Field(None, max_length=500)
+    # Booking + automation flags. The automation scheduler PATCHes its
+    # own reminder/followup flags to True after a send so the same row
+    # never fires twice. Title / appointment_date / duration / meeting_type
+    # are agent-editable from the appointment detail UI.
+    title: Optional[str] = Field(None, max_length=200)
+    appointment_date: Optional[str] = None
+    duration_minutes: Optional[int] = Field(None, ge=5, le=480)
+    meeting_type: Optional[Literal["phone", "video"]] = None
+    reminder_48hr_sent: Optional[bool] = None
+    reminder_24hr_sent: Optional[bool] = None
+    reminder_1hr_sent: Optional[bool] = None
+    followup_sent: Optional[bool] = None
+
+    @field_validator("appointment_date")
+    @classmethod
+    def _v_date(cls, v):
+        if v is None:
+            return v
+        return _validate_date(v)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -509,6 +536,18 @@ async def create_appointment(
         "notes": (body.notes or "").strip() or None,
         "outcome": None,
         "estimated_commission": estimated_commission,
+        # Booking-flow extensions — None when an agent created the row
+        # directly without using the public booking page.
+        "meeting_type": body.meeting_type,
+        "booking_reason": body.booking_reason,
+        "client_email": body.client_email,
+        "booked_by_client": False,
+        # Automation send-flags. Stamped at create so the automation
+        # scheduler can update them atomically without an upsert.
+        "reminder_48hr_sent": False,
+        "reminder_24hr_sent": False,
+        "reminder_1hr_sent": False,
+        "followup_sent": False,
         # Passive multi-tenant stamp — single-tenant today, future-proof.
         "agency_id": get_agency_id(),
         "created_at": now_iso,
@@ -784,6 +823,13 @@ async def update_appointment(
         updates["notes"] = (sent["notes"] or "").strip() or None
     if "outcome" in sent:
         updates["outcome"] = (sent["outcome"] or "").strip() or None
+    # Booking + automation field passthrough. Bool flags accept False
+    # explicitly (re-arming a reminder for a rescheduled appointment).
+    for f in ("title", "appointment_date", "duration_minutes",
+              "meeting_type", "reminder_48hr_sent", "reminder_24hr_sent",
+              "reminder_1hr_sent", "followup_sent"):
+        if f in sent:
+            updates[f] = sent[f]
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     await db.appointments.update_one(

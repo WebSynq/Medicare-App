@@ -35,6 +35,36 @@ def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ----- Booking page configuration (per-agent) -----
+class BookingSettings(BaseModel):
+    """Per-agent public booking page configuration.
+
+    Lives inline on the user document under ``booking_settings``. The
+    slug is the URL-segment ("/book/<slug>") and must be unique across
+    the agency — the profile router enforces uniqueness on PATCH.
+    """
+    is_enabled: bool = False
+    slug: Optional[str] = None
+    bio: Optional[str] = None
+    meeting_types: List[str] = ["phone", "video"]
+    phone_number: Optional[str] = None
+    video_link: Optional[str] = None
+    appointment_duration: int = 30
+    buffer_minutes: int = 15
+    max_per_day: int = 10
+    advance_notice_hours: int = 24
+    booking_window_days: int = 60
+    working_hours: dict = Field(default_factory=lambda: {
+        "monday":    {"enabled": True,  "start": "09:00", "end": "17:00"},
+        "tuesday":   {"enabled": True,  "start": "09:00", "end": "17:00"},
+        "wednesday": {"enabled": True,  "start": "09:00", "end": "17:00"},
+        "thursday":  {"enabled": True,  "start": "09:00", "end": "17:00"},
+        "friday":    {"enabled": True,  "start": "09:00", "end": "17:00"},
+        "saturday":  {"enabled": False, "start": "09:00", "end": "12:00"},
+        "sunday":    {"enabled": False, "start": "09:00", "end": "12:00"},
+    })
+
+
 # ----- Users -----
 UserStatus = Literal["pending", "active", "rejected"]
 
@@ -102,6 +132,10 @@ class UserBase(BaseModel):
     last_failed_at: Optional[str] = None
     locked_until: Optional[str] = None
     token_version: int = 0
+    # Public booking page configuration. None until the agent enables
+    # the booking page from Settings → Booking. See profile_router's
+    # PATCH /profile/booking-settings for the write surface.
+    booking_settings: Optional[BookingSettings] = None
 
     @field_validator("agent_name")
     @classmethod

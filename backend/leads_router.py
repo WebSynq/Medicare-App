@@ -327,6 +327,15 @@ async def create_lead(
         db, fresh, effective, request,
     )
 
+    # Fire the new-lead agent notification. Best-effort: failures must
+    # not surface to the intake response. The automation stamps
+    # `new_lead_notified=True` so a re-fire (e.g. retry) is a no-op.
+    try:
+        from automations import run_new_lead_notification
+        await run_new_lead_notification(db, lead.id)
+    except Exception as e:
+        logger.warning("new-lead notification failed for %s: %s", lead.id, e)
+
     # Speed-to-lead SMS. Only fires when:
     #   - TCPA consent is on file (federal requirement),
     #   - the lead has a phone number,

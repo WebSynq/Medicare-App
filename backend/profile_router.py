@@ -29,6 +29,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, EmailStr, Field
 
 from deps import get_current_user, get_db, get_frontend_url, require_roles, write_audit
+from models import BookingSettings
 from security import (
     hash_password,
     verify_password,
@@ -60,6 +61,7 @@ def _profile_dict(user: dict) -> dict:
         "status": user.get("status", "active"),
         "agency_name": user.get("agency_name"),
         "created_at": user.get("created_at"),
+        "booking_settings": user.get("booking_settings"),
     }
 
 
@@ -653,3 +655,124 @@ async def reset_password(
         metadata={"via": "reset_link"},
     )
     return {"message": "Password updated"}
+
+
+# ── Booking settings ─────────────────────────────────────────────────────
+# Per-agent booking page configuration. The full BookingSettings model
+# lives in models.py — the patch payload below mirrors it but every
+# field is Optional so the SPA can send just the diff.
+
+import re as _re_booking
+
+
+_SLUG_FALLBACK_RE = _re_booking.compile(r"[^a-z0-9]+")
+
+
+def _slugify(value: str) -> str:
+    """'Tim Arnold' → 'tim-arnold'. Lowercase, hyphenate, trim hyphens.
+
+    Falls back to 'agent' when normalization wipes everything (e.g. a
+    full_name made entirely of punctuation). The collision-avoidance
+    loop in the endpoint handles uniqueness.
+    """
+    if not value:
+        return "agent"
+    s = _SLUG_FALLBACK_RE.sub("-", value.strip().lower()).strip("-")
+    return s or "agent"
+
+
+async def _unique_slug(db, base: str, current_user_id: str) -> str:
+    """Append -2, -3, … until the slug is unique across users.
+
+    Excludes the calling user from the collision check so re-saving
+    the same row doesn't bump the slug. Caps at 50 candidates to keep
+    a degenerate pathological state (full_name = "Bob" with 49 Bobs
+    in the agency) from looping forever — fallback after that adds a
+    random hex suffix.
+    """
+    candidate = base
+    for n in range(2, 51):
+        existing = await db.users.find_one(
+            {
+                "booking_settings.slug": candidate,
+                "id": {"$ne": current_user_id},
+            },
+            {"_id": 0, "id": 1},
+        )
+        if not existing:
+            return candidate
+        candidate = f"{base}-{n}"
+    import secrets as _secrets
+    return f"{base}-{_secrets.token_hex(3)}"
+
+
+class BookingSettingsPatch(BaseModel):
+    is_enabled: Optional[bool] = None
+    bio: Optional[str] = Field(None, max_length=1000)
+    meeting_types: Optional[list] = None
+    phone_number: Optional[str] = Field(None, max_length=40)
+    video_link: Optional[str] = Field(None, max_length=500)
+    appointment_duration: Optional[int] = Field(None, ge=15, le=240)
+    buffer_minutes: Optional[int] = Field(None, ge=0, le=120)
+    max_per_day: Optional[int] = Field(None, ge=1, le=50)
+    advance_notice_hours: Optional[int] = Field(None, ge=0, le=720)
+    booking_window_days: Optional[int] = Field(None, ge=1, le=365)
+    working_hours: Optional[dict] = None
+
+
+@router.patch("/profile/booking-settings")
+async def update_booking_settings(
+    payload: BookingSettingsPatch,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Update the caller's booking_settings.
+
+    First call auto-generates a slug from `full_name` (falling back to
+    `email`'s local part) and ensures uniqueness across the agency.
+    Subsequent calls preserve the existing slug — agents who want to
+    rename a slug should ask an admin to rebuild it (we don't expose a
+    rename endpoint because outstanding booking links would 404).
+    """
+    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    if not fresh:
+        raise HTTPException(404, "User not found")
+
+    sent = payload.model_dump(exclude_unset=True)
+    existing_bs = fresh.get("booking_settings") or {}
+
+    # Build the merged BookingSettings dict — start from existing,
+    # overlay sent values. Validate by round-tripping through the
+    # Pydantic model so a malformed working_hours dict fails clearly.
+    merged = {**BookingSettings().model_dump(), **existing_bs, **sent}
+
+    # Slug — set once, preserved forever (rename requires admin work).
+    if not merged.get("slug"):
+        seed = fresh.get("full_name") or (fresh.get("email") or "").split("@")[0]
+        base = _slugify(seed)
+        merged["slug"] = await _unique_slug(db, base, fresh["id"])
+
+    # Validate (raises 422 from FastAPI on malformed shapes).
+    validated = BookingSettings(**merged).model_dump()
+
+    await db.users.update_one(
+        {"id": fresh["id"]},
+        {"$set": {"booking_settings": validated,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await write_audit(
+        db, "booking_settings_updated",
+        actor_email=fresh.get("email"),
+        actor_id=fresh.get("id"),
+        target_type="user", target_id=fresh["id"],
+        request=request,
+        metadata={"fields_changed": list(sent.keys()),
+                  "slug": validated.get("slug"),
+                  "is_enabled": validated.get("is_enabled")},
+    )
+
+    updated = await db.users.find_one({"id": fresh["id"]}, {"_id": 0})
+    profile = _profile_dict(updated)
+    profile["booking_settings"] = updated.get("booking_settings")
+    return profile

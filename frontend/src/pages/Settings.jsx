@@ -2078,6 +2078,9 @@ export default function Settings() {
             <TabsTrigger value="security" data-testid="tab-security">
               Security
             </TabsTrigger>
+            <TabsTrigger value="booking" data-testid="tab-booking">
+              Booking Page
+            </TabsTrigger>
             {canSeeAudit && (
               <TabsTrigger value="audit" data-testid="tab-audit">
                 Audit Log
@@ -2108,6 +2111,9 @@ export default function Settings() {
           </TabsContent>
           <TabsContent value="security" className="mt-4">
             <SecurityTab />
+          </TabsContent>
+          <TabsContent value="booking" className="mt-4">
+            <BookingTab me={me} refresh={applyPatched} />
           </TabsContent>
           <TabsContent value="audit" className="mt-4">
             {canSeeAudit && <AuditLogTab me={me} />}
@@ -2510,5 +2516,350 @@ function ComplianceStat({ label, value, tone }) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+
+// ── Booking Page tab ──────────────────────────────────────────────────────
+// Per-agent booking page configuration. Saves via PATCH /api/profile/
+// booking-settings — the backend auto-generates the slug from full_name
+// on the first save and ensures uniqueness across the agency. The slug
+// is preserved on subsequent saves (renaming would break outstanding
+// booking links — admin task, not self-serve).
+
+const _BOOKING_DEFAULTS = {
+  is_enabled: false,
+  slug: null,
+  bio: "",
+  meeting_types: ["phone", "video"],
+  phone_number: "",
+  video_link: "",
+  appointment_duration: 30,
+  buffer_minutes: 15,
+  max_per_day: 10,
+  advance_notice_hours: 24,
+  booking_window_days: 60,
+  working_hours: {
+    monday:    { enabled: true,  start: "09:00", end: "17:00" },
+    tuesday:   { enabled: true,  start: "09:00", end: "17:00" },
+    wednesday: { enabled: true,  start: "09:00", end: "17:00" },
+    thursday:  { enabled: true,  start: "09:00", end: "17:00" },
+    friday:    { enabled: true,  start: "09:00", end: "17:00" },
+    saturday:  { enabled: false, start: "09:00", end: "12:00" },
+    sunday:    { enabled: false, start: "09:00", end: "12:00" },
+  },
+};
+
+const _WEEKDAYS = [
+  "monday", "tuesday", "wednesday", "thursday",
+  "friday", "saturday", "sunday",
+];
+
+function _timeOptions() {
+  const out = [];
+  for (let h = 6; h <= 21; h++) {
+    for (const m of [0, 30]) {
+      const hh = String(h).padStart(2, "0");
+      const mm = String(m).padStart(2, "0");
+      out.push(`${hh}:${mm}`);
+    }
+  }
+  return out;
+}
+const TIME_OPTIONS = _timeOptions();
+
+function BookingTab({ me, refresh }) {
+  const initial = useMemo(() => {
+    const bs = me?.booking_settings || {};
+    return {
+      ..._BOOKING_DEFAULTS,
+      ...bs,
+      working_hours: {
+        ..._BOOKING_DEFAULTS.working_hours,
+        ...(bs.working_hours || {}),
+      },
+    };
+  }, [me]);
+
+  const [form, setForm] = useState(initial);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setForm(initial);
+  }, [initial]);
+
+  function set(k, v) {
+    setForm((f) => ({ ...f, [k]: v }));
+  }
+  function setHours(day, patch) {
+    setForm((f) => ({
+      ...f,
+      working_hours: {
+        ...f.working_hours,
+        [day]: { ...f.working_hours[day], ...patch },
+      },
+    }));
+  }
+  function toggleMeetingType(t) {
+    setForm((f) => {
+      const has = (f.meeting_types || []).includes(t);
+      const next = has
+        ? f.meeting_types.filter((x) => x !== t)
+        : [...(f.meeting_types || []), t];
+      // Don't allow an empty list — keep at least one option on.
+      return { ...f, meeting_types: next.length ? next : f.meeting_types };
+    });
+  }
+
+  async function save() {
+    setSaving(true);
+    try {
+      const payload = {
+        is_enabled: !!form.is_enabled,
+        bio: form.bio || "",
+        meeting_types: form.meeting_types || ["phone"],
+        phone_number: form.phone_number || "",
+        video_link: form.video_link || "",
+        appointment_duration: parseInt(form.appointment_duration, 10) || 30,
+        buffer_minutes: parseInt(form.buffer_minutes, 10) || 0,
+        max_per_day: parseInt(form.max_per_day, 10) || 10,
+        advance_notice_hours: parseInt(form.advance_notice_hours, 10) || 24,
+        booking_window_days: parseInt(form.booking_window_days, 10) || 60,
+        working_hours: form.working_hours,
+      };
+      const { data } = await api.patch(
+        "/profile/booking-settings", payload,
+      );
+      if (refresh) refresh(data);
+      if (data?.booking_settings) {
+        setForm((f) => ({ ...f, ...data.booking_settings }));
+      }
+      toast.success("Booking page saved");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const liveLink = form.slug
+    ? `${window.location.origin}/book/${form.slug}`
+    : null;
+
+  async function copyLink() {
+    if (!liveLink) return;
+    try {
+      await navigator.clipboard.writeText(liveLink);
+      toast.success("Booking link copied");
+    } catch {
+      toast.error("Couldn't copy — select the link manually.");
+    }
+  }
+
+  return (
+    <div className="space-y-4" data-testid="booking-tab">
+      <Card>
+        <CardContent className="p-5 space-y-4">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <h3 className="text-sm font-semibold">Public booking page</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Share a link clients can use to book time on your calendar
+                — no portal login required for them.
+              </p>
+            </div>
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox"
+                     checked={!!form.is_enabled}
+                     onChange={(e) => set("is_enabled", e.target.checked)}
+                     data-testid="booking-enable-toggle" />
+              <span>{form.is_enabled ? "Enabled" : "Disabled"}</span>
+            </label>
+          </div>
+
+          {form.is_enabled && form.slug && (
+            <div className="rounded-md border border-border bg-secondary/30 p-3 flex items-center justify-between gap-3 flex-wrap">
+              <div className="min-w-0">
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  Your booking link
+                </div>
+                <div className="font-mono text-sm break-all" data-testid="booking-live-link">
+                  {liveLink}
+                </div>
+              </div>
+              <Button size="sm" variant="outline" onClick={copyLink}
+                       data-testid="booking-copy-link">
+                Copy Link
+              </Button>
+            </div>
+          )}
+          {form.is_enabled && !form.slug && (
+            <p className="text-xs text-amber-700">
+              Save to generate your booking link.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-5 space-y-3">
+          <h3 className="text-sm font-semibold">Profile shown to clients</h3>
+          <div>
+            <Label className="text-xs">Bio</Label>
+            <Textarea rows={4}
+                       value={form.bio || ""}
+                       onChange={(e) => set("bio", e.target.value)}
+                       maxLength={1000}
+                       data-testid="booking-bio" />
+          </div>
+          <div className="grid md:grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Phone (for phone calls)</Label>
+              <Input value={form.phone_number || ""}
+                      onChange={(e) => set("phone_number", e.target.value)}
+                      data-testid="booking-phone" />
+            </div>
+            <div>
+              <Label className="text-xs">Video link (Zoom / Meet / Teams)</Label>
+              <Input value={form.video_link || ""}
+                      onChange={(e) => set("video_link", e.target.value)}
+                      data-testid="booking-video-link" />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-5 space-y-3">
+          <h3 className="text-sm font-semibold">Appointment defaults</h3>
+          <div className="grid md:grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Meeting types offered</Label>
+              <div className="flex gap-4 mt-2">
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input type="checkbox"
+                         checked={(form.meeting_types || []).includes("phone")}
+                         onChange={() => toggleMeetingType("phone")}
+                         data-testid="booking-mtype-phone" />
+                  Phone Call
+                </label>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input type="checkbox"
+                         checked={(form.meeting_types || []).includes("video")}
+                         onChange={() => toggleMeetingType("video")}
+                         data-testid="booking-mtype-video" />
+                  Video Call
+                </label>
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Appointment duration</Label>
+              <select
+                value={form.appointment_duration || 30}
+                onChange={(e) => set("appointment_duration", parseInt(e.target.value, 10))}
+                className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
+                data-testid="booking-duration">
+                <option value={30}>30 minutes</option>
+                <option value={45}>45 minutes</option>
+                <option value={60}>60 minutes</option>
+              </select>
+            </div>
+            <div>
+              <Label className="text-xs">Buffer between appointments</Label>
+              <select
+                value={form.buffer_minutes ?? 15}
+                onChange={(e) => set("buffer_minutes", parseInt(e.target.value, 10))}
+                className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
+                data-testid="booking-buffer">
+                <option value={0}>None</option>
+                <option value={15}>15 minutes</option>
+                <option value={30}>30 minutes</option>
+              </select>
+            </div>
+            <div>
+              <Label className="text-xs">Max bookings per day</Label>
+              <Input type="number" min={1} max={20}
+                      value={form.max_per_day || 10}
+                      onChange={(e) => set("max_per_day", parseInt(e.target.value, 10) || 1)}
+                      data-testid="booking-max-per-day" />
+            </div>
+            <div>
+              <Label className="text-xs">Advance notice required</Label>
+              <select
+                value={form.advance_notice_hours ?? 24}
+                onChange={(e) => set("advance_notice_hours", parseInt(e.target.value, 10))}
+                className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
+                data-testid="booking-advance">
+                <option value={0}>Same day</option>
+                <option value={24}>24 hours</option>
+                <option value={48}>48 hours</option>
+              </select>
+            </div>
+            <div>
+              <Label className="text-xs">How far ahead clients can book</Label>
+              <select
+                value={form.booking_window_days || 60}
+                onChange={(e) => set("booking_window_days", parseInt(e.target.value, 10))}
+                className="w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
+                data-testid="booking-window">
+                <option value={14}>2 weeks</option>
+                <option value={30}>1 month</option>
+                <option value={60}>2 months</option>
+                <option value={90}>3 months</option>
+              </select>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-5 space-y-2">
+          <h3 className="text-sm font-semibold">Working hours</h3>
+          <p className="text-xs text-muted-foreground mb-2">
+            Slots only appear on enabled days during the hours below.
+          </p>
+          <div className="space-y-2">
+            {_WEEKDAYS.map((day) => {
+              const row = form.working_hours[day] || {};
+              return (
+                <div key={day} className="grid grid-cols-[120px_60px_1fr_1fr] gap-2 items-center"
+                     data-testid={`booking-day-${day}`}>
+                  <div className="text-sm capitalize">{day}</div>
+                  <label className="flex items-center gap-1 text-xs cursor-pointer">
+                    <input type="checkbox" checked={!!row.enabled}
+                           onChange={(e) => setHours(day, { enabled: e.target.checked })}
+                           data-testid={`booking-day-${day}-enabled`} />
+                    On
+                  </label>
+                  <select
+                    value={row.start || "09:00"}
+                    onChange={(e) => setHours(day, { start: e.target.value })}
+                    disabled={!row.enabled}
+                    className="h-8 rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
+                    data-testid={`booking-day-${day}-start`}>
+                    {TIME_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <select
+                    value={row.end || "17:00"}
+                    onChange={(e) => setHours(day, { end: e.target.value })}
+                    disabled={!row.enabled}
+                    className="h-8 rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
+                    data-testid={`booking-day-${day}-end`}>
+                    {TIME_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="flex justify-end">
+        <Button onClick={save} disabled={saving}
+                 data-testid="booking-save">
+          {saving ? "Saving…" : "Save booking page"}
+        </Button>
+      </div>
+    </div>
   );
 }

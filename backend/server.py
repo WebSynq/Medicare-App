@@ -57,6 +57,9 @@ from search_router import router as search_router  # noqa: E402
 from notifications_router import router as notifications_router  # noqa: E402
 from agency_dashboard_router import router as agency_dashboard_router  # noqa: E402
 from tags_router import router as tags_router, seed_tag_library  # noqa: E402
+from booking_router import router as booking_router  # noqa: E402
+import email_templates  # noqa: E402,F401 — ensure clean import
+from automations import start_automation_scheduler  # noqa: E402
 from feedback_router import router as feedback_router  # noqa: E402
 from calendar_router import router as calendar_router, ics_router as calendar_ics_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
@@ -183,6 +186,7 @@ app.include_router(search_router, prefix="/api")
 app.include_router(notifications_router, prefix="/api")
 app.include_router(agency_dashboard_router, prefix="/api")
 app.include_router(tags_router, prefix="/api")
+app.include_router(booking_router, prefix="/api")
 # feedback_router declares its own /api/feedback prefix — no prefix here.
 app.include_router(feedback_router)
 # calendar_router declares /api/calendar; ics_router declares /api/appointments
@@ -431,6 +435,10 @@ _CSRF_EXEMPT_PREFIXES = (
     # Public SOA e-sign — single-use token in the URL is the auth
     # substitute; no browser session involved.
     "/api/soa/public/",
+    # Public booking page — no JWT, no CSRF cookie. The HMAC token
+    # the booking router issues + honeypot + IP-based abuse limits
+    # are the security substitutes. See booking_router.py module docs.
+    "/api/book/",
     # Agency command center — admin-only GETs, but cover the prefix in
     # case we add stat-export POSTs later.
     "/api/agency/",
@@ -737,6 +745,38 @@ _PROD_INDEXES = [
     ("magic_link_tokens", "user_id", {"background": True}),
     ("magic_link_tokens", "expires_at",
      {"background": True, "expireAfterSeconds": 3600}),
+
+    # Booking + automation indexes (Phase 1 build).
+    # Appointment send-flag indexes — sparse so only the rows the
+    # automation scheduler hasn't stamped True yet show up. Once an
+    # appointment is reminded/followed-up it's effectively invisible
+    # to subsequent ticks, which keeps the scan tight as volume grows.
+    ("appointments", "reminder_48hr_sent", {"background": True}),
+    ("appointments", "reminder_24hr_sent", {"background": True}),
+    ("appointments", "reminder_1hr_sent",  {"background": True}),
+    ("appointments", "followup_sent",      {"background": True}),
+    # Public booking slug lookup — sparse because most users will
+    # never enable a booking page. Single-field is enough; the
+    # /book/{slug} lookup is a point read.
+    ("users", "booking_settings.slug",     {"background": True, "sparse": True}),
+    # Lead automation flags — sparse so the scheduler's scan only
+    # touches leads that haven't been emailed yet.
+    ("leads", "birthday_email_sent",       {"background": True, "sparse": True}),
+    ("leads", "enrolled_welcome_sent",     {"background": True, "sparse": True}),
+    ("leads", "stale_alert_sent",          {"background": True, "sparse": True}),
+    ("leads", "new_lead_notified",         {"background": True, "sparse": True}),
+    # booking_attempts — abuse tracking. TTL evicts rows after 30 days
+    # so the collection stays bounded. ip index supports the per-IP
+    # failure-count query inside _maybe_block_ip.
+    ("booking_attempts", "ip", {"background": True}),
+    ("booking_attempts", "created_at",
+     {"background": True, "expireAfterSeconds": 2592000}),
+    # booking_blocks — one row per blocked IP. unique=True so the
+    # upsert in _maybe_block_ip can't double-insert. TTL on expires_at
+    # auto-clears blocks at the 24-hour mark.
+    ("booking_blocks", "ip", {"background": True, "unique": True}),
+    ("booking_blocks", "expires_at",
+     {"background": True, "expireAfterSeconds": 0}),
 ]
 
 
@@ -915,6 +955,11 @@ async def on_startup():
     # and writes pre-aggregated counts to db.dashboard_stats.
     from dashboard_aggregator import start_scheduler as start_dashboard_scheduler
     app.state.dashboard_scheduler = start_dashboard_scheduler(get_phi_db)
+    # Booking + lead automation scheduler — fires reminders, birthday
+    # window, enrolled welcome, stale lead alerts, and post-appointment
+    # follow-ups every 15 minutes. Reads + writes leads + appointments
+    # (both PHI client) and writes audit rows + automation flags.
+    app.state.automation_scheduler = start_automation_scheduler(get_phi_db)
 
 
 @app.on_event("shutdown")
