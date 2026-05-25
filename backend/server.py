@@ -273,7 +273,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                      "accelerometer=(), camera=(), geolocation=(), gyroscope=(), "
                      "magnetometer=(), microphone=(), payment=(), usb=()")
         h.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-        h.setdefault("Cross-Origin-Resource-Policy", "same-site")
+        h.setdefault("Cross-Origin-Resource-Policy", "cross-origin")
         # CSP for a JSON API: deny everything by default — there is no HTML to render.
         h.setdefault("Content-Security-Policy",
                      "default-src 'none'; frame-ancestors 'none'")
