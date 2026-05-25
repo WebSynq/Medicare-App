@@ -26,10 +26,19 @@ import axios from "axios";
 
 // Brand
 const FOREST = "#1B4332";
+const FOREST_DEEP = "#163829";
 const COPPER = "#B5451B";
 const CREAM = "#FAFAF5";
 const CHARCOAL = "#1F2937";
 const MUTED = "#6B7280";
+const LIGHT_GREEN = "#D8F3DC";
+const BORDER = "#E5E7EB";
+const WHITE = "#FFFFFF";
+const SOFT_GRAY = "#F3F4F6";
+const DISABLED_TEXT = "#D1D5DB";
+
+const SERIF = `Georgia, "Times New Roman", "Iowan Old Style", serif`;
+const SANS = `-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif`;
 
 const BOOKING_REASONS = [
   "New to Medicare",
@@ -99,8 +108,90 @@ function gcalUrl({ summary, details, startIso, endIso }) {
   return `https://calendar.google.com/calendar/render?${params}`;
 }
 
+// Inject a tiny stylesheet for things inline styles can't reach:
+// keyframes, hover/focus/active pseudo-classes, and a couple of
+// mobile media queries. Idempotent — guards against StrictMode
+// double-mount duplicating the <style> node.
+function useInjectedStyles() {
+  useEffect(() => {
+    const ID = "ghw-booking-styles";
+    if (document.getElementById(ID)) return;
+    const style = document.createElement("style");
+    style.id = ID;
+    style.textContent = `
+      @keyframes ghw-shimmer {
+        0%   { background-position: -240px 0; }
+        100% { background-position: 240px 0; }
+      }
+      .ghw-shimmer {
+        background: linear-gradient(90deg,
+          ${SOFT_GRAY} 0%, #E9EBEE 50%, ${SOFT_GRAY} 100%);
+        background-size: 480px 100%;
+        animation: ghw-shimmer 1.2s infinite linear;
+        border-radius: 8px;
+      }
+      .ghw-input:focus, .ghw-select:focus, .ghw-textarea:focus {
+        outline: none;
+        border-color: ${FOREST};
+        box-shadow: 0 0 0 3px rgba(27,67,50,0.15);
+      }
+      .ghw-day:not(:disabled):hover {
+        background: ${LIGHT_GREEN} !important;
+        color: ${FOREST} !important;
+        border-color: ${FOREST} !important;
+      }
+      .ghw-time:not(:disabled):hover {
+        background: ${LIGHT_GREEN};
+        border-color: ${FOREST};
+      }
+      .ghw-mtype:not([data-sel="1"]):hover {
+        border-color: ${FOREST};
+        box-shadow: 0 6px 18px rgba(27,67,50,0.10);
+        transform: translateY(-1px);
+      }
+      .ghw-primary:not(:disabled):hover {
+        background: ${FOREST_DEEP} !important;
+      }
+      .ghw-cta-outline:hover {
+        background: ${COPPER};
+        color: ${WHITE} !important;
+      }
+      .ghw-month-nav:hover {
+        color: ${COPPER};
+      }
+      .ghw-back:hover {
+        text-decoration: underline;
+      }
+      .ghw-spinner {
+        display: inline-block;
+        width: 14px; height: 14px;
+        border: 2px solid rgba(255,255,255,0.35);
+        border-top-color: ${WHITE};
+        border-radius: 50%;
+        animation: ghw-shimmer-spin 0.7s linear infinite;
+        vertical-align: -2px;
+        margin-right: 8px;
+      }
+      @keyframes ghw-shimmer-spin {
+        to { transform: rotate(360deg); }
+      }
+      @media (max-width: 480px) {
+        .ghw-mtype-row { flex-direction: column !important; }
+        .ghw-times-grid {
+          grid-template-columns: repeat(2, 1fr) !important;
+        }
+        .ghw-form-row { grid-template-columns: 1fr !important; }
+        .ghw-h1 { font-size: 26px !important; }
+        .ghw-day { min-height: 38px !important; min-width: 38px !important; }
+      }
+    `;
+    document.head.appendChild(style);
+  }, []);
+}
+
 export default function BookingPage() {
   const { slug } = useParams();
+  useInjectedStyles();
 
   // Server data
   const [info, setInfo] = useState(null);
@@ -305,14 +396,10 @@ export default function BookingPage() {
   if (infoError) {
     return (
       <PageShell>
-        <div style={{
-          background: "#fff", padding: 32, borderRadius: 10,
-          border: `1px solid #eee`, textAlign: "center",
-        }}>
-          <h1 style={{ color: FOREST, fontSize: 22, margin: "0 0 8px 0" }}>
-            Booking page unavailable
-          </h1>
-          <p style={{ color: MUTED, margin: 0 }}>{infoError}</p>
+        <div style={styles.errorCard}>
+          <div style={styles.errorIcon} aria-hidden="true">!</div>
+          <h1 style={styles.errorTitle}>Booking page unavailable</h1>
+          <p style={styles.errorMessage}>{infoError}</p>
         </div>
       </PageShell>
     );
@@ -322,8 +409,10 @@ export default function BookingPage() {
   if (!info) {
     return (
       <PageShell>
-        <div style={{ textAlign: "center", padding: 40, color: MUTED }}>
-          Loading…
+        <div style={styles.loadingWrap}>
+          <div style={{ ...styles.shimmerLine, width: "60%", height: 24, marginBottom: 14 }} className="ghw-shimmer" />
+          <div style={{ ...styles.shimmerLine, width: "90%", height: 14, marginBottom: 8 }} className="ghw-shimmer" />
+          <div style={{ ...styles.shimmerLine, width: "80%", height: 14 }} className="ghw-shimmer" />
         </div>
       </PageShell>
     );
@@ -344,31 +433,32 @@ export default function BookingPage() {
   // ── Render: 3-step wizard ─────────────────────────────────────────
   return (
     <PageShell>
-      <header style={{ marginBottom: 20 }}>
-        <div style={{ color: COPPER, fontSize: 11, letterSpacing: 1.2,
-                       textTransform: "uppercase", marginBottom: 6 }}>
+      <header style={{ marginBottom: 28 }}>
+        <div style={styles.tinyEyebrowForest}>
+          Gruening Health &amp; Wealth
+        </div>
+        <div style={styles.tinyEyebrowCopper}>
           Schedule a Medicare conversation
         </div>
-        <h1 style={{ margin: 0, color: FOREST, fontSize: 26, lineHeight: 1.2 }}
-            data-testid="booking-agent-name">
+        <h1
+          className="ghw-h1"
+          style={styles.h1}
+          data-testid="booking-agent-name"
+        >
           Book time with {info.agent_name}
         </h1>
-        {info.bio && (
-          <p style={{ color: CHARCOAL, marginTop: 8, fontSize: 15,
-                       lineHeight: 1.55 }}>
-            {info.bio}
-          </p>
-        )}
-        <p style={{ color: MUTED, marginTop: 10, fontSize: 13 }}>
-          Appointments are {info.appointment_duration} minutes.
-        </p>
+        {info.bio && <p style={styles.bio}>{info.bio}</p>}
+        <div style={{ marginTop: 14 }}>
+          <span style={styles.durationPill}>
+            {info.appointment_duration}-minute appointment
+          </span>
+        </div>
+        <div style={styles.copperDivider} />
       </header>
 
       <Stepper step={step} />
 
-      <div style={{ background: "#fff", borderRadius: 10,
-                     border: `1px solid #e5e7eb`, padding: 20,
-                     boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+      <div style={{ marginTop: 4 }}>
         {step === 1 && (
           <Step1Calendar
             days={days}
@@ -400,6 +490,10 @@ export default function BookingPage() {
           <Step3Details
             form={form}
             setForm={setForm}
+            selectedDate={selectedDate}
+            selectedTime={selectedTime}
+            meetingType={meetingType}
+            duration={info.appointment_duration}
             onBack={() => setStep(2)}
             onSubmit={submitBooking}
             submitting={submitting}
@@ -414,42 +508,52 @@ export default function BookingPage() {
 /* ── Page shell ─────────────────────────────────────────────────── */
 function PageShell({ children }) {
   return (
-    <div style={{
-      minHeight: "100vh", background: CREAM, color: CHARCOAL,
-      fontFamily: `-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif`,
-      padding: "32px 16px",
-    }}>
-      <div style={{ maxWidth: 720, margin: "0 auto" }}>
-        <div style={{
-          color: FOREST, fontWeight: 700, fontSize: 18, marginBottom: 22,
-        }}>
-          Gruening Health &amp; Wealth
-        </div>
-        {children}
-      </div>
+    <div style={styles.pageBg}>
+      <div style={styles.pageColumn}>{children}</div>
     </div>
   );
 }
 
 /* ── Stepper ───────────────────────────────────────────────────── */
 function Stepper({ step }) {
-  const items = ["Date", "Time", "Details"];
+  const items = [
+    { n: 1, label: "Date" },
+    { n: 2, label: "Time & Meeting" },
+    { n: 3, label: "Your Details" },
+  ];
   return (
-    <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-      {items.map((label, i) => {
-        const n = i + 1;
-        const active = n === step;
-        const done = n < step;
+    <div style={styles.stepperRow} role="progressbar"
+         aria-valuemin={1} aria-valuemax={3} aria-valuenow={step}>
+      {items.map((it, i) => {
+        const active = it.n === step;
+        const done = it.n < step;
+        const bg = done ? COPPER : active ? FOREST : SOFT_GRAY;
+        const fg = done || active ? WHITE : MUTED;
+        const labelColor = active ? FOREST : MUTED;
         return (
-          <div key={label}
-               style={{
-                 flex: 1, padding: "10px 12px", borderRadius: 8,
-                 fontSize: 12, fontWeight: 600, textAlign: "center",
-                 background: active ? FOREST : done ? "#dcecdf" : "#f3f4f6",
-                 color: active ? "#fff" : done ? FOREST : MUTED,
-                 border: active ? "none" : "1px solid #e5e7eb",
-               }}>
-            Step {n}: {label}
+          <div key={it.n} style={styles.stepperCol}>
+            <div style={{ display: "flex", alignItems: "center", width: "100%" }}>
+              <div style={{
+                ...styles.stepCircle,
+                background: bg, color: fg,
+                border: active ? `2px solid ${FOREST}` : "none",
+              }}>
+                {done ? "✓" : it.n}
+              </div>
+              {i < items.length - 1 && (
+                <div style={{
+                  flex: 1, height: 2,
+                  background: done ? COPPER : BORDER,
+                  margin: "0 8px",
+                }} />
+              )}
+            </div>
+            <div style={{
+              ...styles.stepLabel, color: labelColor,
+              fontWeight: active ? 700 : 600,
+            }}>
+              {it.label}
+            </div>
           </div>
         );
       })}
@@ -460,24 +564,36 @@ function Stepper({ step }) {
 /* ── Step 1: calendar ──────────────────────────────────────────── */
 function Step1Calendar({ days, today, windowEnd, isWorkingDay,
                          selectedDate, onPick }) {
+  // Header label spans the first → last visible month in the strip.
+  const headerLabel = useMemo(() => {
+    if (!days.length) return "";
+    const first = days[0];
+    const last = days[days.length - 1];
+    const sameYear = first.getFullYear() === last.getFullYear();
+    const fmt = (d, withYear = true) =>
+      d.toLocaleDateString(undefined, {
+        month: "long", ...(withYear ? { year: "numeric" } : {}),
+      });
+    if (first.getMonth() === last.getMonth() && sameYear) return fmt(first);
+    if (sameYear) {
+      return `${fmt(first, false)} – ${fmt(last)}`;
+    }
+    return `${fmt(first)} – ${fmt(last)}`;
+  }, [days]);
+
   return (
-    <div data-testid="booking-step-1">
-      <h2 style={{ margin: 0, color: FOREST, fontSize: 18 }}>
-        Pick a date
-      </h2>
-      <p style={{ color: MUTED, fontSize: 13, marginTop: 4 }}>
-        Greyed-out days aren't available for booking.
-      </p>
-      <div style={{
-        marginTop: 14, display: "grid",
-        gridTemplateColumns: "repeat(7, 1fr)", gap: 4,
-      }}>
+    <div data-testid="booking-step-1" style={styles.cardSurface}>
+      <div style={styles.calendarHeader}>
+        <h2 style={styles.monthTitle}>{headerLabel}</h2>
+      </div>
+
+      <div style={styles.weekdayHeader}>
         {["S","M","T","W","T","F","S"].map((d, i) => (
-          <div key={`${d}-${i}`} style={{
-            textAlign: "center", color: MUTED, fontSize: 11,
-            fontWeight: 700, padding: "4px 0",
-          }}>{d}</div>
+          <div key={`${d}-${i}`} style={styles.weekdayCell}>{d}</div>
         ))}
+      </div>
+
+      <div style={styles.dayGrid}>
         {days.map((d) => {
           const before = d < today;
           const afterWindow = windowEnd && d > windowEnd;
@@ -485,27 +601,45 @@ function Step1Calendar({ days, today, windowEnd, isWorkingDay,
           const disabled = before || afterWindow || offDay;
           const sel = selectedDate &&
                        d.toDateString() === selectedDate.toDateString();
+          const isToday = d.toDateString() === today.toDateString();
           return (
             <button
               key={d.toISOString()}
               disabled={disabled}
               onClick={() => onPick(d)}
               data-testid={`booking-day-${isoDateLocal(d)}`}
+              aria-label={prettyDate(d)}
+              className="ghw-day"
               style={{
-                padding: "12px 0",
-                border: sel ? `2px solid ${FOREST}` : "1px solid #e5e7eb",
-                background: sel ? FOREST : disabled ? "#f9fafb" : "#fff",
-                color: sel ? "#fff" : disabled ? "#cbd5d1" : CHARCOAL,
-                borderRadius: 6,
-                cursor: disabled ? "not-allowed" : "pointer",
-                fontWeight: 600, fontSize: 14,
-                minHeight: 44,
+                ...styles.dayCell,
+                ...(disabled
+                  ? styles.dayCellDisabled
+                  : sel
+                    ? styles.dayCellSelected
+                    : styles.dayCellAvailable),
               }}>
-              {d.getDate()}
+              <span style={{
+                fontSize: 15, fontWeight: 600,
+                color: sel ? WHITE : disabled ? DISABLED_TEXT : CHARCOAL,
+              }}>
+                {d.getDate()}
+              </span>
+              {isToday && !sel && (
+                <span style={{
+                  position: "absolute", bottom: 6,
+                  left: "50%", transform: "translateX(-50%)",
+                  width: 4, height: 4, borderRadius: 4,
+                  background: COPPER,
+                }} aria-hidden="true" />
+              )}
             </button>
           );
         })}
       </div>
+
+      <p style={styles.helperText}>
+        Greyed-out days aren't available for booking.
+      </p>
     </div>
   );
 }
@@ -524,64 +658,75 @@ function Step2TimeAndType({
   selectedTime, setSelectedTime,
   onBack, onNext,
 }) {
+  // Short date — weekday + month + day only, year-less for snappier read.
+  const shortDate = selectedDate
+    ? selectedDate.toLocaleDateString(undefined, {
+        weekday: "long", month: "long", day: "numeric",
+      })
+    : "";
   return (
-    <div data-testid="booking-step-2">
-      <button onClick={onBack} style={backLinkStyle}>← Pick a different day</button>
-      <h2 style={{ margin: "10px 0 6px 0", color: FOREST, fontSize: 18 }}>
-        {prettyDate(selectedDate)}
-      </h2>
+    <div data-testid="booking-step-2" style={styles.cardSurface}>
+      <button onClick={onBack} className="ghw-back" style={styles.backLink}
+              aria-label="Go back to date picker">
+        ← Pick a different day
+      </button>
 
-      <div style={{ marginTop: 8 }}>
-        <div style={labelStyle}>Available times</div>
-        {slotsLoading && (
-          <div style={{ color: MUTED, padding: "10px 0", fontSize: 14 }}>
-            Loading…
+      <h2 style={styles.dateHeading}>{shortDate}</h2>
+
+      <div style={{ marginTop: 16 }}>
+        <div style={styles.sectionLabel}>Available times</div>
+
+        {slotsLoading ? (
+          <div className="ghw-times-grid" style={styles.timesGrid}>
+            {Array.from({ length: 9 }).map((_, i) => (
+              <div key={i} className="ghw-shimmer"
+                   style={{ height: 48, borderRadius: 8 }} />
+            ))}
           </div>
-        )}
-        {!slotsLoading && slots.length === 0 && (
-          <div style={{ color: MUTED, padding: "10px 0", fontSize: 14 }}>
+        ) : slots.length === 0 ? (
+          <div style={styles.emptyTimes}>
             {slotsReason || "No times available for this day."}
           </div>
+        ) : (
+          <div className="ghw-times-grid" style={styles.timesGrid}>
+            {slots.map((s) => {
+              const sel = s === selectedTime;
+              return (
+                <button
+                  key={s}
+                  onClick={() => setSelectedTime(s)}
+                  data-testid={`booking-time-${s}`}
+                  className="ghw-time"
+                  style={{
+                    ...styles.timeBtn,
+                    ...(sel ? styles.timeBtnSelected : null),
+                  }}>
+                  {prettyTime(s)}
+                </button>
+              );
+            })}
+          </div>
         )}
-        <div style={{
-          display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(110px,1fr))",
-          gap: 8, marginTop: 6,
-        }}>
-          {slots.map((s) => {
-            const sel = s === selectedTime;
-            return (
-              <button
-                key={s}
-                onClick={() => setSelectedTime(s)}
-                data-testid={`booking-time-${s}`}
-                style={{
-                  padding: "12px 0", borderRadius: 6, fontWeight: 600,
-                  border: sel ? `2px solid ${FOREST}` : "1px solid #e5e7eb",
-                  background: sel ? FOREST : "#fff",
-                  color: sel ? "#fff" : CHARCOAL,
-                  cursor: "pointer", fontSize: 14, minHeight: 44,
-                }}>
-                {prettyTime(s)}
-              </button>
-            );
-          })}
-        </div>
       </div>
 
-      {meetingTypes.length > 1 && (
-        <div style={{ marginTop: 18 }}>
-          <div style={labelStyle}>Meeting type</div>
-          <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+      {meetingTypes.length > 1 && selectedTime && (
+        <div style={{ marginTop: 24 }}>
+          <div style={styles.sectionLabel}>How would you like to meet?</div>
+          <div className="ghw-mtype-row" style={styles.mtypeRow}>
             {meetingTypes.includes("phone") && (
-              <MeetingTypeBtn
-                label="Phone Call" value="phone"
+              <MeetingTypeCard
+                emoji="📞"
+                title="Phone Call"
+                helper="We'll call you at the number you provide"
                 selected={meetingType === "phone"}
                 onClick={() => setMeetingType("phone")}
                 testId="booking-meeting-phone" />
             )}
             {meetingTypes.includes("video") && (
-              <MeetingTypeBtn
-                label="Video Call" value="video"
+              <MeetingTypeCard
+                emoji="💻"
+                title="Video Call"
+                helper="Join via the link in your confirmation email"
                 selected={meetingType === "video"}
                 onClick={() => setMeetingType("video")}
                 testId="booking-meeting-video" />
@@ -594,9 +739,10 @@ function Step2TimeAndType({
         onClick={onNext}
         disabled={!selectedTime || !meetingType}
         data-testid="booking-step-2-next"
+        className="ghw-primary"
         style={{
-          ...primaryBtnStyle, marginTop: 22,
-          opacity: (!selectedTime || !meetingType) ? 0.4 : 1,
+          ...styles.primaryBtn, marginTop: 28,
+          opacity: (!selectedTime || !meetingType) ? 0.45 : 1,
           cursor: (!selectedTime || !meetingType) ? "not-allowed" : "pointer",
         }}>
         Continue
@@ -605,76 +751,123 @@ function Step2TimeAndType({
   );
 }
 
-function MeetingTypeBtn({ label, selected, onClick, testId }) {
+function MeetingTypeCard({ emoji, title, helper, selected, onClick, testId }) {
   return (
-    <button onClick={onClick} data-testid={testId}
-            style={{
-              flex: 1, padding: "14px 12px", borderRadius: 6,
-              fontWeight: 600, fontSize: 14, minHeight: 48,
-              border: selected ? `2px solid ${FOREST}` : "1px solid #e5e7eb",
-              background: selected ? FOREST : "#fff",
-              color: selected ? "#fff" : CHARCOAL, cursor: "pointer",
-            }}>
-      {label}
+    <button
+      onClick={onClick}
+      data-testid={testId}
+      data-sel={selected ? "1" : "0"}
+      className="ghw-mtype"
+      style={{
+        ...styles.mtypeCard,
+        ...(selected ? styles.mtypeCardSelected : null),
+      }}>
+      <div style={{
+        fontSize: 28, lineHeight: 1, marginBottom: 8,
+        color: selected ? COPPER : CHARCOAL,
+      }} aria-hidden="true">
+        {emoji}
+      </div>
+      <div style={{
+        fontWeight: 700, fontSize: 16,
+        color: selected ? FOREST : CHARCOAL,
+      }}>
+        {title}
+      </div>
+      <div style={{
+        fontSize: 13, color: MUTED, marginTop: 4, lineHeight: 1.45,
+      }}>
+        {helper}
+      </div>
     </button>
   );
 }
 
 /* ── Step 3: details ───────────────────────────────────────────── */
-function Step3Details({ form, setForm, onBack, onSubmit,
-                         submitting, submitError }) {
+function Step3Details({ form, setForm, selectedDate, selectedTime,
+                         meetingType, duration,
+                         onBack, onSubmit, submitting, submitError }) {
   const set = (k) => (e) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const summaryDate = selectedDate
+    ? selectedDate.toLocaleDateString(undefined, {
+        weekday: "long", month: "long", day: "numeric",
+      })
+    : "";
+
   return (
-    <div data-testid="booking-step-3">
-      <button onClick={onBack} style={backLinkStyle}>← Back to times</button>
-      <h2 style={{ margin: "10px 0 14px 0", color: FOREST, fontSize: 18 }}>
-        Your details
-      </h2>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-        <Field label="First name *">
-          <input style={inputStyle} value={form.first_name}
+    <div data-testid="booking-step-3" style={styles.cardSurface}>
+      <button onClick={onBack} className="ghw-back" style={styles.backLink}
+              aria-label="Go back to time picker">
+        ← Back to times
+      </button>
+
+      <h2 style={styles.dateHeading}>Your details</h2>
+
+      <div className="ghw-form-row" style={styles.formGrid2col}>
+        <Field label="First name" required>
+          <input className="ghw-input" style={styles.input}
+                 value={form.first_name}
                  onChange={set("first_name")}
                  data-testid="booking-first-name"
                  autoComplete="given-name" />
         </Field>
-        <Field label="Last name *">
-          <input style={inputStyle} value={form.last_name}
+        <Field label="Last name" required>
+          <input className="ghw-input" style={styles.input}
+                 value={form.last_name}
                  onChange={set("last_name")}
                  data-testid="booking-last-name"
                  autoComplete="family-name" />
         </Field>
-        <Field label="Phone *">
-          <input style={inputStyle} value={form.phone}
-                 onChange={set("phone")} type="tel"
-                 data-testid="booking-phone"
-                 autoComplete="tel" />
-        </Field>
-        <Field label="Email (optional)">
-          <input style={inputStyle} value={form.email}
-                 onChange={set("email")} type="email"
-                 data-testid="booking-email"
-                 autoComplete="email" />
-        </Field>
-        <Field label="Reason for booking *" span={2}>
-          <select style={{ ...inputStyle, appearance: "auto" }}
+      </div>
+
+      <Field label="Phone number" required>
+        <input className="ghw-input" style={styles.input}
+               value={form.phone}
+               onChange={set("phone")} type="tel"
+               data-testid="booking-phone"
+               autoComplete="tel" />
+      </Field>
+
+      <Field label="Email address" hint="optional">
+        <input className="ghw-input" style={styles.input}
+               value={form.email}
+               onChange={set("email")} type="email"
+               data-testid="booking-email"
+               autoComplete="email" />
+      </Field>
+
+      <Field label="Reason for appointment" required>
+        <div style={{ position: "relative" }}>
+          <select className="ghw-select"
+                  style={{
+                    ...styles.input,
+                    paddingRight: 40,
+                    appearance: "none",
+                    WebkitAppearance: "none",
+                    MozAppearance: "none",
+                  }}
                   value={form.booking_reason}
                   onChange={set("booking_reason")}
                   data-testid="booking-reason">
-            <option value="">Pick one…</option>
+            <option value="">Choose one…</option>
             {BOOKING_REASONS.map((r) => (
               <option key={r} value={r}>{r}</option>
             ))}
           </select>
-        </Field>
-        <Field label="Notes (optional)" span={2}>
-          <textarea
-            style={{ ...inputStyle, height: 90, resize: "vertical" }}
-            value={form.notes} onChange={set("notes")}
-            data-testid="booking-notes"
-            maxLength={500} />
-        </Field>
-      </div>
+          <span aria-hidden="true" style={styles.selectArrow}>▾</span>
+        </div>
+      </Field>
+
+      <Field label="Notes" hint="optional">
+        <textarea className="ghw-textarea"
+                  style={{ ...styles.input, height: 96, resize: "vertical" }}
+                  value={form.notes} onChange={set("notes")}
+                  placeholder="Anything else we should know?"
+                  data-testid="booking-notes"
+                  maxLength={500} />
+      </Field>
 
       {/* Honeypot — hidden via off-screen positioning AND aria-hidden,
           so screen-readers skip it. Real users never touch this. */}
@@ -692,21 +885,48 @@ function Step3Details({ form, setForm, onBack, onSubmit,
         </label>
       </div>
 
+      {/* Appointment summary */}
+      {selectedDate && selectedTime && (
+        <div style={styles.summaryBox} aria-live="polite">
+          <div style={styles.summaryLabel}>Your appointment</div>
+          <div style={styles.summaryRow}>
+            <span style={styles.summaryIcon} aria-hidden="true">📅</span>
+            <span>{summaryDate} at {prettyTime(selectedTime)}</span>
+          </div>
+          <div style={styles.summaryRow}>
+            <span style={styles.summaryIcon} aria-hidden="true">
+              {meetingType === "video" ? "💻" : "📞"}
+            </span>
+            <span>
+              {meetingType === "video" ? "Video Call" : "Phone Call"}
+              {duration ? ` · ${duration} minutes` : ""}
+            </span>
+          </div>
+        </div>
+      )}
+
       {submitError && (
-        <div style={{ marginTop: 12, color: "#991b1b", fontSize: 13 }}
-             data-testid="booking-submit-error">
+        <div style={styles.errorBanner} data-testid="booking-submit-error">
           {submitError}
         </div>
       )}
 
       <button onClick={onSubmit} disabled={submitting}
               data-testid="booking-submit"
+              className="ghw-primary"
               style={{
-                ...primaryBtnStyle, marginTop: 18,
-                opacity: submitting ? 0.6 : 1,
+                ...styles.primaryBtn, marginTop: 18,
+                opacity: submitting ? 0.7 : 1,
                 cursor: submitting ? "not-allowed" : "pointer",
               }}>
-        {submitting ? "Booking…" : "Confirm appointment"}
+        {submitting ? (
+          <>
+            <span className="ghw-spinner" aria-hidden="true" />
+            Booking…
+          </>
+        ) : (
+          "Confirm appointment"
+        )}
       </button>
     </div>
   );
@@ -720,87 +940,377 @@ function ConfirmationCard({ info, confirmation }) {
     startIso: confirmation.startIso,
     endIso: confirmation.endIso,
   });
+
+  const dateLabel = prettyDate(new Date(confirmation.date));
+  const timeLabel = prettyTime(confirmation.time);
+
   return (
-    <div style={{
-      background: "#fff", borderRadius: 10, padding: 28,
-      border: `1px solid #e5e7eb`, textAlign: "center",
-    }} data-testid="booking-confirmation">
-      <div style={{
-        color: COPPER, fontSize: 11, letterSpacing: 1.2,
-        textTransform: "uppercase", fontWeight: 700, marginBottom: 6,
-      }}>You're all set</div>
-      <h1 style={{ color: FOREST, margin: 0, fontSize: 24 }}>
-        Thanks, {confirmation.client_first_name || "friend"}!
+    <div data-testid="booking-confirmation" style={styles.confirmCard}>
+      <div style={styles.confirmCheck} aria-hidden="true">✓</div>
+      <h1 style={styles.confirmTitle}>
+        You're all set, {confirmation.client_first_name || "friend"}!
       </h1>
-      <p style={{ color: CHARCOAL, marginTop: 10, fontSize: 15 }}>
-        {confirmation.message}
+      <p style={styles.confirmSubtitle}>
+        Your appointment is confirmed.
       </p>
-      <div style={{
-        margin: "18px auto 0 auto", maxWidth: 420,
-        background: CREAM, borderRadius: 8, padding: "14px 18px",
-        textAlign: "left",
-      }}>
-        <Row label="Date" value={prettyDate(new Date(confirmation.date))} />
-        <Row label="Time" value={prettyTime(confirmation.time)} />
-        <Row label="Meeting"
-              value={confirmation.meeting_type === "video"
-                       ? "Video Call" : "Phone Call"} />
+
+      <div style={styles.confirmInfoCard}>
+        <ConfirmRow icon="📅" label="When"
+                     value={`${dateLabel} · ${timeLabel}`} />
+        <ConfirmRow
+          icon={confirmation.meeting_type === "video" ? "💻" : "📞"}
+          label={confirmation.meeting_type === "video" ? "Meeting" : "How"}
+          value={
+            confirmation.meeting_type === "video"
+              ? (confirmation.has_email
+                  ? "Video link arrives by email before your appointment"
+                  : "Video link sent to you before your appointment")
+              : `${info.agent_name} will call you`
+          } />
+        <ConfirmRow icon="👤" label="With" value={info.agent_name} last />
       </div>
-      <p style={{ color: MUTED, fontSize: 13, marginTop: 14 }}>
-        {confirmation.meeting_type === "video"
-          ? (confirmation.has_email
-              ? "Check your email — we'll send the join link a few minutes before your appointment."
-              : "We'll be in touch with the join link before your appointment.")
-          : `${info.agent_name} will call you at the phone number you provided.`}
-      </p>
+
       <a href={gUrl} target="_blank" rel="noopener noreferrer"
          data-testid="booking-add-to-calendar"
-         style={{
-           ...primaryBtnStyle, marginTop: 18,
-           display: "inline-block", textDecoration: "none",
-           padding: "12px 22px",
-         }}>
+         className="ghw-cta-outline"
+         style={styles.outlineCta}>
         Add to Google Calendar
       </a>
+
+      <p style={styles.confirmFooter}>
+        Questions? Contact {info.agent_name} for help with your appointment.
+      </p>
     </div>
   );
 }
 
-function Row({ label, value }) {
+function ConfirmRow({ icon, label, value, last }) {
   return (
-    <div style={{ display: "flex", justifyContent: "space-between",
-                   gap: 12, padding: "6px 0", fontSize: 14 }}>
-      <span style={{ color: MUTED }}>{label}</span>
-      <span style={{ fontWeight: 600 }}>{value}</span>
+    <div style={{
+      display: "flex", alignItems: "flex-start", gap: 12,
+      padding: "12px 0",
+      borderBottom: last ? "none" : `1px solid ${BORDER}`,
+    }}>
+      <div style={{
+        width: 32, height: 32, borderRadius: 8,
+        background: LIGHT_GREEN, color: FOREST,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        flexShrink: 0, fontSize: 16,
+      }} aria-hidden="true">{icon}</div>
+      <div style={{ minWidth: 0, flex: 1, textAlign: "left" }}>
+        <div style={{
+          fontSize: 11, color: MUTED, fontWeight: 700,
+          textTransform: "uppercase", letterSpacing: 0.6,
+        }}>{label}</div>
+        <div style={{ fontSize: 15, color: CHARCOAL, marginTop: 2 }}>
+          {value}
+        </div>
+      </div>
     </div>
   );
 }
 
-/* ── Small primitives ──────────────────────────────────────────── */
-const labelStyle = {
-  fontSize: 12, fontWeight: 700, color: MUTED,
-  textTransform: "uppercase", letterSpacing: 0.6,
-};
-const inputStyle = {
-  width: "100%", padding: "10px 12px", borderRadius: 6,
-  border: "1px solid #e5e7eb", fontSize: 15, boxSizing: "border-box",
-  minHeight: 42, background: "#fff", color: CHARCOAL,
-};
-const primaryBtnStyle = {
-  background: COPPER, color: "#fff", border: "none",
-  borderRadius: 6, padding: "14px 22px", fontWeight: 700,
-  fontSize: 15, width: "100%", minHeight: 48,
-};
-const backLinkStyle = {
-  background: "none", border: "none", color: COPPER,
-  cursor: "pointer", padding: 0, fontSize: 13, fontWeight: 600,
-};
-
-function Field({ label, children, span }) {
+/* ── Form field primitive ──────────────────────────────────────── */
+function Field({ label, hint, required, children }) {
   return (
-    <div style={{ gridColumn: span === 2 ? "1 / span 2" : undefined }}>
-      <div style={labelStyle}>{label}</div>
-      <div style={{ marginTop: 4 }}>{children}</div>
+    <div style={{ marginBottom: 16 }}>
+      <label style={styles.fieldLabel}>
+        {label}
+        {required && (
+          <span style={{ color: COPPER, marginLeft: 4 }} aria-hidden="true">
+            *
+          </span>
+        )}
+        {hint && (
+          <span style={{ color: MUTED, fontWeight: 500, marginLeft: 6 }}>
+            ({hint})
+          </span>
+        )}
+      </label>
+      {children}
     </div>
   );
 }
+
+/* ── Style table ───────────────────────────────────────────────── */
+const styles = {
+  /* shell */
+  pageBg: {
+    minHeight: "100vh", background: CREAM, color: CHARCOAL,
+    fontFamily: SANS,
+    padding: "32px 16px",
+  },
+  pageColumn: { maxWidth: 680, margin: "0 auto" },
+
+  /* header */
+  tinyEyebrowForest: {
+    color: FOREST, fontSize: 12, letterSpacing: 1.4,
+    textTransform: "uppercase", fontWeight: 600,
+  },
+  tinyEyebrowCopper: {
+    color: COPPER, fontSize: 11, letterSpacing: 1.2,
+    textTransform: "uppercase", fontWeight: 700, marginTop: 4,
+  },
+  h1: {
+    margin: "12px 0 0 0", color: FOREST, fontSize: 32,
+    lineHeight: 1.2, fontWeight: 700, fontFamily: SERIF,
+    letterSpacing: -0.2,
+  },
+  bio: {
+    color: MUTED, marginTop: 12, fontSize: 15,
+    lineHeight: 1.55, marginBottom: 0,
+  },
+  durationPill: {
+    display: "inline-block", background: FOREST, color: WHITE,
+    fontSize: 12, fontWeight: 600, padding: "5px 12px",
+    borderRadius: 999, letterSpacing: 0.2,
+  },
+  copperDivider: {
+    height: 2, background: COPPER, width: 48,
+    marginTop: 22, borderRadius: 2,
+  },
+
+  /* stepper */
+  stepperRow: {
+    display: "flex", gap: 0, marginBottom: 20,
+    alignItems: "stretch",
+  },
+  stepperCol: {
+    flex: 1, display: "flex", flexDirection: "column",
+    alignItems: "stretch",
+  },
+  stepCircle: {
+    width: 30, height: 30, borderRadius: "50%",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    fontSize: 13, fontWeight: 700, flexShrink: 0,
+  },
+  stepLabel: {
+    fontSize: 12, marginTop: 8, paddingLeft: 0,
+  },
+
+  /* card surface used by each step */
+  cardSurface: {
+    background: WHITE, borderRadius: 12, padding: 24,
+    border: `1px solid ${BORDER}`,
+    boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+  },
+
+  /* calendar */
+  calendarHeader: {
+    display: "flex", alignItems: "center", justifyContent: "center",
+    marginBottom: 14,
+  },
+  monthTitle: {
+    margin: 0, color: FOREST, fontSize: 18, fontWeight: 700,
+    fontFamily: SERIF,
+  },
+  weekdayHeader: {
+    display: "grid", gridTemplateColumns: "repeat(7, 1fr)",
+    gap: 4, marginBottom: 4,
+  },
+  weekdayCell: {
+    textAlign: "center", color: MUTED, fontSize: 11,
+    fontWeight: 700, padding: "6px 0",
+    textTransform: "uppercase", letterSpacing: 0.5,
+  },
+  dayGrid: {
+    display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4,
+  },
+  dayCell: {
+    position: "relative",
+    minHeight: 44, minWidth: 44,
+    display: "flex", alignItems: "center", justifyContent: "center",
+    borderRadius: 8, padding: 0,
+    transition: "background-color 120ms ease, border-color 120ms ease, transform 120ms ease",
+  },
+  dayCellAvailable: {
+    background: WHITE, border: `1px solid ${BORDER}`,
+    color: CHARCOAL, cursor: "pointer",
+  },
+  dayCellSelected: {
+    background: FOREST, border: `2px solid ${FOREST}`,
+    color: WHITE, cursor: "pointer",
+    boxShadow: `0 0 0 3px rgba(181, 69, 27, 0.20)`,
+  },
+  dayCellDisabled: {
+    background: SOFT_GRAY, border: `1px solid ${SOFT_GRAY}`,
+    color: DISABLED_TEXT, cursor: "not-allowed",
+  },
+  helperText: {
+    color: MUTED, fontSize: 13, marginTop: 14, marginBottom: 0,
+  },
+
+  /* navigation between steps */
+  backLink: {
+    background: "none", border: "none", color: COPPER,
+    cursor: "pointer", padding: 0, fontSize: 13, fontWeight: 600,
+  },
+
+  dateHeading: {
+    margin: "12px 0 0 0", color: FOREST, fontSize: 20,
+    fontWeight: 700, fontFamily: SERIF,
+  },
+
+  sectionLabel: {
+    fontSize: 12, fontWeight: 700, color: MUTED,
+    textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 10,
+  },
+
+  /* time grid */
+  timesGrid: {
+    display: "grid", gridTemplateColumns: "repeat(3, 1fr)",
+    gap: 10,
+  },
+  timeBtn: {
+    background: WHITE, border: `1px solid ${BORDER}`,
+    color: CHARCOAL, padding: "14px 10px", borderRadius: 8,
+    fontWeight: 600, fontSize: 15, cursor: "pointer",
+    minHeight: 48,
+    transition: "background-color 120ms ease, border-color 120ms ease, color 120ms ease",
+  },
+  timeBtnSelected: {
+    background: FOREST, color: WHITE,
+    border: `1px solid ${FOREST}`,
+    borderLeft: `3px solid ${COPPER}`,
+  },
+  emptyTimes: {
+    color: MUTED, padding: "20px 0", fontSize: 14, textAlign: "center",
+  },
+
+  /* meeting type */
+  mtypeRow: {
+    display: "flex", gap: 12,
+  },
+  mtypeCard: {
+    flex: 1, padding: 20, borderRadius: 12,
+    border: `1.5px solid ${BORDER}`,
+    background: WHITE, textAlign: "left", cursor: "pointer",
+    minHeight: 100,
+    transition: "border-color 120ms ease, box-shadow 160ms ease, transform 160ms ease, background-color 120ms ease",
+  },
+  mtypeCardSelected: {
+    border: `2px solid ${FOREST}`, background: LIGHT_GREEN,
+  },
+
+  /* form */
+  formGrid2col: {
+    display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12,
+  },
+  fieldLabel: {
+    display: "block", fontSize: 13, fontWeight: 600,
+    color: CHARCOAL, marginBottom: 6,
+  },
+  input: {
+    width: "100%", padding: "12px 14px", borderRadius: 8,
+    border: `1.5px solid ${BORDER}`,
+    fontSize: 16, boxSizing: "border-box",
+    minHeight: 46, background: WHITE, color: CHARCOAL,
+    fontFamily: SANS,
+    transition: "border-color 120ms ease, box-shadow 120ms ease",
+  },
+  selectArrow: {
+    position: "absolute", right: 14, top: "50%",
+    transform: "translateY(-50%)", color: COPPER,
+    fontSize: 14, pointerEvents: "none", fontWeight: 700,
+  },
+
+  /* summary */
+  summaryBox: {
+    background: LIGHT_GREEN, borderRadius: 10, padding: 16,
+    marginTop: 18,
+  },
+  summaryLabel: {
+    color: FOREST, fontWeight: 700, fontSize: 13,
+    textTransform: "uppercase", letterSpacing: 0.6, marginBottom: 10,
+  },
+  summaryRow: {
+    display: "flex", alignItems: "center", gap: 10,
+    color: CHARCOAL, fontSize: 14, marginTop: 4,
+  },
+  summaryIcon: {
+    fontSize: 16, width: 22, textAlign: "center",
+  },
+
+  /* primary button */
+  primaryBtn: {
+    background: FOREST, color: WHITE, border: "none",
+    borderRadius: 10, padding: 16, fontWeight: 700,
+    fontSize: 16, width: "100%", minHeight: 52,
+    fontFamily: SANS,
+    transition: "background-color 120ms ease, opacity 120ms ease",
+  },
+
+  /* errors */
+  errorBanner: {
+    marginTop: 14, padding: "12px 14px",
+    background: "#FEE2E2", color: "#991B1B",
+    borderLeft: "4px solid #DC2626", borderRadius: 6,
+    fontSize: 14, fontWeight: 500,
+  },
+  errorCard: {
+    background: WHITE, padding: 36, borderRadius: 12,
+    border: `1px solid ${BORDER}`, textAlign: "center",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+  },
+  errorIcon: {
+    width: 48, height: 48, borderRadius: "50%",
+    background: LIGHT_GREEN, color: FOREST,
+    fontSize: 24, fontWeight: 700,
+    display: "flex", alignItems: "center", justifyContent: "center",
+    margin: "0 auto 16px auto",
+  },
+  errorTitle: {
+    color: FOREST, fontSize: 22, margin: "0 0 8px 0",
+    fontFamily: SERIF, fontWeight: 700,
+  },
+  errorMessage: { color: MUTED, margin: 0, fontSize: 15 },
+
+  /* loading */
+  loadingWrap: {
+    background: WHITE, padding: 24, borderRadius: 12,
+    border: `1px solid ${BORDER}`,
+    boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+  },
+  shimmerLine: {
+    height: 14, borderRadius: 6,
+  },
+
+  /* confirmation */
+  confirmCard: {
+    background: WHITE, borderRadius: 14, padding: "36px 28px",
+    border: `1px solid ${BORDER}`, textAlign: "center",
+    boxShadow: "0 4px 18px rgba(27, 67, 50, 0.08)",
+  },
+  confirmCheck: {
+    width: 64, height: 64, borderRadius: "50%",
+    background: FOREST, color: WHITE,
+    fontSize: 32, fontWeight: 700,
+    display: "flex", alignItems: "center", justifyContent: "center",
+    margin: "0 auto 16px auto",
+    boxShadow: `0 6px 18px rgba(27, 67, 50, 0.22)`,
+  },
+  confirmTitle: {
+    color: FOREST, margin: 0, fontSize: 28, fontWeight: 700,
+    fontFamily: SERIF, letterSpacing: -0.2,
+  },
+  confirmSubtitle: {
+    color: MUTED, marginTop: 8, marginBottom: 0, fontSize: 16,
+  },
+  confirmInfoCard: {
+    background: CREAM, borderRadius: 10, padding: "4px 18px",
+    margin: "20px auto 0 auto", maxWidth: 440, textAlign: "left",
+    border: `1px solid ${BORDER}`,
+  },
+  outlineCta: {
+    display: "inline-block", marginTop: 22,
+    color: COPPER, background: WHITE,
+    border: `1.5px solid ${COPPER}`,
+    padding: "12px 24px", borderRadius: 10,
+    fontWeight: 700, fontSize: 15, textDecoration: "none",
+    fontFamily: SANS,
+    transition: "background-color 120ms ease, color 120ms ease",
+  },
+  confirmFooter: {
+    color: MUTED, fontSize: 13, marginTop: 18, marginBottom: 0,
+  },
+};
