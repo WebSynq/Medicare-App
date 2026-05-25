@@ -306,6 +306,16 @@ export default function ClientProfile() {
           phone: data.phone || "",
           date_of_birth: data.date_of_birth || "",
           status: data.status || "new",
+          address_line1: data.address_line1 || "",
+          address_line2: data.address_line2 || "",
+          city: data.city || "",
+          state: data.state || "",
+          zip_code: data.zip_code || "",
+          current_carrier: data.current_carrier || "",
+          current_plan: data.current_plan || "",
+          product_interest: data.product_interest || "",
+          medicare_part_a_effective: data.medicare_part_a_effective || "",
+          medicare_part_b_effective: data.medicare_part_b_effective || "",
         });
       } catch (err) {
         toast.error(
@@ -384,9 +394,27 @@ export default function ClientProfile() {
   async function saveEdits() {
     setSaving(true);
     try {
-      // /leads PATCH only accepts a narrow set of fields; everything else is
-      // immutable for now. Save just the editable ones server-side.
-      const patch = { status: editForm.status, notes: lead.notes };
+      // Send only fields that have a non-empty value. Backend strips
+      // None via `if v is not None`, so omitting an empty string keeps
+      // the existing DB value rather than blanking it.
+      const patch = {};
+      const fields = [
+        "first_name", "last_name", "email", "phone", "date_of_birth",
+        "address_line1", "address_line2", "city", "state", "zip_code",
+        "current_carrier", "current_plan", "product_interest",
+        "medicare_part_a_effective", "medicare_part_b_effective",
+      ];
+      fields.forEach((f) => {
+        if (editForm[f] !== undefined && editForm[f] !== "") {
+          patch[f] = editForm[f];
+        }
+      });
+      // Status always goes (enum, defaults to "new" so we can clear).
+      patch.status = editForm.status || "new";
+      // Preserve free-text notes — the Notes tab is the editor, but a
+      // concurrent edit there shouldn't be blown away by this save.
+      if (lead?.notes !== undefined) patch.notes = lead.notes;
+
       const { data } = await api.patch(`/leads/${leadId}`, patch);
       setLead(data);
       setEditing(false);
@@ -767,7 +795,209 @@ export default function ClientProfile() {
 
             {editing ? (
               <div className="grid md:grid-cols-2 gap-3 mt-5">
+                <p className="col-span-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground mt-2">
+                  Personal Info
+                </p>
+                <div className="col-span-2 md:col-span-1">
+                  <Label className="text-xs">First Name</Label>
+                  <Input
+                    value={editForm.first_name || ""}
+                    onChange={(e) =>
+                      setEditForm((f) => ({ ...f, first_name: e.target.value }))
+                    }
+                    data-testid="client-edit-first-name"
+                  />
+                </div>
                 <div>
+                  <Label className="text-xs">Last Name</Label>
+                  <Input
+                    value={editForm.last_name || ""}
+                    onChange={(e) =>
+                      setEditForm((f) => ({ ...f, last_name: e.target.value }))
+                    }
+                    data-testid="client-edit-last-name"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Email</Label>
+                  <Input
+                    type="email"
+                    value={editForm.email || ""}
+                    onChange={(e) =>
+                      setEditForm((f) => ({ ...f, email: e.target.value }))
+                    }
+                    data-testid="client-edit-email"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Phone</Label>
+                  <Input
+                    type="tel"
+                    value={editForm.phone || ""}
+                    onChange={(e) =>
+                      setEditForm((f) => ({ ...f, phone: e.target.value }))
+                    }
+                    data-testid="client-edit-phone"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Date of Birth</Label>
+                  <Input
+                    type="date"
+                    value={(editForm.date_of_birth || "").slice(0, 10)}
+                    onChange={(e) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        date_of_birth: e.target.value,
+                      }))
+                    }
+                    data-testid="client-edit-dob"
+                  />
+                </div>
+
+                <p className="col-span-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground mt-2">
+                  Address
+                </p>
+                <div className="col-span-2">
+                  <Label className="text-xs">Address Line 1</Label>
+                  <Input
+                    value={editForm.address_line1 || ""}
+                    onChange={(e) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        address_line1: e.target.value,
+                      }))
+                    }
+                    data-testid="client-edit-addr1"
+                  />
+                </div>
+                <div className="col-span-2">
+                  <Label className="text-xs">Address Line 2</Label>
+                  <Input
+                    value={editForm.address_line2 || ""}
+                    onChange={(e) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        address_line2: e.target.value,
+                      }))
+                    }
+                    data-testid="client-edit-addr2"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">City</Label>
+                  <Input
+                    value={editForm.city || ""}
+                    onChange={(e) =>
+                      setEditForm((f) => ({ ...f, city: e.target.value }))
+                    }
+                    data-testid="client-edit-city"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">State</Label>
+                  <Input
+                    value={editForm.state || ""}
+                    onChange={(e) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        state: e.target.value.toUpperCase(),
+                      }))
+                    }
+                    maxLength={2}
+                    data-testid="client-edit-state"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Zip Code</Label>
+                  <Input
+                    value={editForm.zip_code || ""}
+                    onChange={(e) =>
+                      setEditForm((f) => ({ ...f, zip_code: e.target.value }))
+                    }
+                    data-testid="client-edit-zip"
+                  />
+                </div>
+
+                <p className="col-span-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground mt-2">
+                  Coverage
+                </p>
+                <div>
+                  <Label className="text-xs">Current Carrier</Label>
+                  <Input
+                    value={editForm.current_carrier || ""}
+                    onChange={(e) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        current_carrier: e.target.value,
+                      }))
+                    }
+                    data-testid="client-edit-carrier"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Current Plan</Label>
+                  <Input
+                    value={editForm.current_plan || ""}
+                    onChange={(e) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        current_plan: e.target.value,
+                      }))
+                    }
+                    data-testid="client-edit-plan"
+                  />
+                </div>
+                <div className="col-span-2">
+                  <Label className="text-xs">Product Interest</Label>
+                  <Input
+                    value={editForm.product_interest || ""}
+                    onChange={(e) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        product_interest: e.target.value,
+                      }))
+                    }
+                    data-testid="client-edit-product"
+                  />
+                </div>
+
+                <p className="col-span-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground mt-2">
+                  Medicare
+                </p>
+                <div>
+                  <Label className="text-xs">Part A Effective</Label>
+                  <Input
+                    type="date"
+                    value={(editForm.medicare_part_a_effective || "").slice(0, 10)}
+                    onChange={(e) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        medicare_part_a_effective: e.target.value,
+                      }))
+                    }
+                    data-testid="client-edit-part-a"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Part B Effective</Label>
+                  <Input
+                    type="date"
+                    value={(editForm.medicare_part_b_effective || "").slice(0, 10)}
+                    onChange={(e) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        medicare_part_b_effective: e.target.value,
+                      }))
+                    }
+                    data-testid="client-edit-part-b"
+                  />
+                </div>
+
+                <p className="col-span-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground mt-2">
+                  Status
+                </p>
+                <div className="col-span-2">
                   <Label className="text-xs">Status</Label>
                   <select
                     value={editForm.status}
@@ -784,11 +1014,6 @@ export default function ClientProfile() {
                     <option value="lost">Inactive</option>
                   </select>
                 </div>
-                <p className="text-xs text-muted-foreground self-end pb-2">
-                  Inline edit currently covers status. Other fields are read-only
-                  for now — use New Intake to recreate or contact the source
-                  system for changes.
-                </p>
               </div>
             ) : (
               <div className="grid md:grid-cols-2 gap-3 mt-5">

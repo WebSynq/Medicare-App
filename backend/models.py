@@ -344,9 +344,42 @@ class LeadCreate(LeadBase):
 
 
 class LeadUpdate(BaseModel):
+    # Identity
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    date_of_birth: Optional[str] = None
+
+    # Address
+    address_line1: Optional[str] = None
+    address_line2: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    zip_code: Optional[str] = None
+
+    # Coverage
+    current_carrier: Optional[str] = None
+    current_plan: Optional[str] = None
+    product_interest: Optional[str] = None
+
+    # Medicare effective dates — field names mirror LeadBase
+    # (medicare_part_a_effective / medicare_part_b_effective) so the
+    # PATCH endpoint's generic `if v is not None` write lands on the
+    # same field the view reads. Renaming here would silently create
+    # parallel ghost fields.
+    medicare_part_a_effective: Optional[str] = None
+    medicare_part_b_effective: Optional[str] = None
+
+    # Status + notes
     status: Optional[str] = None
-    agent_assigned_id: Optional[str] = None
     notes: Optional[str] = None
+    agent_assigned_id: Optional[str] = None
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def _normalize_state(cls, v):
+        return normalize_state_field(v)
 
 
 class Lead(LeadBase):
