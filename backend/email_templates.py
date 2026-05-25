@@ -155,6 +155,32 @@ def booking_confirmation_client(
     cancel_url: str,
 ) -> str:
     first = (client_name or "there").split()[0]
+    # For video meetings we render a copper CTA button so the raw join
+    # URL never appears as visible text — protects against the client
+    # copy-pasting a wrong link, and matches the visual treatment of
+    # the other CTAs in this file. Phone meetings keep the shared
+    # _meeting_line render so the phone-number callout style stays
+    # consistent across confirmation + reminder emails.
+    is_video = (meeting_type or "").lower() == "video"
+    if is_video and meeting_link:
+        meeting_block = f"""
+      <p style="margin:16px 0 8px 0;">
+        Your agent will host a video call. Use the button below to join
+        at the time of your appointment.
+      </p>
+      <p style="margin:0;">
+        <a href="{escape(meeting_link)}" target="_blank" rel="noopener"
+           style="background:{_COPPER};color:#ffffff;text-decoration:none;
+                  display:inline-block;padding:12px 28px;border-radius:6px;
+                  font-weight:600;">
+          Join Video Call
+        </a>
+      </p>"""
+    else:
+        meeting_block = f"""
+      <p style="margin:16px 0 0 0;">
+        {_meeting_line(meeting_type, meeting_link)}
+      </p>"""
     body = f"""
       <p style="margin:0 0 14px 0;">Hi {escape(first)},</p>
       <p style="margin:0 0 14px 0;">
@@ -167,9 +193,7 @@ def booking_confirmation_client(
           ("Your agent", agent_name),
           ("Reason", booking_reason),
       ])}
-      <p style="margin:16px 0 0 0;">
-        {_meeting_line(meeting_type, meeting_link)}
-      </p>
+      {meeting_block}
       <p style="margin:16px 0 0 0;color:{_MUTED};font-size:13px;">
         Need to reschedule? Reply to this email or call {escape(agent_phone)}.
       </p>"""
