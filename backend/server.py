@@ -689,6 +689,12 @@ _PROD_INDEXES = [
         "partialFilterExpression": {"deleted": False},
     }),
 
+    # dashboard_stats — one doc per agency (single-tenant today). Unique
+    # constraint enforces "one snapshot per agency" — refresh is an upsert
+    # on this key. Point-lookup on every read endpoint, so single-field
+    # is enough; no compound needed.
+    ("dashboard_stats", "agency_id", {"unique": True, "background": True}),
+
     # appointments — agent_id+date compound powers the Calendar page's
     # per-agent month/week/day range queries (start_date/end_date filter
     # via $gte/$lte). Standalone appointment_date index supports the
@@ -884,6 +890,10 @@ async def on_startup():
     # notifications scheduler reads db.leads (birthday windows, stale leads)
     # via _gen_birthday_windows / _gen_stale_leads — hand it the PHI client.
     app.state.notifications_scheduler = start_notifications_scheduler(get_phi_db)
+    # Fix E — dashboard_stats refresh, every 15 min. Reads leads (PHI client)
+    # and writes pre-aggregated counts to db.dashboard_stats.
+    from dashboard_aggregator import start_scheduler as start_dashboard_scheduler
+    app.state.dashboard_scheduler = start_dashboard_scheduler(get_phi_db)
 
 
 @app.on_event("shutdown")
