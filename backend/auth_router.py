@@ -13,6 +13,48 @@ from slowapi.util import get_remote_address
 
 # Cookie / CSRF constants
 _ACCESS_COOKIE = "ghw_access_token"
+
+
+async def _notify_admin_account_locked(email, attempt_result, request):
+    """Send the agency admin an alert when an account locks. Best-effort.
+
+    ADMIN_EMAIL env var holds the destination. Missing env → log + return.
+    """
+    import os as _os_alert
+    admin_email = (_os_alert.getenv("ADMIN_EMAIL") or "").strip()
+    if not admin_email:
+        return
+    from resend_client import send_email
+    from datetime import datetime as _dt_alert, timezone as _tz_alert
+    from deps import get_client_ip as _ip
+    ip = _ip(request) if request is not None else None
+    unlock_at = attempt_result.get("unlock_at")
+    unlock_iso = unlock_at.isoformat() if unlock_at else "unknown"
+    now_iso = _dt_alert.now(_tz_alert.utc).isoformat()
+    html = f"""
+      <h2 style="color:#991b1b;font-family:sans-serif;">Security alert: account locked</h2>
+      <p style="font-family:sans-serif;font-size:14px;color:#1f2937;">
+        An account has been temporarily locked after repeated failed
+        login attempts.
+      </p>
+      <table style="font-family:sans-serif;font-size:13px;color:#1f2937;">
+        <tr><td><strong>Email</strong></td><td>{email}</td></tr>
+        <tr><td><strong>Failed attempts</strong></td>
+            <td>{attempt_result.get('attempts', '?')}</td></tr>
+        <tr><td><strong>IP address</strong></td><td>{ip or 'unknown'}</td></tr>
+        <tr><td><strong>Locked at</strong></td><td>{now_iso}</td></tr>
+        <tr><td><strong>Auto-unlock at</strong></td><td>{unlock_iso}</td></tr>
+      </table>
+      <p style="font-family:sans-serif;font-size:13px;color:#6b7280;">
+        If this wasn't the legitimate account holder, investigate via
+        the Audit Log in Settings.
+      </p>
+    """
+    await send_email(
+        to=admin_email,
+        subject=f"Security alert: account locked — {email}",
+        html=html,
+    )
 _CSRF_COOKIE = "ghw_csrf_token"
 _COOKIE_MAX_AGE = 60 * 60 * 24  # 24h — matches what we ask of the JWT expiry
 
@@ -269,7 +311,7 @@ async def register(
     return _user_public(user_doc)
 
 
-@router.post("/login", response_model=LoginResponse)
+@router.post("/login")
 @limiter.limit("10/minute")
 async def login(payload: LoginRequest, request: Request, response: Response,
                 db: AsyncIOMotorDatabase = Depends(get_db)):
@@ -317,6 +359,15 @@ async def login(payload: LoginRequest, request: Request, response: Response,
                               })
             await write_audit(db, "login_failed", actor_email=payload.email, request=request,
                               metadata={"reason": "locked_now"})
+            # Hardening 4: best-effort admin notification on every
+            # fresh lockout transition. Never raises — a Resend
+            # outage shouldn't change the auth response shape.
+            try:
+                await _notify_admin_account_locked(
+                    email, attempt_result, request,
+                )
+            except Exception:  # noqa: BLE001
+                pass
             raise HTTPException(
                 status_code=429,
                 detail="Account temporarily locked. Try again in 15 minutes.",
@@ -350,6 +401,27 @@ async def login(payload: LoginRequest, request: Request, response: Response,
                 "Contact your administrator."
             ),
         )
+
+    # MFA gate. If the user has TOTP enabled we DON'T issue the real
+    # JWT yet — mint a 5-minute single-use session token and require
+    # the client to complete the challenge at POST /auth/mfa/verify.
+    # Existing tests don't enable MFA on the seeded admin, so the
+    # legacy "password → JWT" flow continues to work unchanged.
+    if user.get("mfa_enabled"):
+        from mfa import create_pending_session
+        session_token, expires_at = await create_pending_session(db, user["id"])
+        await check_and_record_login_attempt(db, email, success=True)
+        await write_audit(
+            db, "mfa_challenge_required",
+            actor_email=user["email"], actor_id=user["id"],
+            request=request, metadata={"method": "password"},
+        )
+        # Don't plant the access cookie — that comes after MFA verifies.
+        return {
+            "mfa_required": True,
+            "session_token": session_token,
+            "expires_at": expires_at.isoformat(),
+        }
 
     token = create_access_token(_jwt_claims(user))
     await check_and_record_login_attempt(db, email, success=True)
@@ -955,3 +1027,304 @@ async def update_user_profile(
 
     fresh = await db.users.find_one({"id": user_id}, {"_id": 0})
     return _user_public(fresh)
+
+
+# ── MFA (TOTP) ────────────────────────────────────────────────────────────
+# Per-user opt-in TOTP. Setup mints a fresh secret and returns the
+# otpauth:// URI for QR rendering; the user must then submit a valid
+# code through /mfa/verify-setup to flip mfa_enabled=True. Backup
+# codes are shown ONCE at successful setup — the agent must save them.
+
+from pydantic import BaseModel as _MfaBaseModel  # local alias
+from mfa import (
+    generate_totp_secret as _gen_secret,
+    encrypt_secret as _enc_secret,
+    decrypt_secret as _dec_secret,
+    build_otpauth_uri as _otpauth_uri,
+    verify_totp as _verify_totp,
+    generate_backup_codes as _gen_backup_codes,
+    store_backup_codes as _store_backup_codes,
+    consume_backup_code as _consume_backup_code,
+    backup_codes_remaining as _backup_codes_remaining,
+    redeem_pending_session as _redeem_pending,
+    is_mfa_locked as _is_mfa_locked,
+    record_mfa_attempt as _record_mfa_attempt,
+)
+
+
+class MfaSetupResponse(_MfaBaseModel):
+    secret: str
+    qr_code_url: str
+
+
+class MfaVerifySetupRequest(_MfaBaseModel):
+    totp_code: str
+
+
+class MfaVerifyRequest(_MfaBaseModel):
+    session_token: str
+    totp_code: str
+
+
+class MfaBackupRequest(_MfaBaseModel):
+    session_token: str
+    backup_code: str
+
+
+class MfaDisableRequest(_MfaBaseModel):
+    current_password: str
+    totp_code: str
+
+
+@router.post("/mfa/setup", response_model=MfaSetupResponse)
+@limiter.limit("5/hour")
+async def mfa_setup(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Mint a new TOTP secret. Stored encrypted-at-rest but mfa_enabled
+    stays False until the user proves they've successfully provisioned
+    the authenticator via /mfa/verify-setup."""
+    try:
+        secret = _gen_secret()
+        encrypted = _enc_secret(secret)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {"$set": {"mfa_secret": encrypted}},
+    )
+    uri = _otpauth_uri(secret, current_user["email"])
+    await write_audit(
+        db, "mfa_setup_started",
+        actor_email=current_user["email"], actor_id=current_user["id"],
+        target_type="user", target_id=current_user["id"],
+        request=request,
+    )
+    return MfaSetupResponse(secret=secret, qr_code_url=uri)
+
+
+@router.post("/mfa/verify-setup")
+@limiter.limit("10/hour")
+async def mfa_verify_setup(
+    payload: MfaVerifySetupRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    if not fresh or not fresh.get("mfa_secret"):
+        raise HTTPException(status_code=400,
+                            detail="MFA setup not started. Call /mfa/setup first.")
+    try:
+        secret = _dec_secret(fresh["mfa_secret"])
+    except Exception:
+        raise HTTPException(status_code=500,
+                            detail="MFA secret could not be read.")
+    if not _verify_totp(secret, payload.totp_code):
+        await write_audit(
+            db, "mfa_setup_verify_failed",
+            actor_email=current_user["email"], actor_id=current_user["id"],
+            target_type="user", target_id=current_user["id"],
+            request=request,
+        )
+        raise HTTPException(status_code=401, detail="Invalid code. Try again.")
+
+    backup_codes = _gen_backup_codes()
+    await _store_backup_codes(db, current_user["id"], backup_codes)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {"$set": {"mfa_enabled": True, "mfa_verified_at": now_iso}},
+    )
+    await write_audit(
+        db, "mfa_enabled",
+        actor_email=current_user["email"], actor_id=current_user["id"],
+        target_type="user", target_id=current_user["id"],
+        request=request,
+    )
+    return {"success": True, "backup_codes": backup_codes}
+
+
+async def _issue_session_post_mfa(
+    db, user: dict, response: Response, request: Request, method: str,
+):
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one(
+        {"id": user["id"]}, {"$set": {"mfa_verified_at": now_iso}},
+    )
+    fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0}) or user
+    token = create_access_token(_jwt_claims(fresh))
+    _set_session_cookies(response, token)
+    await write_audit(
+        db, "mfa_challenge_success",
+        actor_email=fresh["email"], actor_id=fresh["id"],
+        target_type="user", target_id=fresh["id"],
+        request=request, metadata={"method": method},
+    )
+    await write_audit(
+        db, "login_success",
+        actor_email=fresh["email"], actor_id=fresh["id"],
+        request=request, metadata={"method": f"password+{method}"},
+    )
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": _user_public(fresh).model_dump(),
+    }
+
+
+@router.post("/mfa/verify")
+@limiter.limit("20/hour")
+async def mfa_verify(
+    payload: MfaVerifyRequest,
+    request: Request,
+    response: Response,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    user_id = await _redeem_pending(db, payload.session_token)
+    if not user_id:
+        await write_audit(
+            db, "mfa_challenge_failed", request=request,
+            metadata={"reason": "session_token_invalid"},
+        )
+        raise HTTPException(status_code=401,
+                            detail="Login session expired. Please sign in again.")
+    if await _is_mfa_locked(db, user_id):
+        raise HTTPException(status_code=429,
+                            detail="Too many failed codes. Try again later.")
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user or not user.get("mfa_enabled") or not user.get("mfa_secret"):
+        raise HTTPException(status_code=400, detail="MFA not configured.")
+    try:
+        secret = _dec_secret(user["mfa_secret"])
+    except Exception:
+        raise HTTPException(status_code=500,
+                            detail="MFA secret could not be read.")
+    if not _verify_totp(secret, payload.totp_code):
+        attempt = await _record_mfa_attempt(db, user_id, success=False)
+        await write_audit(
+            db, "mfa_challenge_failed",
+            actor_email=user["email"], actor_id=user["id"],
+            target_type="user", target_id=user["id"],
+            request=request, metadata={"reason": "wrong_code",
+                                        "count": attempt["count"]},
+        )
+        if attempt.get("locked"):
+            raise HTTPException(status_code=429,
+                                detail="Too many failed codes. Try again in 15 minutes.")
+        raise HTTPException(status_code=401, detail="Invalid code. Try again.")
+    await _record_mfa_attempt(db, user_id, success=True)
+    return await _issue_session_post_mfa(db, user, response, request, "totp")
+
+
+@router.post("/mfa/backup-code")
+@limiter.limit("10/hour")
+async def mfa_backup(
+    payload: MfaBackupRequest,
+    request: Request,
+    response: Response,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    user_id = await _redeem_pending(db, payload.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401,
+                            detail="Login session expired. Please sign in again.")
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    ok = await _consume_backup_code(db, user_id, payload.backup_code)
+    if not ok:
+        await _record_mfa_attempt(db, user_id, success=False)
+        await write_audit(
+            db, "mfa_challenge_failed",
+            actor_email=user["email"], actor_id=user["id"],
+            target_type="user", target_id=user["id"],
+            request=request, metadata={"reason": "invalid_backup_code"},
+        )
+        raise HTTPException(status_code=401, detail="Invalid backup code.")
+    await _record_mfa_attempt(db, user_id, success=True)
+    return await _issue_session_post_mfa(db, user, response, request, "backup_code")
+
+
+@router.post("/mfa/disable")
+@limiter.limit("5/hour")
+async def mfa_disable(
+    payload: MfaDisableRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    if not fresh:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not verify_password(payload.current_password, fresh["hashed_password"]):
+        raise HTTPException(status_code=401, detail="Current password incorrect")
+    if not fresh.get("mfa_enabled"):
+        return {"success": True, "mfa_enabled": False}
+    try:
+        secret = _dec_secret(fresh.get("mfa_secret") or "")
+    except Exception:
+        secret = ""
+    if not _verify_totp(secret, payload.totp_code):
+        raise HTTPException(status_code=401, detail="Invalid TOTP code.")
+    await db.users.update_one(
+        {"id": fresh["id"]},
+        {"$set": {"mfa_enabled": False, "mfa_secret": None,
+                  "mfa_verified_at": None}},
+    )
+    await db.mfa_backup_codes.delete_many({"user_id": fresh["id"]})
+    await write_audit(
+        db, "mfa_disabled",
+        actor_email=fresh["email"], actor_id=fresh["id"],
+        target_type="user", target_id=fresh["id"],
+        request=request,
+    )
+    return {"success": True, "mfa_enabled": False}
+
+
+@router.get("/mfa/status")
+async def mfa_status(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    remaining = await _backup_codes_remaining(db, current_user["id"]) if fresh else 0
+    return {
+        "mfa_enabled": bool(fresh and fresh.get("mfa_enabled")),
+        "mfa_verified_at": fresh.get("mfa_verified_at") if fresh else None,
+        "backup_codes_remaining": remaining,
+    }
+
+
+# ── Session refresh (idle-timeout extension) ─────────────────────────────
+@router.post("/refresh")
+@limiter.limit("10/minute")
+async def refresh_session(
+    request: Request,
+    response: Response,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Issue a new JWT whose ``idle_exp`` is bumped back to now+30m.
+
+    Fired by the SPA's activity tracker every ~20 minutes of detected
+    user activity. The absolute ``exp`` is NOT extended past the
+    JWT_EXPIRES_MINUTES window — once the original token times out
+    on its absolute clock, refresh refuses (the request fails the
+    get_current_user gate before reaching here).
+    """
+    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    if not fresh:
+        raise HTTPException(status_code=401, detail="Session expired")
+    token = create_access_token(_jwt_claims(fresh))
+    _set_session_cookies(response, token)
+    await write_audit(
+        db, "session_refresh",
+        actor_email=fresh.get("email"), actor_id=fresh.get("id"),
+        target_type="user", target_id=fresh.get("id"),
+        request=request,
+    )
+    return {"access_token": token, "token_type": "bearer"}

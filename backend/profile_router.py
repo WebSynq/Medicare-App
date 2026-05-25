@@ -168,7 +168,32 @@ async def update_my_profile(
                     "requirements": errors,
                 },
             )
-        updates["hashed_password"] = hash_password(payload.new_password)
+        # Hardening 3: password history. Reject any of the last 5
+        # passwords (current + 4 most-recent rotations) so an agent
+        # can't oscillate between two values to satisfy a quarterly
+        # rotation policy.
+        from security import verify_password as _verify_pw
+        history = list(fresh.get("password_history") or [])
+        candidates = [fresh.get("hashed_password")] + history
+        for old_hash in [h for h in candidates[:5] if h]:
+            if _verify_pw(payload.new_password, old_hash):
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": "Password does not meet security requirements.",
+                        "requirements": [
+                            "Password cannot match any of your last 5 passwords.",
+                        ],
+                    },
+                )
+        new_hash = hash_password(payload.new_password)
+        # Push current hash into history, keep 5 most recent.
+        new_history = (
+            [fresh.get("hashed_password")] + history
+        )[:5]
+        new_history = [h for h in new_history if h]
+        updates["hashed_password"] = new_hash
+        updates["password_history"] = new_history
         # Bump token_version so every previously-issued JWT for this
         # user fails the deps.get_current_user check on next request.
         updates["token_version"] = int(fresh.get("token_version", 0) or 0) + 1

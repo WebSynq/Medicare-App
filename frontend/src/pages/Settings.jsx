@@ -521,7 +521,9 @@ function SecurityTab() {
   }, []);
 
   return (
-    <div className="grid lg:grid-cols-2 gap-5">
+    <div className="space-y-5">
+      <MFAPanel />
+      <div className="grid lg:grid-cols-2 gap-5">
       <Card>
         <CardContent className="p-5 space-y-3">
           <div className="flex items-center gap-2">
@@ -593,9 +595,233 @@ function SecurityTab() {
           </p>
         </CardContent>
       </Card>
+      </div>
     </div>
   );
 }
+
+
+// ── MFA panel (Hardening 1) ─────────────────────────────────────────────
+// Lives inside the Security tab. Three states:
+//   - MFA off            → "Enable 2FA" button → setup card
+//   - Setup in progress  → otpauth URI + manual secret + 6-digit verify
+//   - MFA on             → green status + disable form (pw + TOTP)
+
+function MFAPanel() {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [setupSecret, setSetupSecret] = useState(null);
+  const [setupUri, setSetupUri] = useState(null);
+  const [verifyCode, setVerifyCode] = useState("");
+  const [backupCodes, setBackupCodes] = useState(null);
+  const [busy, setBusy] = useState(false);
+  // Disable form
+  const [disablePw, setDisablePw] = useState("");
+  const [disableTotp, setDisableTotp] = useState("");
+
+  async function loadStatus() {
+    setLoading(true);
+    try {
+      const { data } = await api.get("/auth/mfa/status");
+      setStatus(data);
+    } catch {
+      setStatus({ mfa_enabled: false, backup_codes_remaining: 0 });
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { loadStatus(); }, []);
+
+  async function startSetup() {
+    setBusy(true);
+    try {
+      const { data } = await api.post("/auth/mfa/setup");
+      setSetupSecret(data.secret);
+      setSetupUri(data.qr_code_url);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not start MFA setup");
+    } finally { setBusy(false); }
+  }
+
+  async function verifySetup() {
+    setBusy(true);
+    try {
+      const { data } = await api.post(
+        "/auth/mfa/verify-setup",
+        { totp_code: verifyCode.replace(/\D/g, "") },
+      );
+      setBackupCodes(data.backup_codes || []);
+      setSetupSecret(null);
+      setSetupUri(null);
+      setVerifyCode("");
+      toast.success("Two-factor authentication enabled");
+      loadStatus();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Wrong code — try again");
+    } finally { setBusy(false); }
+  }
+
+  async function disableMfa() {
+    setBusy(true);
+    try {
+      await api.post("/auth/mfa/disable", {
+        current_password: disablePw,
+        totp_code: disableTotp.replace(/\D/g, ""),
+      });
+      setDisablePw("");
+      setDisableTotp("");
+      setBackupCodes(null);
+      toast.success("Two-factor authentication disabled");
+      loadStatus();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Disable failed");
+    } finally { setBusy(false); }
+  }
+
+  function copyBackupCodes() {
+    if (!backupCodes) return;
+    navigator.clipboard.writeText(backupCodes.join("\n"))
+      .then(() => toast.success("Backup codes copied"))
+      .catch(() => toast.error("Copy failed — select manually"));
+  }
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="p-5 text-sm text-muted-foreground">
+          Loading two-factor status…
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-5 space-y-4" data-testid="mfa-panel">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h3 className="text-sm font-semibold flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4" />
+              Two-Factor Authentication
+            </h3>
+            <p className="text-xs text-muted-foreground mt-1">
+              Add a second factor (Google Authenticator, Authy, 1Password)
+              so a stolen password alone can't access your account.
+            </p>
+          </div>
+          {status?.mfa_enabled ? (
+            <Badge className="bg-emerald-100 text-emerald-900">Active</Badge>
+          ) : (
+            <Badge variant="outline">Off</Badge>
+          )}
+        </div>
+
+        {/* Newly-issued backup codes — one-time display */}
+        {backupCodes && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 space-y-2">
+            <div className="text-sm font-semibold text-amber-900">
+              Save these backup codes
+            </div>
+            <p className="text-xs text-amber-900">
+              Each code works ONCE if you lose access to your authenticator
+              app. We won't show them again — copy or print them now.
+            </p>
+            <div className="font-mono text-sm bg-white border border-amber-300 rounded p-3 grid grid-cols-2 gap-1"
+                 data-testid="mfa-backup-codes">
+              {backupCodes.map((c) => <div key={c}>{c}</div>)}
+            </div>
+            <Button size="sm" variant="outline" onClick={copyBackupCodes}>
+              Copy all codes
+            </Button>
+          </div>
+        )}
+
+        {/* MFA disabled — show enable flow */}
+        {!status?.mfa_enabled && !setupSecret && (
+          <Button onClick={startSetup} disabled={busy}
+                   data-testid="mfa-enable-btn">
+            {busy ? "Starting…" : "Enable 2FA"}
+          </Button>
+        )}
+
+        {/* Setup in progress — show secret + verify form */}
+        {!status?.mfa_enabled && setupSecret && (
+          <div className="rounded-md border border-border p-3 space-y-3"
+               data-testid="mfa-setup-card">
+            <div>
+              <Label className="text-xs">
+                Step 1 — Add to your authenticator app
+              </Label>
+              <p className="text-xs text-muted-foreground mt-1">
+                Scan the otpauth link below as a QR code (use your phone
+                camera or a QR generator), or paste the secret manually.
+              </p>
+            </div>
+            <div>
+              <Label className="text-xs">otpauth URI</Label>
+              <Input readOnly value={setupUri}
+                      onFocus={(e) => e.target.select()}
+                      className="font-mono text-[11px]" />
+            </div>
+            <div>
+              <Label className="text-xs">Manual entry secret</Label>
+              <Input readOnly value={setupSecret}
+                      onFocus={(e) => e.target.select()}
+                      className="font-mono" />
+            </div>
+            <div>
+              <Label className="text-xs">
+                Step 2 — Enter the 6-digit code from your app
+              </Label>
+              <Input value={verifyCode}
+                      onChange={(e) => setVerifyCode(e.target.value)}
+                      maxLength={6}
+                      placeholder="123456"
+                      data-testid="mfa-verify-code" />
+            </div>
+            <Button onClick={verifySetup} disabled={busy || !verifyCode}
+                     data-testid="mfa-verify-btn">
+              {busy ? "Verifying…" : "Verify & enable"}
+            </Button>
+          </div>
+        )}
+
+        {/* MFA enabled — show status + disable form */}
+        {status?.mfa_enabled && (
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              {status.mfa_verified_at && (
+                <>Last verified: {fmtDateTime(status.mfa_verified_at)}<br /></>
+              )}
+              Backup codes remaining: {status.backup_codes_remaining ?? 0}
+            </p>
+            <details className="text-sm">
+              <summary className="cursor-pointer text-[#e85d2f]">
+                Disable two-factor authentication
+              </summary>
+              <div className="mt-3 space-y-2 max-w-sm">
+                <Input type="password" placeholder="Current password"
+                        value={disablePw}
+                        onChange={(e) => setDisablePw(e.target.value)}
+                        data-testid="mfa-disable-pw" />
+                <Input value={disableTotp}
+                        onChange={(e) => setDisableTotp(e.target.value)}
+                        maxLength={6} placeholder="6-digit code"
+                        data-testid="mfa-disable-totp" />
+                <Button size="sm" variant="outline" onClick={disableMfa}
+                         disabled={busy || !disablePw || !disableTotp}
+                         data-testid="mfa-disable-btn">
+                  {busy ? "Disabling…" : "Disable 2FA"}
+                </Button>
+              </div>
+            </details>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 
 // ── Audit Log tab ────────────────────────────────────────────────────────
 function AuditLogTab({ me }) {

@@ -191,6 +191,29 @@ async def get_current_user(
             detail="Session expired — please sign in again",
         )
 
+    # Hardening 2: idle-timeout enforcement. The SPA refreshes via
+    # /auth/refresh on activity; tokens missing `idle_exp` (legacy /
+    # tests not minting through the new path) skip this gate. Absolute
+    # `exp` is still enforced by jwt.decode above.
+    idle_exp = payload.get("idle_exp")
+    if idle_exp:
+        try:
+            idle_exp_ts = int(idle_exp)
+        except (TypeError, ValueError):
+            idle_exp_ts = 0
+        if idle_exp_ts and datetime.now(timezone.utc).timestamp() > idle_exp_ts:
+            raise HTTPException(
+                status_code=401,
+                detail="Session expired due to inactivity",
+            )
+
+    # Stash the JWT's jti so write_audit can stamp a session_id
+    # without re-parsing the token. Lives on request.state for the
+    # duration of this request only.
+    jti = payload.get("jti")
+    if jti and hasattr(request, "state"):
+        request.state.session_id = jti
+
     return user
 
 
@@ -466,6 +489,16 @@ async def write_audit(
     metadata: Optional[dict] = None,
 ):
     import uuid
+    # Best-effort session_id pull from the request scope. The
+    # get_current_user dependency stashes the JWT jti onto
+    # request.state.session_id during auth — we read it back here so
+    # every audit row written within an authenticated request can be
+    # correlated to a single login session. None when called outside
+    # an authenticated context (public endpoints, automations).
+    session_id = None
+    if request is not None:
+        session_id = getattr(getattr(request, "state", None),
+                              "session_id", None)
     doc = {
         "id": str(uuid.uuid4()),
         "event_type": event_type,
@@ -474,7 +507,12 @@ async def write_audit(
         "target_type": target_type,
         "target_id": target_id,
         "ip_address": get_client_ip(request) if request else None,
-        "user_agent": request.headers.get("user-agent") if request else None,
+        # user_agent capped at 200 chars — some embedded clients ship
+        # multi-kilobyte UA strings that bloat the audit_logs collection.
+        "user_agent": (
+            (request.headers.get("user-agent") or "")[:200] or None
+        ) if request else None,
+        "session_id": session_id,
         "metadata": metadata or {},
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

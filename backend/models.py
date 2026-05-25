@@ -136,6 +136,17 @@ class UserBase(BaseModel):
     # the booking page from Settings → Booking. See profile_router's
     # PATCH /profile/booking-settings for the write surface.
     booking_settings: Optional[BookingSettings] = None
+    # MFA (TOTP). mfa_secret is the Fernet-encrypted TOTP shared secret
+    # — never returned in any API response. mfa_verified_at stamps the
+    # last successful MFA challenge for audit / "last verified" UI.
+    # mfa_enabled gates the post-password redirect to /mfa.
+    mfa_enabled: bool = False
+    mfa_secret: Optional[str] = None
+    mfa_verified_at: Optional[str] = None
+    # Password history — last 5 bcrypt hashes. The change-password
+    # endpoint rejects any new password matching one of these, blocking
+    # naive cycle-resets ("Spring2026!", "Spring2027!"...).
+    password_history: List[str] = []
 
     @field_validator("agent_name")
     @classmethod

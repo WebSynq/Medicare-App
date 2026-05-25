@@ -12,6 +12,24 @@ from cryptography.fernet import Fernet
 JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRES_MINUTES = int(os.environ.get("JWT_EXPIRES_MINUTES", "60"))
+# Hardening 2: idle-timeout minutes stamped into every fresh JWT under
+# the `idle_exp` claim. The SPA fires /auth/refresh on activity to
+# bump it back to "now + N". 30-minute default = HIPAA-aligned for
+# unattended-workstation scenarios.
+JWT_IDLE_TIMEOUT_MINUTES = int(
+    os.environ.get("JWT_IDLE_TIMEOUT_MINUTES", "30"),
+)
+
+# Common-password blocklist (Hardening 3). Catches the obvious 2026
+# pen-test losers — agents try to game length requirements with these.
+# Lowercased for the comparison.
+_COMMON_PASSWORDS = {
+    "password1234", "password12345", "password123!", "password1!aa",
+    "qwertyuiop12", "qwerty12345!a", "letmein123456", "welcome12345!",
+    "abc123456789!", "iloveyou1234!", "monkey1234!aa", "dragon12345!",
+    "trustno1234!a", "admin1234567!", "superman1234!", "starwars123!",
+    "medicare2026", "medicare1234", "ghw2026!aaaaa", "agentlogin1!",
+}
 
 
 def validate_password_strength(
@@ -48,6 +66,8 @@ def validate_password_strength(
         errors.append("Password cannot be the same as your email.")
     if full_name and lowered and lowered == (full_name or "").strip().lower():
         errors.append("Password cannot be the same as your full name.")
+    if lowered in _COMMON_PASSWORDS:
+        errors.append("This password is too common — please choose a different one.")
 
     return errors
 
@@ -65,8 +85,20 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def create_access_token(claims: Dict[str, Any], expires_minutes: Optional[int] = None) -> str:
     to_encode = claims.copy()
-    expire = datetime.now(timezone.utc) + timedelta(minutes=expires_minutes or JWT_EXPIRES_MINUTES)
-    to_encode.update({"exp": expire, "iat": datetime.now(timezone.utc)})
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(minutes=expires_minutes or JWT_EXPIRES_MINUTES)
+    # Hardening 2: stamp `idle_exp` (epoch seconds) + `jti` (session id
+    # for audit log correlation). Refresh endpoint reissues with a
+    # fresh idle_exp; absolute `exp` is never extended past the original
+    # JWT_EXPIRES_MINUTES window.
+    import uuid as _uuid_jti
+    idle_exp = now + timedelta(minutes=JWT_IDLE_TIMEOUT_MINUTES)
+    to_encode.update({
+        "exp": expire,
+        "iat": now,
+        "idle_exp": int(idle_exp.timestamp()),
+        "jti": _uuid_jti.uuid4().hex,
+    })
     return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 

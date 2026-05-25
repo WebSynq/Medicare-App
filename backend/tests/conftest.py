@@ -32,6 +32,18 @@ os.environ["DISABLE_SCHEDULER"] = "1"
 # the test process. encryption.py lazy-loads it on first PHI write/read.
 from cryptography.fernet import Fernet as _Fernet  # noqa: E402
 os.environ.setdefault("PHI_FIELD_KEY", _Fernet.generate_key().decode())
+# Hardening 1: per-session Fernet key for the MFA TOTP secret. Never
+# the production key. Tests that exercise /api/auth/mfa/* round-trip
+# through encrypt_secret / decrypt_secret with this key.
+os.environ.setdefault("MFA_ENCRYPTION_KEY", _Fernet.generate_key().decode())
+# Hardening 2: tighten idle-timeout for tests so JWTs minted at
+# session start aren't unexpectedly long-lived in fast runs. Anything
+# above the test duration is fine — keep 30m to match production.
+os.environ.setdefault("JWT_IDLE_TIMEOUT_MINUTES", "30")
+# Hardening 4: ADMIN_EMAIL is required for the lockout notification
+# helper. Tests don't actually send mail (RESEND_API_KEY is unset)
+# but the helper still runs the env-read path.
+os.environ.setdefault("ADMIN_EMAIL", "admin-alerts@example.com")
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:

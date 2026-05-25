@@ -11,6 +11,7 @@ import ResetPassword from "@/pages/ResetPassword";
 import SOAForm from "@/pages/SOAForm";
 import BookingPage from "@/pages/BookingPage";
 import MagicLinkVerify from "@/pages/MagicLinkVerify";
+import MFAChallenge from "@/pages/MFAChallenge";
 import AgentDashboard from "@/pages/AgentDashboard";
 import TodayPage from "@/pages/TodayPage";
 import AppointmentsList from "@/pages/AppointmentsList";
@@ -38,6 +39,9 @@ import AgencyCommandCenter from "@/pages/AgencyCommandCenter";
 import { auth, COMMAND_CENTER_ROLES } from "@/lib/api";
 import { AppLayout } from "@/components/Layout";
 import { AgentProvider } from "@/context/AgentContext";
+import { useEffect, useState } from "react";
+import { installSessionManager, bumpActivity } from "@/lib/session";
+import { toast } from "sonner";
 
 // Compliance-bucket roles — see the same screens as legacy "compliance".
 // Kept in sync with backend deps.COMPLIANCE_ROLES.
@@ -55,8 +59,92 @@ function ProtectedExact({ children, roleSet, noLayout }) {
   return <AppLayout>{children}</AppLayout>;
 }
 
+/**
+ * Idle-timeout warning modal — fires at 25 min, hard-logs out at 30 min
+ * if no response. Mounted globally so every authenticated route gets
+ * it. Visually minimal so it doesn't depend on shadcn primitives.
+ */
+function IdleTimeoutWarning({ msUntilLogout, onStay, onLogout }) {
+  const [remaining, setRemaining] = useState(
+    Math.max(0, Math.floor(msUntilLogout / 1000)),
+  );
+  useEffect(() => {
+    const t = setInterval(() => setRemaining((s) => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
+  const ss = String(remaining % 60).padStart(2, "0");
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      style={{
+        position: "fixed", inset: 0, zIndex: 9999,
+        background: "rgba(15, 23, 42, 0.55)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 16,
+      }}
+      data-testid="idle-timeout-warning"
+    >
+      <div style={{
+        background: "#fff", borderRadius: 12, padding: 24,
+        maxWidth: 380, width: "100%",
+        boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+        fontFamily: `-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif`,
+      }}>
+        <h2 style={{ margin: 0, color: "#1B4332", fontSize: 18, fontWeight: 700 }}>
+          You're about to be signed out
+        </h2>
+        <p style={{ color: "#4B5563", fontSize: 14, lineHeight: 1.5, marginTop: 8 }}>
+          Your session will end in <strong>{mm}:{ss}</strong> due to inactivity.
+        </p>
+        <div style={{ marginTop: 18, display: "flex", gap: 8 }}>
+          <button onClick={onLogout}
+                   style={{
+                     flex: 1, padding: "10px 12px", borderRadius: 8,
+                     border: "1px solid #E5E7EB", background: "#fff",
+                     color: "#1F2937", fontWeight: 600, cursor: "pointer",
+                   }}>
+            Log out now
+          </button>
+          <button onClick={onStay}
+                   style={{
+                     flex: 1, padding: "10px 12px", borderRadius: 8,
+                     border: "none", background: "#1B4332",
+                     color: "#fff", fontWeight: 700, cursor: "pointer",
+                   }}>
+            Stay logged in
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Install the activity-driven session manager whenever there's a
+ * logged-in user. Tears down on logout. Lives inside the Protected
+ * wrapper so unauthenticated routes don't install timers.
+ */
+function useSessionLifecycle() {
+  const [warning, setWarning] = useState(null);
+  useEffect(() => {
+    if (!auth.getUser()) return;
+    const teardown = installSessionManager({
+      onIdleWarning: (info) => setWarning(info),
+      onIdleLogout: () => {
+        try { auth.logout(); } catch { /* ignore */ }
+        window.location.assign("/login");
+      },
+    });
+    return teardown;
+  }, []);
+  return [warning, setWarning];
+}
+
 function Protected({ children, roles, forbid, noLayout }) {
   const user = auth.getUser();
+  const [warning, setWarning] = useSessionLifecycle();
   if (!user) return <Navigate to="/login" replace />;
   // Expand "compliance" in route role lists to include the wider
   // compliance bucket so cyber_security/sales_manager hit the same set
@@ -77,8 +165,34 @@ function Protected({ children, roles, forbid, noLayout }) {
   if (forbid && forbid.includes(user.role)) {
     return <Navigate to="/today" replace />;
   }
-  if (noLayout) return children;
-  return <AppLayout>{children}</AppLayout>;
+  const inner = (
+    <>
+      {children}
+      {warning && (
+        <IdleTimeoutWarning
+          msUntilLogout={warning.msUntilLogout}
+          onStay={async () => {
+            bumpActivity();
+            try {
+              const axios = (await import("axios")).default;
+              const BACKEND = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/+$/, "");
+              await axios.post(`${BACKEND}/api/auth/refresh`, null, {
+                withCredentials: true,
+              });
+            } catch { /* the SPA will 401 on next request */ }
+            setWarning(null);
+            toast.success("Welcome back");
+          }}
+          onLogout={() => {
+            try { auth.logout(); } catch { /* ignore */ }
+            window.location.assign("/login");
+          }}
+        />
+      )}
+    </>
+  );
+  if (noLayout) return inner;
+  return <AppLayout>{inner}</AppLayout>;
 }
 
 export default function App() {
@@ -102,6 +216,9 @@ export default function App() {
         {/* Magic-link verification — public route. Reads ?token from
             the URL, exchanges for a session, then redirects to /today. */}
         <Route path="/auth/magic" element={<MagicLinkVerify />} />
+        {/* MFA challenge — public route (user is mid-login).
+            Reads session_token from location.state or ?st param. */}
+        <Route path="/mfa" element={<MFAChallenge />} />
         <Route
           path="/agency-dashboard"
           element={

@@ -101,6 +101,19 @@ export default function Login() {
     setLoading(true);
     try {
       const res = await api.post("/auth/login", { email, password });
+      // Hardening 1: MFA-gated accounts receive a session_token instead
+      // of an access_token. Redirect to the MFA challenge with the
+      // session token in router state (kept out of the URL bar; the
+      // ?st= query fallback is in MFAChallenge.jsx for deep-link cases).
+      if (res.data?.mfa_required) {
+        nav("/mfa", {
+          state: {
+            session_token: res.data.session_token,
+            redirect: "/today",
+          },
+        });
+        return;
+      }
       auth.saveSession(res.data.access_token, res.data.user);
       toast.success("Welcome back");
       nav(landingForUser(res.data.user));

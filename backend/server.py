@@ -317,6 +317,20 @@ _CSRF_EXEMPT_PATHS = {
     # session cookie, mirroring how /login behaves.
     "/api/auth/magic-link",
     "/api/auth/magic-link/verify",
+    # MFA flow (Hardening 1). All five paths run in the same
+    # password→TOTP→JWT context as /login above: callers are mid-
+    # authentication, no CSRF cookie planted yet. The HMAC session
+    # token in the body is the auth substitute for /verify and
+    # /backup-code; /setup, /verify-setup, /disable require an already-
+    # authenticated session via the get_current_user dependency.
+    "/api/auth/mfa/setup",
+    "/api/auth/mfa/verify-setup",
+    "/api/auth/mfa/verify",
+    "/api/auth/mfa/backup-code",
+    "/api/auth/mfa/disable",
+    # Session refresh (Hardening 2). Bearer/cookie auth is the gate;
+    # CSRF cookie isn't always present (e.g. mobile webview).
+    "/api/auth/refresh",
     # Commission AI chat — Anthropic-backed POST. Auth is enforced by
     # get_current_user (JWT, cookie OR header); CSRF exempt by product
     # decision so the panel can post without echoing the csrf cookie.
@@ -745,6 +759,25 @@ _PROD_INDEXES = [
     ("magic_link_tokens", "user_id", {"background": True}),
     ("magic_link_tokens", "expires_at",
      {"background": True, "expireAfterSeconds": 3600}),
+
+    # MFA collections (Hardening 1).
+    # Pending sessions auto-expire after 5 minutes via TTL — single-use
+    # tokens that bridge password → TOTP. expires_at is a BSON Date so
+    # the TTL index works without extra conversion.
+    ("mfa_pending_sessions", "expires_at",
+     {"background": True, "expireAfterSeconds": 0}),
+    ("mfa_pending_sessions", "user_id", {"background": True}),
+    # Backup codes — lookup by user with the unused subset.
+    ("mfa_backup_codes",
+     [("user_id", 1), ("used", 1)], {"background": True}),
+    # Per-user MFA failure counter.
+    ("mfa_attempts", "locked_until", {"background": True, "sparse": True}),
+
+    # ⚠️ HIPAA: audit_logs MUST NOT have a TTL index.
+    # Retention period: 7 years minimum per 45 CFR 164.312(b).
+    # The audit_logs indexes above are query-only — no expireAfterSeconds.
+    # The audit-log CSV export endpoint at /api/audit/export is the
+    # supported way to pull rows for compliance review.
 
     # Booking + automation indexes (Phase 1 build).
     # Appointment send-flag indexes — sparse so only the rows the
