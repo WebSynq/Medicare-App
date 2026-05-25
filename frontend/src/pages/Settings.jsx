@@ -28,6 +28,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
   ShieldCheck,
   Plug,
   Building2,
@@ -615,7 +623,11 @@ function MFAPanel() {
   const [verifyCode, setVerifyCode] = useState("");
   const [backupCodes, setBackupCodes] = useState(null);
   const [busy, setBusy] = useState(false);
-  // Disable form
+
+  // Disable confirmation modal state. Lives separately from the rest
+  // so the modal can manage its own open/close + focus lifecycle
+  // without spilling validation state onto the parent card.
+  const [disableOpen, setDisableOpen] = useState(false);
   const [disablePw, setDisablePw] = useState("");
   const [disableTotp, setDisableTotp] = useState("");
 
@@ -655,13 +667,16 @@ function MFAPanel() {
       setSetupUri(null);
       setVerifyCode("");
       toast.success("Two-factor authentication enabled");
+      // Refresh status in the background; the "save your codes" panel
+      // takes precedence over the freshly-enabled banner until the user
+      // dismisses it with "I've saved them".
       loadStatus();
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Wrong code — try again");
     } finally { setBusy(false); }
   }
 
-  async function disableMfa() {
+  async function confirmDisable() {
     setBusy(true);
     try {
       await api.post("/auth/mfa/disable", {
@@ -671,6 +686,7 @@ function MFAPanel() {
       setDisablePw("");
       setDisableTotp("");
       setBackupCodes(null);
+      setDisableOpen(false);
       toast.success("Two-factor authentication disabled");
       loadStatus();
     } catch (err) {
@@ -678,11 +694,54 @@ function MFAPanel() {
     } finally { setBusy(false); }
   }
 
+  function copyOtpauth() {
+    if (!setupUri) return;
+    navigator.clipboard.writeText(setupUri)
+      .then(() => toast.success("otpauth URI copied"))
+      .catch(() => toast.error("Copy failed — select manually"));
+  }
+
   function copyBackupCodes() {
     if (!backupCodes) return;
     navigator.clipboard.writeText(backupCodes.join("\n"))
       .then(() => toast.success("Backup codes copied"))
       .catch(() => toast.error("Copy failed — select manually"));
+  }
+
+  function downloadBackupCodes() {
+    if (!backupCodes || backupCodes.length === 0) return;
+    const stamp = new Date().toISOString().slice(0, 10);
+    const header = (
+      "Gruening Health & Wealth — Two-Factor Backup Codes\n" +
+      `Generated: ${new Date().toLocaleString()}\n` +
+      "\n" +
+      "Each code can only be used ONCE if you lose access to your\n" +
+      "authenticator app. Store them somewhere safe (password manager,\n" +
+      "printed and locked away). Anyone with these codes can sign in\n" +
+      "to your account.\n" +
+      "\n" +
+      "----- BACKUP CODES -----\n"
+    );
+    const blob = new Blob(
+      [header + backupCodes.join("\n") + "\n"],
+      { type: "text/plain;charset=utf-8" },
+    );
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `ghw-backup-codes-${stamp}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // Dismissing the codes panel transitions the UI to the standard
+  // "MFA enabled" state. Codes are NEVER re-fetchable — the dismiss
+  // button is the user's explicit acknowledgement that they've stored
+  // them somewhere safe.
+  function dismissBackupCodes() {
+    setBackupCodes(null);
   }
 
   if (loading) {
@@ -695,6 +754,14 @@ function MFAPanel() {
     );
   }
 
+  // While backup_codes are showing we treat the panel as "still in
+  // setup" so the enabled-state UI doesn't render alongside the
+  // save-your-codes warning.
+  const showEnabledState = status?.mfa_enabled && !backupCodes;
+  const showSetupCard = !status?.mfa_enabled && setupSecret && !backupCodes;
+  const showEnableButton =
+    !status?.mfa_enabled && !setupSecret && !backupCodes;
+
   return (
     <Card>
       <CardContent className="p-5 space-y-4" data-testid="mfa-panel">
@@ -705,39 +772,59 @@ function MFAPanel() {
               Two-Factor Authentication
             </h3>
             <p className="text-xs text-muted-foreground mt-1">
-              Add a second factor (Google Authenticator, Authy, 1Password)
-              so a stolen password alone can't access your account.
+              Protect your account with an authenticator app (Google
+              Authenticator, Authy, 1Password) so a stolen password
+              alone can't access your account.
             </p>
           </div>
-          {status?.mfa_enabled ? (
-            <Badge className="bg-emerald-100 text-emerald-900">Active</Badge>
+          {showEnabledState ? (
+            <Badge className="bg-emerald-100 text-emerald-900"
+                    data-testid="mfa-status-badge">
+              Active
+            </Badge>
           ) : (
-            <Badge variant="outline">Off</Badge>
+            <Badge variant="outline" data-testid="mfa-status-badge">Off</Badge>
           )}
         </div>
 
-        {/* Newly-issued backup codes — one-time display */}
+        {/* One-time backup codes panel — shown right after a successful
+            verify-setup. The user MUST dismiss with "I've saved them"
+            to clear it. */}
         {backupCodes && (
-          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 space-y-2">
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-4 space-y-3"
+               data-testid="mfa-backup-codes-panel">
             <div className="text-sm font-semibold text-amber-900">
-              Save these backup codes
+              Save these backup codes — you won't see them again
             </div>
             <p className="text-xs text-amber-900">
               Each code works ONCE if you lose access to your authenticator
-              app. We won't show them again — copy or print them now.
+              app. Store them in a password manager or print and lock them
+              away. Anyone with these codes can sign in to your account.
             </p>
             <div className="font-mono text-sm bg-white border border-amber-300 rounded p-3 grid grid-cols-2 gap-1"
                  data-testid="mfa-backup-codes">
               {backupCodes.map((c) => <div key={c}>{c}</div>)}
             </div>
-            <Button size="sm" variant="outline" onClick={copyBackupCodes}>
-              Copy all codes
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={downloadBackupCodes}
+                       data-testid="mfa-backup-download">
+                Download
+              </Button>
+              <Button size="sm" variant="outline" onClick={copyBackupCodes}
+                       data-testid="mfa-backup-copy">
+                Copy all codes
+              </Button>
+              <Button size="sm" onClick={dismissBackupCodes}
+                       data-testid="mfa-backup-dismiss"
+                       className="ml-auto">
+                I've saved them
+              </Button>
+            </div>
           </div>
         )}
 
         {/* MFA disabled — show enable flow */}
-        {!status?.mfa_enabled && !setupSecret && (
+        {showEnableButton && (
           <Button onClick={startSetup} disabled={busy}
                    data-testid="mfa-enable-btn">
             {busy ? "Starting…" : "Enable 2FA"}
@@ -745,38 +832,48 @@ function MFAPanel() {
         )}
 
         {/* Setup in progress — show secret + verify form */}
-        {!status?.mfa_enabled && setupSecret && (
+        {showSetupCard && (
           <div className="rounded-md border border-border p-3 space-y-3"
                data-testid="mfa-setup-card">
             <div>
               <Label className="text-xs">
-                Step 1 — Add to your authenticator app
+                Step 1 — Add this to your authenticator app
               </Label>
               <p className="text-xs text-muted-foreground mt-1">
-                Scan the otpauth link below as a QR code (use your phone
-                camera or a QR generator), or paste the secret manually.
+                Scan the otpauth URI below as a QR code (use your phone
+                camera or a QR generator), or paste the manual entry
+                secret directly into your authenticator.
               </p>
             </div>
             <div>
               <Label className="text-xs">otpauth URI</Label>
-              <Input readOnly value={setupUri}
-                      onFocus={(e) => e.target.select()}
-                      className="font-mono text-[11px]" />
+              <div className="flex gap-2">
+                <Input readOnly value={setupUri || ""}
+                        onFocus={(e) => e.target.select()}
+                        className="font-mono text-[11px]"
+                        data-testid="mfa-otpauth-uri" />
+                <Button size="sm" variant="outline" onClick={copyOtpauth}
+                         data-testid="mfa-otpauth-copy">
+                  Copy
+                </Button>
+              </div>
             </div>
             <div>
-              <Label className="text-xs">Manual entry secret</Label>
-              <Input readOnly value={setupSecret}
+              <Label className="text-xs">Manual entry code</Label>
+              <Input readOnly value={setupSecret || ""}
                       onFocus={(e) => e.target.select()}
-                      className="font-mono" />
+                      className="font-mono"
+                      data-testid="mfa-manual-secret" />
             </div>
             <div>
               <Label className="text-xs">
-                Step 2 — Enter the 6-digit code from your app
+                Step 2 — Enter the code from your app to verify
               </Label>
               <Input value={verifyCode}
                       onChange={(e) => setVerifyCode(e.target.value)}
                       maxLength={6}
                       placeholder="123456"
+                      inputMode="numeric"
                       data-testid="mfa-verify-code" />
             </div>
             <Button onClick={verifySetup} disabled={busy || !verifyCode}
@@ -786,8 +883,8 @@ function MFAPanel() {
           </div>
         )}
 
-        {/* MFA enabled — show status + disable form */}
-        {status?.mfa_enabled && (
+        {/* MFA enabled — show status + disable button */}
+        {showEnabledState && (
           <div className="space-y-3">
             <p className="text-xs text-muted-foreground">
               {status.mfa_verified_at && (
@@ -795,28 +892,65 @@ function MFAPanel() {
               )}
               Backup codes remaining: {status.backup_codes_remaining ?? 0}
             </p>
-            <details className="text-sm">
-              <summary className="cursor-pointer text-[#e85d2f]">
-                Disable two-factor authentication
-              </summary>
-              <div className="mt-3 space-y-2 max-w-sm">
-                <Input type="password" placeholder="Current password"
+            <Button size="sm" variant="outline"
+                     onClick={() => setDisableOpen(true)}
+                     data-testid="mfa-open-disable">
+              Disable 2FA
+            </Button>
+          </div>
+        )}
+
+        {/* Disable confirmation — modal, requires password + TOTP */}
+        <Dialog open={disableOpen}
+                onOpenChange={(open) => {
+                  setDisableOpen(open);
+                  if (!open) {
+                    setDisablePw("");
+                    setDisableTotp("");
+                  }
+                }}>
+          <DialogContent data-testid="mfa-disable-dialog">
+            <DialogHeader>
+              <DialogTitle>Disable two-factor authentication?</DialogTitle>
+              <DialogDescription>
+                You'll need to confirm with your current password and a
+                live code from your authenticator app. Backup codes will
+                also be invalidated.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <div>
+                <Label className="text-xs">Current password</Label>
+                <Input type="password" autoComplete="current-password"
                         value={disablePw}
                         onChange={(e) => setDisablePw(e.target.value)}
                         data-testid="mfa-disable-pw" />
+              </div>
+              <div>
+                <Label className="text-xs">6-digit code</Label>
                 <Input value={disableTotp}
                         onChange={(e) => setDisableTotp(e.target.value)}
-                        maxLength={6} placeholder="6-digit code"
+                        maxLength={6}
+                        placeholder="123456"
+                        inputMode="numeric"
                         data-testid="mfa-disable-totp" />
-                <Button size="sm" variant="outline" onClick={disableMfa}
-                         disabled={busy || !disablePw || !disableTotp}
-                         data-testid="mfa-disable-btn">
-                  {busy ? "Disabling…" : "Disable 2FA"}
-                </Button>
               </div>
-            </details>
-          </div>
-        )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline"
+                       onClick={() => setDisableOpen(false)}
+                       disabled={busy}>
+                Cancel
+              </Button>
+              <Button variant="destructive"
+                       onClick={confirmDisable}
+                       disabled={busy || !disablePw || !disableTotp}
+                       data-testid="mfa-disable-confirm">
+                {busy ? "Disabling…" : "Disable 2FA"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </CardContent>
     </Card>
   );

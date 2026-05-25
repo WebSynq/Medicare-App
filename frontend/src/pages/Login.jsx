@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useLocation, useNavigate, Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   Lock,
@@ -29,6 +29,7 @@ const RESEND_COOLDOWN_SECONDS = 60;
 
 export default function Login() {
   const nav = useNavigate();
+  const location = useLocation();
   const [mode, setMode] = useState("magic"); // "magic" | "password"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -105,11 +106,14 @@ export default function Login() {
       // of an access_token. Redirect to the MFA challenge with the
       // session token in router state (kept out of the URL bar; the
       // ?st= query fallback is in MFAChallenge.jsx for deep-link cases).
-      if (res.data?.mfa_required) {
+      // `from` carries through the originally-requested URL when the
+      // Protected wrapper bounced an unauthenticated visit here, so
+      // MFAChallenge can land the user where they were headed.
+      if (res.data?.mfa_required === true && res.data?.session_token) {
         nav("/mfa", {
           state: {
             session_token: res.data.session_token,
-            redirect: "/today",
+            from: location.state?.from,
           },
         });
         return;
