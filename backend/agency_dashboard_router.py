@@ -31,8 +31,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from deps import get_db, get_phi_db, require_roles, write_audit
+from deps import get_agency_id, get_db, get_phi_db, require_roles, write_audit
 from encryption import safe_lead_load
+from dashboard_aggregator import refresh_dashboard_stats
 # Re-use the birthday helpers so "windows open now" matches what the
 # birthday-rule panel shows agents.
 from birthday_rule_router import (
@@ -126,6 +127,55 @@ def _iso_range_filter(field: str, start: Optional[datetime],
     if start is None:
         return {}
     return {field: {"$gte": start.isoformat(), "$lte": end.isoformat()}}
+
+
+# ── dashboard_stats cache helper ───────────────────────────────────────────
+# Per Fix E: the expensive aggregations (P1-P5 + alerts stale-leads) are
+# pre-computed by dashboard_aggregator on a 15-min APScheduler tick. Each
+# read endpoint asks _stats_doc() for the snapshot; on miss / stale /
+# explicit ?refresh=true, we run a live recompute inline so the dashboard
+# is NEVER blank — slow > empty.
+
+_STATS_STALE_SECONDS = 30 * 60   # 30 min — 2x the refresh interval
+
+async def _stats_doc(
+    db, force_refresh: bool = False,
+) -> Tuple[Dict[str, Any], int]:
+    """Returns (snapshot_doc, freshness_seconds).
+
+    On miss / stale / force_refresh → recompute inline + upsert and
+    return freshness=0. Never returns None — the live fallback guards
+    against a cold cache (first boot before the scheduler tick) and
+    against any scheduler outage.
+    """
+    agency_id = get_agency_id()
+    now = datetime.now(timezone.utc)
+    if not force_refresh:
+        doc = await db.dashboard_stats.find_one({"agency_id": agency_id})
+        if doc:
+            try:
+                computed = datetime.fromisoformat(doc.get("computed_at", ""))
+                age = int((now - computed).total_seconds())
+                if age <= _STATS_STALE_SECONDS:
+                    return doc, age
+            except (TypeError, ValueError):
+                # computed_at malformed — fall through to live recompute
+                pass
+    # Miss / stale / forced → live compute. refresh_dashboard_stats
+    # upserts into dashboard_stats and returns the new doc.
+    doc = await refresh_dashboard_stats(db, agency_id=agency_id)
+    return doc, 0
+
+
+def _stats_meta(doc: Dict[str, Any], freshness_seconds: int) -> Dict[str, Any]:
+    """Standard _meta block appended to every endpoint response so the
+    SPA can render 'Updated X minutes ago' and decide when to re-fetch."""
+    return {
+        "computed_at": doc.get("computed_at"),
+        "freshness_seconds": freshness_seconds,
+        "stale_seconds_threshold": _STATS_STALE_SECONDS,
+        "pipeline_errors": len(doc.get("errors") or []),
+    }
 
 
 # ── KPIs ──────────────────────────────────────────────────────────────────
@@ -259,6 +309,9 @@ async def _renewals_due(db, within_days: int) -> int:
 async def kpis(
     request: Request,
     period: str = Query("mtd", pattern="^(mtd|last30|last90|ytd|all)$"),
+    refresh: bool = Query(False, description="Force live recompute of "
+                          "pre-aggregated stats. AGENCY_ROLES already gates "
+                          "access to this whole router."),
     current_user: dict = Depends(require_roles(*AGENCY_ROLES)),
     db=Depends(get_phi_db),
 ):
@@ -268,15 +321,29 @@ async def kpis(
 
     Stale-agents, birthday-windows, renewals-due are not period-
     bound — they're "right-now" alerts.
+
+    Fix E: agents_with_activity and stale_agents come from the
+    dashboard_stats cache (pre-aggregated every 15min). The
+    count_documents calls below stay live — those use indexed fields
+    and run in milliseconds.
     """
     start, end = _period_range(period)
     prior_start, prior_end = (
         _prior_period(start, end) if start else (None, end)
     )
 
+    # Pull the pre-aggregated snapshot up front; falls back to live
+    # recompute on miss / stale / explicit ?refresh=true.
+    stats, freshness = await _stats_doc(db, force_refresh=refresh)
+    period_block = (stats.get("periods") or {}).get(period) or {}
+
     # ── Counts ────────────────────────────────────────────────────────
     total_agents = await _agent_count(db)
-    active_agents = await _agents_with_activity(db, start, end)
+    # P1 — from cache when present, live fallback if the period key is
+    # missing (e.g. a schema mismatch from a partial refresh).
+    active_agents = period_block.get("agents_with_activity")
+    if active_agents is None:
+        active_agents = await _agents_with_activity(db, start, end)
 
     total_leads = await db.leads.count_documents({})
     new_leads = await db.leads.count_documents(
@@ -335,7 +402,11 @@ async def kpis(
 
     birthday_open = await _birthday_open_count(db)
     renewals_30 = await _renewals_due(db, 30)
-    stale_agents = await _stale_agent_count(db)
+    # P2 — derived in the aggregator from the agents_last_active map
+    # (no second full-collection $group). Cache miss → live fallback.
+    stale_agents = stats.get("stale_agent_count")
+    if stale_agents is None:
+        stale_agents = await _stale_agent_count(db)
 
     payload = {
         "period": period,
@@ -367,13 +438,14 @@ async def kpis(
         "birthday_windows": {"open_now": birthday_open},
         "renewals": {"due_30_days": renewals_30},
         "stale_agents": {"count": stale_agents},
+        "_meta": _stats_meta(stats, freshness),
     }
 
     await write_audit(
         db, "agency_dashboard_kpis_viewed",
         actor_email=current_user.get("email"),
         actor_id=current_user.get("id"),
-        request=request, metadata={"period": period},
+        request=request, metadata={"period": period, "cache_age_s": freshness},
     )
     return payload
 
@@ -403,6 +475,7 @@ def _activity_status(last_active_iso: Optional[str]) -> str:
 async def agent_performance(
     request: Request,
     period: str = Query("mtd", pattern="^(mtd|last30|last90|ytd|all)$"),
+    refresh: bool = Query(False),
     current_user: dict = Depends(require_roles(*AGENCY_ROLES)),
     db=Depends(get_phi_db),
 ):
@@ -411,7 +484,12 @@ async def agent_performance(
 
     Sorted by ``enrolled_count`` desc by default. Frontend can re-
     sort client-side without round-tripping.
+
+    Fix E: last_active per agent comes from the dashboard_stats cache
+    (P3 — was a full-collection $group every call). Other aggregations
+    in this handler are per-agent indexed and stay live.
     """
+    stats, freshness = await _stats_doc(db, force_refresh=refresh)
     start, end = _period_range(period)
     prior_start, prior_end = (
         _prior_period(start, end) if start else (None, end)
@@ -468,15 +546,17 @@ async def agent_performance(
     ]):
         revenue[row["_id"]] = float(row.get("rev") or 0.0)
 
-    # Last activity per agent (most recent lead they created).
-    last_active: dict = {}
-    async for row in db.leads.aggregate([
-        {"$match": {"agent_id": {"$ne": None}}},
-        {"$group": {"_id": "$agent_id",
-                     "last": {"$max": "$created_at"}}},
-    ]):
-        row = safe_lead_load(row)
-        last_active[row["_id"]] = row.get("last")
+    # Last activity per agent (most recent lead they created) — pulled
+    # from the dashboard_stats cache (P3 pre-aggregated every 15min).
+    # Falls back to live $group if the cache field is missing.
+    last_active: dict = stats.get("agents_last_active") or {}
+    if not last_active:
+        async for row in db.leads.aggregate([
+            {"$match": {"agent_id": {"$ne": None}}},
+            {"$group": {"_id": "$agent_id",
+                         "last": {"$max": "$created_at"}}},
+        ]):
+            last_active[row["_id"]] = row.get("last")
 
     # Team-size rollup (users.parent_agent_id == agent.id).
     team_sizes: dict = {}
@@ -515,9 +595,15 @@ async def agent_performance(
         actor_email=current_user.get("email"),
         actor_id=current_user.get("id"),
         request=request,
-        metadata={"period": period, "row_count": len(rows)},
+        metadata={"period": period, "row_count": len(rows),
+                   "cache_age_s": freshness},
     )
-    return {"period": period, "agents": rows, "count": len(rows)}
+    return {
+        "period": period,
+        "agents": rows,
+        "count": len(rows),
+        "_meta": _stats_meta(stats, freshness),
+    }
 
 
 # ── Charts ────────────────────────────────────────────────────────────────
@@ -547,6 +633,7 @@ def _short_week_label(monday: date) -> str:
 async def charts(
     request: Request,
     period: str = Query("mtd", pattern="^(mtd|last30|last90|ytd|all)$"),
+    refresh: bool = Query(False),
     current_user: dict = Depends(require_roles(*AGENCY_ROLES)),
     db=Depends(get_phi_db),
 ):
@@ -554,7 +641,14 @@ async def charts(
     LAST 12 WEEKS regardless of ``period`` — that chart's purpose is
     sustained-trend, not period summary. ``revenue_by_carrier`` and
     ``leads_by_source`` honour ``period``.
+
+    Fix E: leads_by_source pulled from the dashboard_stats cache (P4+P5
+    combined into one $cond-sum aggregation per period in the
+    aggregator). enrollments_by_week and revenue_by_carrier stay live —
+    the former is bounded to 12 weeks, the latter has date and carrier
+    filters that keep it cheap at scale.
     """
+    stats, freshness = await _stats_doc(db, force_refresh=refresh)
     start, end = _period_range(period)
 
     # ── Enrollments by week (last 12 weeks, fixed) ───────────────────
@@ -621,52 +715,29 @@ async def charts(
         })
 
     # ── Leads by source ──────────────────────────────────────────────
-    source_match = (
-        _iso_range_filter("created_at", start, end) if start else {}
-    )
-    # Two aggregates: total + enrolled. Cheaper than $facet and easier
-    # to reason about.
-    totals: Dict[str, int] = {}
-    enrolled: Dict[str, int] = {}
-    async for row in db.leads.aggregate([
-        {"$match": {**source_match,
-                    "lead_source": {"$ne": None, "$ne": ""}}},
-        {"$group": {"_id": "$lead_source", "n": {"$sum": 1}}},
-    ]):
-        row = safe_lead_load(row)
-        totals[row["_id"]] = int(row.get("n", 0))
-    async for row in db.leads.aggregate([
-        {"$match": {**source_match,
-                    "lead_source": {"$ne": None, "$ne": ""},
-                    "status": "enrolled"}},
-        {"$group": {"_id": "$lead_source", "n": {"$sum": 1}}},
-    ]):
-        row = safe_lead_load(row)
-        enrolled[row["_id"]] = int(row.get("n", 0))
-
-    leads_by_source = []
-    for src, total in sorted(totals.items(), key=lambda kv: kv[1],
-                              reverse=True):
-        enr = enrolled.get(src, 0)
-        leads_by_source.append({
-            "source": src,
-            "total": total,
-            "enrolled": enr,
-            "conversion_rate": round((enr / total) * 100.0, 1) if total
-            else 0.0,
-        })
+    # From the dashboard_stats cache (P4+P5 combined per period). On
+    # cache miss for this period, fall back to a single-pass live
+    # aggregation (the aggregator-shape $cond-sum, not the legacy
+    # two-pass that lived here).
+    period_block = (stats.get("periods") or {}).get(period) or {}
+    leads_by_source = period_block.get("leads_by_source")
+    if leads_by_source is None:
+        from dashboard_aggregator import _leads_by_source as _live_lbs
+        leads_by_source = await _live_lbs(db, start, end)
 
     await write_audit(
         db, "agency_dashboard_charts_viewed",
         actor_email=current_user.get("email"),
         actor_id=current_user.get("id"),
-        request=request, metadata={"period": period},
+        request=request,
+        metadata={"period": period, "cache_age_s": freshness},
     )
     return {
         "period": period,
         "enrollments_by_week": enrollments_by_week,
         "revenue_by_carrier": revenue_by_carrier,
         "leads_by_source": leads_by_source,
+        "_meta": _stats_meta(stats, freshness),
     }
 
 
@@ -676,35 +747,36 @@ async def charts(
 @limiter.limit("30/hour")
 async def alerts(
     request: Request,
+    refresh: bool = Query(False),
     current_user: dict = Depends(require_roles(*AGENCY_ROLES)),
     db=Depends(get_phi_db),
 ):
     """Three alert buckets agency leadership should action right now:
     stale leads (per-agent counts), birthday windows currently open,
     renewals due in the next 7 days.
+
+    Fix E: stale_leads_by_agent pulled from the dashboard_stats cache.
+    Birthday + renewals stay live — both filter on indexed/small sets
+    and need per-day freshness for the windows-opening-today UX.
     """
+    stats, freshness = await _stats_doc(db, force_refresh=refresh)
     today_dt = datetime.now(timezone.utc)
     today = today_dt.date()
-    cutoff_7 = today_dt - timedelta(days=7)
 
     # ── Stale leads per agent ────────────────────────────────────────
-    # Group leads not contacted in 7+ days (status open + updated_at <
-    # cutoff) by agent.
-    open_statuses = ["new", "contacted", "qualified", "appointment_set"]
-    stale_rows = []
-    async for row in db.leads.aggregate([
-        {"$match": {
-            "status": {"$in": open_statuses},
-            "agent_id": {"$ne": None},
-            "updated_at": {"$lt": cutoff_7.isoformat()},
-        }},
-        {"$group": {"_id": "$agent_id", "count": {"$sum": 1}}},
-        {"$sort": {"count": -1}},
-        {"$limit": 20},
-    ]):
-        row = safe_lead_load(row)
-        stale_rows.append({"agent_id": row["_id"],
-                           "count": int(row.get("count", 0))})
+    # From the dashboard_stats cache (alerts pipeline pre-aggregated
+    # every 15min; the 7-day cutoff is computed at refresh time). On
+    # cache miss fall back to a live aggregation via the shared helper
+    # in dashboard_aggregator.
+    stale_rows = stats.get("stale_leads_by_agent")
+    if stale_rows is None:
+        from dashboard_aggregator import _stale_leads_by_agent as _live_slba
+        cutoff_7 = today_dt - timedelta(days=7)
+        stale_rows = await _live_slba(db, cutoff_7)
+    else:
+        # Shallow copy so we don't mutate the cached doc when we
+        # enrich with agent_name below.
+        stale_rows = [dict(r) for r in stale_rows]
     # Enrich with agent names — one round trip.
     if stale_rows:
         ids = [r["agent_id"] for r in stale_rows]
@@ -770,11 +842,13 @@ async def alerts(
         actor_email=current_user.get("email"),
         actor_id=current_user.get("id"),
         request=request,
+        metadata={"cache_age_s": freshness},
     )
     return {
         "stale_leads": stale_rows,
         "birthday_windows": bday_rows,
         "renewals_due": renewal_rows,
+        "_meta": _stats_meta(stats, freshness),
     }
 
 
