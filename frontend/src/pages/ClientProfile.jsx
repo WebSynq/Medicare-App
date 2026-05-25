@@ -58,6 +58,7 @@ import { toast } from "sonner";
 import { api, auth } from "@/lib/api";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import LeadNotesPanel from "@/components/LeadNotesPanel";
+import TagBadge, { AddTagPopover, useTagLibrary } from "@/components/TagBadge";
 
 const STATUS_BADGE = {
   new: "bg-blue-100 text-blue-900",
@@ -689,6 +690,10 @@ export default function ClientProfile() {
                   )}
                 </div>
                 <ImpersonationBanner />
+                <LeadTagsRow
+                  lead={lead}
+                  onChange={(tags) => setLead((p) => (p ? { ...p, tags } : p))}
+                />
                 {!lead.tcpa_consent && (
                   <div
                     className="mt-3 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900"
@@ -1470,6 +1475,67 @@ export default function ClientProfile() {
           </div>
         </SheetContent>
       </Sheet>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Tags row — sits under the header badge row in the client profile. Reads
+// the current names off the parent lead, calls the parent's onChange to
+// keep the parent state in sync after each add/remove (so the rest of
+// the page that depends on lead.tags never goes stale).
+function LeadTagsRow({ lead, onChange }) {
+  const { byName } = useTagLibrary();
+  const names = lead?.tags || [];
+
+  async function add(tag) {
+    try {
+      const { data } = await api.post(`/leads/${lead.id}/tags`, {
+        tag: tag.name,
+      });
+      onChange?.(data?.tags || []);
+      toast.success(`Tagged ${tag.label}`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't add tag");
+    }
+  }
+
+  async function remove(name) {
+    try {
+      const { data } = await api.delete(
+        `/leads/${lead.id}/tags/${encodeURIComponent(name)}`,
+      );
+      onChange?.(data?.tags || []);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't remove tag");
+    }
+  }
+
+  return (
+    <div
+      className="mt-3 flex flex-wrap items-center gap-2"
+      data-testid="client-tags-row"
+    >
+      <span className="text-[11px] uppercase tracking-widest text-muted-foreground mr-1">
+        Tags
+      </span>
+      {names.length === 0 && (
+        <span className="text-xs text-muted-foreground">No tags yet.</span>
+      )}
+      {names.map((n) => (
+        <TagBadge
+          key={n}
+          tag={byName.get(n)}
+          name={n}
+          onRemove={() => remove(n)}
+          testId={`client-tag-${n}`}
+        />
+      ))}
+      <AddTagPopover
+        appliedNames={names}
+        onPick={add}
+        triggerTestId="client-add-tag-btn"
+      />
     </div>
   );
 }

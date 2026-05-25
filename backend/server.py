@@ -56,6 +56,7 @@ from notes_router import router as notes_router  # noqa: E402
 from search_router import router as search_router  # noqa: E402
 from notifications_router import router as notifications_router  # noqa: E402
 from agency_dashboard_router import router as agency_dashboard_router  # noqa: E402
+from tags_router import router as tags_router, seed_tag_library  # noqa: E402
 from feedback_router import router as feedback_router  # noqa: E402
 from calendar_router import router as calendar_router, ics_router as calendar_ics_router  # noqa: E402
 from seed import seed_admin, backfill_agent_identity  # noqa: E402
@@ -181,6 +182,7 @@ app.include_router(notes_router, prefix="/api")
 app.include_router(search_router, prefix="/api")
 app.include_router(notifications_router, prefix="/api")
 app.include_router(agency_dashboard_router, prefix="/api")
+app.include_router(tags_router, prefix="/api")
 # feedback_router declares its own /api/feedback prefix — no prefix here.
 app.include_router(feedback_router)
 # calendar_router declares /api/calendar; ics_router declares /api/appointments
@@ -766,6 +768,16 @@ async def on_startup():
     db = get_db()
     await db.users.create_index("email", unique=True)
     await db.leads.create_index("created_at")
+    # Tag library — unique per (agency_id, name) so the seeder and the
+    # custom-tag route can both rely on the index to dedupe rather than
+    # racing each other on a check-then-insert.
+    await db.tags.create_index(
+        [("agency_id", 1), ("name", 1)], unique=True,
+    )
+    # Tag application filter — agents will filter the leads list by
+    # tags (?tags=hot-lead,...) which uses $all. A multikey index on
+    # `tags` makes that lookup index-served.
+    await db.leads.create_index("tags")
     await db.documents.create_index("lead_id")
     await db.audit_logs.create_index("timestamp")
     await db.commission_syncs.create_index("agent_id")
@@ -855,6 +867,15 @@ async def on_startup():
     # Stamp agent_id / agent_name on any pre-existing user rows that pre-date
     # workspace-isolation scoping. Idempotent — no-op once everyone is stamped.
     await backfill_agent_identity(db)
+
+    # Seed the pre-built Medicare tag library on first boot of an
+    # agency. Idempotent — returns 0 once the library is populated.
+    try:
+        inserted = await seed_tag_library(db)
+        if inserted:
+            logger.info("Tag library seeded with %d tags", inserted)
+    except Exception as e:
+        logger.warning("tag library seed failed: %s", e)
 
     # One-shot migration: any user row stuck on status="pending" while
     # is_active=True is a leftover from the pre-auto-activate flow.

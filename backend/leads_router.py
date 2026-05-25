@@ -809,6 +809,14 @@ async def list_leads(
     status: Optional[str] = None,
     product: Optional[str] = Query(None, max_length=128, description="Exact-match filter on plan_type_premium"),
     q: Optional[str] = Query(None, max_length=64, description="Search first/last/email/phone"),
+    tags: Optional[str] = Query(
+        None,
+        max_length=512,
+        description=(
+            "Comma-separated normalized tag names. "
+            "Returns leads that have ALL listed tags (AND)."
+        ),
+    ),
     page: int = Query(1, ge=1, description="1-indexed page number"),
     limit: int = Query(50, ge=1, le=200, description="Results per page (1–200, default 50)"),
     db: AsyncIOMotorDatabase = Depends(get_phi_db),
@@ -840,6 +848,19 @@ async def list_leads(
         # to filter by. (Future: add a /api/leads/distinct-products
         # endpoint to power a true dropdown at scale.)
         query["plan_type_premium"] = product
+    if tags:
+        # AND-match: a lead must wear every requested tag. Names are
+        # normalized client-side already (the UI hands us library names
+        # straight through), but we re-normalize here so a hand-rolled
+        # API caller can't slip raw "Hot Lead" past the filter.
+        from models import normalize_tag_name
+        wanted = [
+            normalize_tag_name(t) for t in tags.split(",") if t.strip()
+        ]
+        wanted = [t for t in wanted if t]
+        if wanted:
+            query["tags"] = {"$all": wanted}
+
     if q:
         # $text uses the leads_text_search index over first_name,
         # last_name, email, phone. Tokenized + case-insensitive +

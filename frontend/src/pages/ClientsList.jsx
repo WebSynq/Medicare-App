@@ -36,6 +36,7 @@ import { api } from "@/lib/api";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import QuickAddLeadSheet from "@/components/QuickAddLeadSheet";
 import ScrollableCard from "@/components/ScrollableCard";
+import { TagBadgeRow, TagFilterPopover } from "@/components/TagBadge";
 
 const PAGE_SIZE = 20;
 
@@ -108,6 +109,9 @@ export default function ClientsList() {
   // scale). A future /api/leads/distinct-products endpoint could
   // restore a true dropdown.
   const [product, setProduct] = useState("");
+  // Multi-select tag filter — sends ?tags=a,b which the backend treats as
+  // AND. Empty array = no tag filter applied.
+  const [tagFilter, setTagFilter] = useState([]);
   const [page, setPage] = useState(1);
   // Server-driven pagination envelope state.
   const [total, setTotal] = useState(0);
@@ -129,6 +133,7 @@ export default function ClientsList() {
       if (status !== "all") params.status = status;
       if (debouncedQ.trim()) params.q = debouncedQ.trim();
       if (product.trim()) params.product = product.trim();
+      if (tagFilter.length > 0) params.tags = tagFilter.join(",");
       const res = await api.get("/leads", { params });
       // Envelope shape: {leads, total, page, limit, pages, has_next, has_prev}
       setLeads(res.data?.leads || []);
@@ -148,13 +153,13 @@ export default function ClientsList() {
   // dep-change into a single render).
   useEffect(() => {
     setPage(1);
-  }, [status, debouncedQ, product]);
+  }, [status, debouncedQ, product, tagFilter]);
 
   useEffect(() => {
     load();
-    // load reads page/status/debouncedQ/product from closure.
+    // load reads page/status/debouncedQ/product/tagFilter from closure.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, debouncedQ, product, page]);
+  }, [status, debouncedQ, product, tagFilter, page]);
 
   // Per-page rollups for the secondary stat cards. These reflect ONLY
   // the leads on the current page (max PAGE_SIZE). Total Clients uses
@@ -262,6 +267,11 @@ export default function ClientsList() {
                 onChange={(e) => setProduct(e.target.value)}
                 data-testid="clients-product-filter"
               />
+              <TagFilterPopover
+                selected={tagFilter}
+                onChange={setTagFilter}
+                triggerTestId="clients-tags-filter"
+              />
             </div>
           </CardContent>
         </Card>
@@ -286,6 +296,7 @@ export default function ClientsList() {
                     <TableHead>TCPA</TableHead>
                     <TableHead>GHL</TableHead>
                     <TableHead>Products</TableHead>
+                    <TableHead>Tags</TableHead>
                     <TableHead>CS Rep</TableHead>
                     <TableHead>Submitted</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
@@ -377,6 +388,13 @@ export default function ClientsList() {
                         {l.plan_type_premium || (
                           <span className="text-muted-foreground">—</span>
                         )}
+                      </TableCell>
+                      <TableCell>
+                        <TagBadgeRow
+                          names={l.tags || []}
+                          max={3}
+                          testId={`client-tags-${l.id}`}
+                        />
                       </TableCell>
                       <TableCell className="text-sm">
                         {l.client_success_rep || (

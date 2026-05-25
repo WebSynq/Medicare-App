@@ -276,6 +276,13 @@ class LeadBase(BaseModel):
     # POST body can't backdate or spoof the consent provenance.
     tcpa_consent: bool = False
     tcpa_consent_text: Optional[str] = None
+    # Free-form normalized tags drawn from the agency tag library.
+    # Stored as lowercase hyphen-cased names ("hot-lead"); the library
+    # in db.tags carries the display label + color. Membership is the
+    # source of truth — the library entry is just a presentation hint
+    # and may be deleted after leads have been tagged without nuking
+    # the tags themselves.
+    tags: List[str] = []
 
 
 class LeadCreate(LeadBase):
@@ -373,6 +380,54 @@ class DocumentMeta(BaseModel):
     # Workspace-isolation scoping (Phase 2).
     agent_id: Optional[str] = None
     agent_email: Optional[str] = None
+
+
+# ----- Tags -----
+# Free-form tag library, scoped per agency. The library entry holds the
+# display metadata (label, color, category); the actual application is a
+# string in Lead.tags. Normalization rule (`normalize_tag_name`) is the
+# single source of truth — both the library seed and create-tag route
+# pass labels through it so "Hot Lead" and "hot lead" collapse to the
+# same `hot-lead` name.
+TagCategory = Literal["status", "product", "compliance", "custom", "medicare"]
+
+_TAG_HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def normalize_tag_name(label: str) -> str:
+    """'Hot Lead' -> 'hot-lead'. Lowercase, strip punctuation, collapse
+    whitespace to single hyphens. Trim leading/trailing hyphens so a
+    label like '  -hot-' lands on 'hot'."""
+    if not label:
+        return ""
+    s = label.strip().lower()
+    # Replace any run of non-alphanumeric characters with a single hyphen.
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    return s.strip("-")
+
+
+class TagCreate(BaseModel):
+    label: str = Field(..., min_length=1, max_length=64)
+    color: str = Field(..., description="Hex color like #ef4444")
+    category: TagCategory = "custom"
+
+    @field_validator("color")
+    @classmethod
+    def _v_color(cls, v):
+        if not isinstance(v, str) or not _TAG_HEX_RE.fullmatch(v.strip()):
+            raise ValueError("color must be a hex string like #ef4444")
+        return v.strip().lower()
+
+
+class Tag(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    agency_id: str
+    name: str        # normalized: "hot-lead"
+    label: str       # display: "Hot Lead"
+    color: str       # hex color for badge
+    category: TagCategory = "custom"
+    created_by: Optional[str] = None
+    created_at: str = Field(default_factory=utcnow_iso)
 
 
 # ----- Audit Log -----
