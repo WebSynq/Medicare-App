@@ -482,7 +482,8 @@ async def _alerts(db, scope: dict) -> List[Dict[str, Any]]:
 
     # birthday_rule — Illinois only.
     for lid, lead in leads_by_id.items():
-        if (lead.get("state") or "").upper() != "IL":
+        # state is normalized to uppercase 2-letter code on write (LeadBase.normalize_state_field)
+        if lead.get("state") != "IL":
             continue
         dob = _parse_iso(lead.get("date_of_birth"))
         if not dob:

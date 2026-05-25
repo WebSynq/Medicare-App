@@ -231,6 +231,55 @@ class LoginResponse(BaseModel):
 
 
 # ----- Leads -----
+# Full-name → 2-letter code map for state normalization. Used by
+# `normalize_state_field` so "Illinois", "illinois", "IL", "il", "Il" all
+# land on "IL" at the model boundary. Pre-Pydantic-validator writes
+# (API + GHL webhook + CSV) all flow through LeadBase, so this is the
+# single enforcement point. Backfill script applies the same logic to
+# any pre-existing dirty rows.
+_STATE_ABBR_MAP = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT",
+    "delaware": "DE", "florida": "FL", "georgia": "GA", "hawaii": "HI",
+    "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA",
+    "kansas": "KS", "kentucky": "KY", "louisiana": "LA", "maine": "ME",
+    "maryland": "MD", "massachusetts": "MA", "michigan": "MI",
+    "minnesota": "MN", "mississippi": "MS", "missouri": "MO",
+    "montana": "MT", "nebraska": "NE", "nevada": "NV",
+    "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM",
+    "new york": "NY", "north carolina": "NC", "north dakota": "ND",
+    "ohio": "OH", "oklahoma": "OK", "oregon": "OR", "pennsylvania": "PA",
+    "rhode island": "RI", "south carolina": "SC", "south dakota": "SD",
+    "tennessee": "TN", "texas": "TX", "utah": "UT", "vermont": "VT",
+    "virginia": "VA", "washington": "WA", "west virginia": "WV",
+    "wisconsin": "WI", "wyoming": "WY",
+}
+
+
+def normalize_state_field(v):
+    """Best-effort state normalizer.
+
+    - ``None`` / empty after strip → ``None``
+    - 2-character input → uppercase passthrough (e.g. "il" → "IL")
+    - Recognised full state name (case-insensitive) → 2-letter code
+    - Anything else → ``value.strip().upper()`` (don't reject — the field
+      stays free-text-tolerant so a typo doesn't 422 the whole intake)
+    """
+    if v is None:
+        return None
+    if not isinstance(v, str):
+        return v
+    s = v.strip()
+    if not s:
+        return None
+    if len(s) == 2:
+        return s.upper()
+    mapped = _STATE_ABBR_MAP.get(s.lower())
+    if mapped:
+        return mapped
+    return s.upper()
+
+
 class LeadBase(BaseModel):
     model_config = ConfigDict(extra="ignore")
     first_name: str
@@ -283,6 +332,11 @@ class LeadBase(BaseModel):
     # and may be deleted after leads have been tagged without nuking
     # the tags themselves.
     tags: List[str] = []
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def _normalize_state(cls, v):
+        return normalize_state_field(v)
 
 
 class LeadCreate(LeadBase):

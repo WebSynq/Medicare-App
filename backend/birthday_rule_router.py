@@ -168,23 +168,14 @@ async def birthday_alerts(
 ):
     """Three buckets of IL leads keyed by window status.
 
-    Filters server-side to ``state ∈ {IL, Illinois}`` (case-insensitive)
-    and skips closed-out leads. Agent role sees only their own book;
-    admin / compliance see the agency."""
+    Filters server-side to ``state == "IL"`` (normalized on write via
+    LeadBase validator). Skips closed-out leads. Agent role sees only
+    their own book; admin / compliance see the agency."""
     today = _today_utc()
     scope = agent_filter(current_user)
-    # Mongo doesn't have a built-in case-insensitive eq match on a
-    # string field without an index — we use a small set of allowed
-    # values instead of $regex (cheaper, no index needed).
     query: Dict[str, Any] = {
         **scope,
-        "$or": [
-            {"state": "IL"},
-            {"state": "il"},
-            {"state": "Il"},
-            {"state": "Illinois"},
-            {"state": "illinois"},
-        ],
+        "state": "IL",
         "status": {"$nin": list(_EXCLUDED_STATUSES)},
         "date_of_birth": {"$ne": None},
     }
