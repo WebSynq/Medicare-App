@@ -58,6 +58,7 @@ from notifications_router import router as notifications_router  # noqa: E402
 from agency_dashboard_router import router as agency_dashboard_router  # noqa: E402
 from tags_router import router as tags_router, seed_tag_library  # noqa: E402
 from booking_router import router as booking_router  # noqa: E402
+from ops_router import router as ops_router  # noqa: E402
 import email_templates  # noqa: E402,F401 — ensure clean import
 from automations import start_automation_scheduler  # noqa: E402
 from feedback_router import router as feedback_router  # noqa: E402
@@ -187,6 +188,7 @@ app.include_router(notifications_router, prefix="/api")
 app.include_router(agency_dashboard_router, prefix="/api")
 app.include_router(tags_router, prefix="/api")
 app.include_router(booking_router, prefix="/api")
+app.include_router(ops_router, prefix="/api")
 # feedback_router declares its own /api/feedback prefix — no prefix here.
 app.include_router(feedback_router)
 # calendar_router declares /api/calendar; ics_router declares /api/appointments
@@ -453,6 +455,9 @@ _CSRF_EXEMPT_PREFIXES = (
     # the booking router issues + honeypot + IP-based abuse limits
     # are the security substitutes. See booking_router.py module docs.
     "/api/book/",
+    # Admin ops console — GET-only today, prefix-exempt to future-proof
+    # for action endpoints. Admin/owner JWT is the auth gate.
+    "/api/ops/",
     # Agency command center — admin-only GETs, but cover the prefix in
     # case we add stat-export POSTs later.
     "/api/agency/",

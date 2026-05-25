@@ -681,6 +681,9 @@ function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggle
               {isAdmin && (
                 <NavItem to="/admin/import" icon={Upload} label="Data Import" onClick={onNavigate} testId="nav-data-import" collapsed={c} />
               )}
+              {isAdmin && (
+                <NavItem to="/ops" icon={Activity} label="Ops Console" onClick={onNavigate} testId="nav-ops-console" collapsed={c} />
+              )}
             </div>
           </>
         )}
@@ -1417,10 +1420,15 @@ export function AppLayout({ children }) {
           (animated) sidebar width; mobile reserves bottom padding for
           the fixed tab bar so scrollable content isn't hidden behind it. */}
       <main
-        className={`min-h-screen pb-16 md:pb-0 transition-[padding] duration-200 ease-out ${
+        className={`min-h-screen pb-16 md:pb-0 overflow-x-hidden transition-[padding] duration-200 ease-out ${
           collapsed ? "md:pl-[64px]" : "md:pl-[220px]"
         }`}
       >
+        {/* `overflow-x-hidden` is a belt-and-braces guard so any page
+            that ships a too-wide child (e.g. a horizontally-scrolling
+            table that forgot its own min-w-0 wrapper) can't bleed past
+            the sidebar offset. The Agency Command Center surfaced this
+            class of bug — see Ops Console commit history. */}
         <TeamMemberBanner />
         {children}
       </main>

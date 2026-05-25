@@ -36,6 +36,7 @@ import Settings from "@/pages/Settings";
 import PrivacyPolicy from "@/pages/PrivacyPolicy";
 import SecurityPage from "@/pages/SecurityPage";
 import AgencyCommandCenter from "@/pages/AgencyCommandCenter";
+import OpsConsole from "@/pages/OpsConsole";
 import { auth, COMMAND_CENTER_ROLES } from "@/lib/api";
 import { AppLayout } from "@/components/Layout";
 import { AgentProvider } from "@/context/AgentContext";
@@ -303,6 +304,16 @@ export default function App() {
           element={
             <Protected>
               <Settings />
+            </Protected>
+          }
+        />
+        {/* Admin Ops Console — admin/owner only (role checked inside
+            the component too as defense in depth). */}
+        <Route
+          path="/ops"
+          element={
+            <Protected roles={["admin", "owner"]}>
+              <OpsConsole />
             </Protected>
           }
         />
