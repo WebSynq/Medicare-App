@@ -1264,6 +1264,18 @@ function IntegrationsTab({ isAdmin }) {
 
   return (
     <div className="space-y-8">
+      {/* ── GHL connection + bulk import (per-agent) ─────────────── */}
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-sm font-semibold">GoHighLevel</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Connect your GHL sub-account to import contacts and keep
+            data in sync.
+          </p>
+        </div>
+        <GHLImportPanel />
+      </section>
+
       {/* ── Your Connections — per-agent, visible to everyone ─────── */}
       <section className="space-y-3">
         <div>
@@ -2863,5 +2875,669 @@ function BookingTab({ me, refresh }) {
         </Button>
       </div>
     </div>
+  );
+}
+
+
+// ── GHL connection + bulk import panel (per-agent) ─────────────────────
+// Three logical states layered on a single card:
+//   - not connected       → token paste form
+//   - connected, idle     → summary + "Import Contacts" button
+//   - import wizard open  → 4 steps (preview → tag mapping → running → done)
+//
+// History list lives at the bottom in all states.
+
+const _SKIP_TAG = "__skip__";
+
+function GHLImportPanel() {
+  const [status, setStatus] = useState(null);           // /ghl-import/status
+  const [statusLoading, setStatusLoading] = useState(true);
+  const [token, setToken] = useState("");
+  const [showToken, setShowToken] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [history, setHistory] = useState([]);
+
+  // Wizard state
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardStep, setWizardStep] = useState(1);       // 1..4
+  const [preview, setPreview] = useState(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [tagMap, setTagMap] = useState({});              // {ghl_tag: portal_tag|null|__skip__}
+  const [portalTags, setPortalTags] = useState([]);
+  const [tagBusy, setTagBusy] = useState(false);
+  const [job, setJob] = useState(null);
+  const [jobBusy, setJobBusy] = useState(false);
+  const pollRef = useRef(null);
+
+  const loadStatus = useCallback(async () => {
+    setStatusLoading(true);
+    try {
+      const { data } = await api.get("/ghl-import/status");
+      setStatus(data);
+    } catch {
+      setStatus({ connected: false });
+    } finally {
+      setStatusLoading(false);
+    }
+  }, []);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const { data } = await api.get("/ghl-import/jobs");
+      setHistory(data?.jobs || []);
+    } catch {
+      setHistory([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadStatus();
+    loadHistory();
+  }, [loadStatus, loadHistory]);
+
+  // ── Connect / disconnect ─────────────────────────────────────────────
+  async function handleConnect() {
+    if (!token.trim()) return;
+    setConnecting(true);
+    try {
+      const { data } = await api.post("/ghl-import/connect", {
+        token: token.trim(),
+      });
+      setStatus(data);
+      setToken("");
+      toast.success(`Connected to ${data.location_name || "GHL"}`);
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.detail || "Could not connect to GHL.",
+      );
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    // eslint-disable-next-line no-restricted-globals
+    if (!window.confirm(
+      "Disconnect GHL? Imported contacts stay in the portal — only the connection is removed.",
+    )) return;
+    setDisconnecting(true);
+    try {
+      await api.delete("/ghl-import/connect");
+      setStatus({ connected: false });
+      toast.success("GHL disconnected");
+    } catch (err) {
+      toast.error("Disconnect failed");
+    } finally {
+      setDisconnecting(false);
+    }
+  }
+
+  // ── Wizard control ───────────────────────────────────────────────────
+  async function openWizard() {
+    setWizardOpen(true);
+    setWizardStep(1);
+    setPreview(null);
+    setTagMap({});
+    setJob(null);
+    setPreviewBusy(true);
+    try {
+      const { data } = await api.post("/ghl-import/preview");
+      setPreview(data);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Preview failed");
+      setWizardOpen(false);
+    } finally {
+      setPreviewBusy(false);
+    }
+  }
+
+  async function goToTagMapping() {
+    setWizardStep(2);
+    if (!preview?.unique_tags?.length) {
+      setTagMap({});
+      return;
+    }
+    setTagBusy(true);
+    try {
+      const { data } = await api.post("/ghl-import/map-tags", {
+        tags: preview.unique_tags,
+      });
+      setTagMap(data?.mapping || {});
+      setPortalTags(data?.portal_tags || []);
+    } catch {
+      // Fall back to empty mapping — agent fills in by hand.
+      setTagMap(Object.fromEntries(preview.unique_tags.map((t) => [t, null])));
+    } finally {
+      setTagBusy(false);
+    }
+  }
+
+  function setTagFor(ghlTag, portalTag) {
+    setTagMap((m) => ({ ...m, [ghlTag]: portalTag }));
+  }
+
+  async function startImport() {
+    // Convert __skip__ markers to null for the backend.
+    const cleanMap = {};
+    for (const [k, v] of Object.entries(tagMap || {})) {
+      cleanMap[k] = v === _SKIP_TAG ? null : v;
+    }
+    try {
+      const { data } = await api.post("/ghl-import/start", {
+        tag_mapping: cleanMap,
+        overwrite_existing: false,
+      });
+      setWizardStep(3);
+      setJob({ job_id: data.job_id, status: "pending",
+                processed: 0, total_contacts: preview?.total_contacts || 0 });
+      pollJob(data.job_id);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Could not start import");
+    }
+  }
+
+  function pollJob(jobId) {
+    if (pollRef.current) clearInterval(pollRef.current);
+    const tick = async () => {
+      try {
+        const { data } = await api.get(`/ghl-import/jobs/${jobId}`);
+        setJob(data);
+        if (["complete", "failed", "cancelled"].includes(data.status)) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          await Promise.all([loadStatus(), loadHistory()]);
+          setWizardStep(4);
+        }
+      } catch {
+        /* keep polling */
+      }
+    };
+    tick();
+    pollRef.current = setInterval(tick, 3000);
+  }
+
+  useEffect(() => () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+  }, []);
+
+  async function cancelJob() {
+    if (!job?.job_id) return;
+    setJobBusy(true);
+    try {
+      await api.post(`/ghl-import/jobs/${job.job_id}/cancel`);
+      toast.success("Cancel requested — will stop at next page boundary.");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Cancel failed");
+    } finally {
+      setJobBusy(false);
+    }
+  }
+
+  function closeWizard() {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = null;
+    setWizardOpen(false);
+    setWizardStep(1);
+  }
+
+  // ── Render ───────────────────────────────────────────────────────────
+  if (statusLoading) {
+    return (
+      <Card>
+        <CardContent className="p-5 text-sm text-muted-foreground">
+          Checking GHL connection…
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const isConnected = !!status?.connected;
+
+  return (
+    <div className="space-y-4" data-testid="ghl-import-panel">
+      <Card>
+        <CardContent className="p-5 space-y-4">
+          {!isConnected ? (
+            <>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold flex items-center gap-2">
+                    <Plug className="w-4 h-4 text-muted-foreground" />
+                    GoHighLevel
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-gray-400 mr-1.5" />
+                    Not Connected
+                  </p>
+                </div>
+              </div>
+
+              <div className="rounded-md border border-border bg-secondary/30 p-3 space-y-1">
+                <div className="text-xs font-semibold">How to get your token</div>
+                <ol className="text-xs text-muted-foreground list-decimal pl-4 space-y-0.5">
+                  <li>Open your GHL sub-account</li>
+                  <li>Go to Settings → Integrations → Private Integrations</li>
+                  <li>Create a new integration token</li>
+                  <li>Copy and paste it below</li>
+                </ol>
+              </div>
+
+              <div>
+                <Label className="text-xs">Private Integration Token</Label>
+                <div className="flex gap-2 mt-1">
+                  <Input
+                    type={showToken ? "text" : "password"}
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                    placeholder="pk_…"
+                    autoComplete="off"
+                    data-testid="ghl-token-input"
+                    className="font-mono text-xs"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setShowToken((v) => !v)}
+                    data-testid="ghl-token-show"
+                  >
+                    {showToken ? "Hide" : "Show"}
+                  </Button>
+                </div>
+              </div>
+
+              <Button
+                onClick={handleConnect}
+                disabled={connecting || !token.trim()}
+                data-testid="ghl-connect-btn"
+              >
+                {connecting ? "Connecting…" : "Connect GHL Account"}
+              </Button>
+            </>
+          ) : (
+            <>
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <h3 className="text-sm font-semibold flex items-center gap-2">
+                    <Plug className="w-4 h-4 text-emerald-600" />
+                    GoHighLevel
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-1.5" />
+                    Connected · {status.location_name || "—"}
+                  </p>
+                  {status.location_id && (
+                    <p className="text-[11px] text-muted-foreground font-mono mt-0.5">
+                      Location ID: {status.location_id}
+                    </p>
+                  )}
+                </div>
+                <Badge className="bg-emerald-100 text-emerald-900">Active</Badge>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 text-sm">
+                <div className="rounded-md border border-border p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                    GHL Contacts
+                  </div>
+                  <div className="text-xl font-semibold mt-1 tabular-nums">
+                    {(status.contact_count_ghl ?? 0).toLocaleString()}
+                  </div>
+                </div>
+                <div className="rounded-md border border-border p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                    Portal Contacts
+                  </div>
+                  <div className="text-xl font-semibold mt-1 tabular-nums">
+                    {(status.contact_count_portal ?? 0).toLocaleString()}
+                  </div>
+                </div>
+                <div className="rounded-md border border-border p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                    Last sync
+                  </div>
+                  <div className="text-sm font-medium mt-1">
+                    {status.last_sync_at
+                      ? fmtDateTime(status.last_sync_at)
+                      : "never"}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  onClick={openWizard}
+                  disabled={wizardOpen}
+                  data-testid="ghl-import-btn"
+                >
+                  <Download className="w-3.5 h-3.5 mr-1.5" />
+                  Import Contacts
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDisconnect}
+                  disabled={disconnecting}
+                  data-testid="ghl-disconnect-btn"
+                >
+                  {disconnecting ? "Disconnecting…" : "Disconnect"}
+                </Button>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── Wizard (inline below the card) ─────────────────────────── */}
+      {wizardOpen && (
+        <Card data-testid="ghl-wizard">
+          <CardContent className="p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-muted-foreground">
+                Step {wizardStep} of 4
+              </div>
+              <button
+                type="button"
+                onClick={closeWizard}
+                className="text-xs text-muted-foreground hover:text-foreground"
+                data-testid="ghl-wizard-close"
+              >
+                Close wizard
+              </button>
+            </div>
+
+            {/* Step 1 — Preview */}
+            {wizardStep === 1 && (
+              <div data-testid="ghl-wizard-step-1">
+                <h3 className="text-base font-semibold">Preview your GHL data</h3>
+                {previewBusy && (
+                  <p className="text-sm text-muted-foreground mt-3">
+                    Analyzing your GHL contacts…
+                  </p>
+                )}
+                {!previewBusy && preview && (
+                  <div className="mt-3 space-y-3">
+                    <p className="text-sm">
+                      Found{" "}
+                      <strong>{(preview.total_contacts || 0).toLocaleString()}</strong>
+                      {" "}contacts in your GHL account.
+                    </p>
+                    <div className="rounded-md border border-border p-3 text-sm space-y-1">
+                      <Row dot="green" label="Ready to import"
+                            value={`~${Math.max(0,
+                              (preview.total_contacts || 0)
+                                - (preview.estimated_duplicates || 0)
+                            ).toLocaleString()}`} />
+                      <Row dot="amber" label="Missing email"
+                            value={`${preview.missing_email_pct ?? 0}% of sample`} />
+                      <Row dot="amber" label="Missing date of birth"
+                            value={`${preview.missing_dob_pct ?? 0}% of sample`} />
+                      <Row dot="gray" label="Likely duplicates"
+                            value={`~${(preview.estimated_duplicates || 0).toLocaleString()}`} />
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Unique tags found: {preview.unique_tags?.length ?? 0}
+                    </div>
+                    <Button
+                      onClick={goToTagMapping}
+                      data-testid="ghl-wizard-next-1"
+                    >
+                      Review tag mapping →
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Step 2 — Tag mapping */}
+            {wizardStep === 2 && (
+              <div data-testid="ghl-wizard-step-2">
+                <h3 className="text-base font-semibold">Tag mapping</h3>
+                {tagBusy && (
+                  <p className="text-sm text-muted-foreground mt-3">
+                    AI is mapping your tags…
+                  </p>
+                )}
+                {!tagBusy && Object.keys(tagMap).length === 0 && (
+                  <p className="text-sm text-muted-foreground mt-3">
+                    No unique tags found in your GHL sample.
+                  </p>
+                )}
+                {!tagBusy && Object.keys(tagMap).length > 0 && (
+                  <div className="mt-3 space-y-2 max-h-80 overflow-y-auto">
+                    {Object.entries(tagMap).map(([ghlTag, mapped]) => (
+                      <div key={ghlTag}
+                           className="grid grid-cols-[1fr_180px] gap-2 items-center text-sm"
+                           data-testid={`ghl-tag-row-${ghlTag}`}>
+                        <div className="font-medium truncate" title={ghlTag}>
+                          {ghlTag}
+                        </div>
+                        <select
+                          value={mapped == null ? _SKIP_TAG : mapped}
+                          onChange={(e) => setTagFor(ghlTag,
+                            e.target.value === _SKIP_TAG ? null : e.target.value)}
+                          className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                        >
+                          <option value={_SKIP_TAG}>— skip —</option>
+                          {portalTags.map((pt) => (
+                            <option key={pt} value={pt}>{pt}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-2 mt-4">
+                  <Button
+                    variant="outline" size="sm"
+                    onClick={() => setWizardStep(1)}
+                  >
+                    ← Back
+                  </Button>
+                  <Button
+                    onClick={startImport}
+                    data-testid="ghl-wizard-start"
+                    disabled={tagBusy}
+                  >
+                    Start import →
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 3 — Running */}
+            {wizardStep === 3 && job && (
+              <div data-testid="ghl-wizard-step-3">
+                <h3 className="text-base font-semibold">
+                  Importing your GHL contacts…
+                </h3>
+                <ProgressBar
+                  processed={job.processed || 0}
+                  total={job.total_contacts || preview?.total_contacts || 0}
+                />
+                <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                  <Row label="Processed"
+                       value={`${(job.processed || 0).toLocaleString()} / ${(job.total_contacts || 0).toLocaleString()}`} />
+                  <Row label="Status" value={job.status} />
+                  <Row dot="green" label="Imported"
+                       value={(job.imported || 0).toLocaleString()} />
+                  <Row dot="gray" label="Duplicates skipped"
+                       value={(job.duplicates || 0).toLocaleString()} />
+                  <Row dot="amber" label="Flagged"
+                       value={(job.flagged || 0).toLocaleString()} />
+                  <Row dot="red" label="Failed"
+                       value={(job.failed || 0).toLocaleString()} />
+                </div>
+                <p className="text-xs text-muted-foreground mt-3">
+                  You can close this window — the import will continue
+                  running in the background. We'll email you when it's done.
+                </p>
+                <div className="flex gap-2 mt-3">
+                  <Button
+                    variant="outline" size="sm"
+                    onClick={cancelJob}
+                    disabled={jobBusy || job.status === "cancelled"}
+                    data-testid="ghl-wizard-cancel"
+                  >
+                    {jobBusy ? "Cancelling…" : "Cancel import"}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 4 — Complete */}
+            {wizardStep === 4 && job && (
+              <div data-testid="ghl-wizard-step-4">
+                <h3 className="text-base font-semibold flex items-center gap-2">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                  {job.status === "complete" ? "Import complete!"
+                    : job.status === "cancelled" ? "Import cancelled"
+                    : "Import finished"}
+                </h3>
+                <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                  <Row dot="green" label="Imported"
+                       value={(job.imported || 0).toLocaleString()} />
+                  <Row dot="gray" label="Duplicates skipped"
+                       value={(job.duplicates || 0).toLocaleString()} />
+                  <Row dot="amber" label="Flagged"
+                       value={(job.flagged || 0).toLocaleString()} />
+                  <Row dot="red" label="Failed"
+                       value={(job.failed || 0).toLocaleString()} />
+                </div>
+                <div className="flex flex-wrap gap-2 mt-4">
+                  <Button asChild size="sm">
+                    <Link to="/clients">View your contacts →</Link>
+                  </Button>
+                  <Button variant="outline" size="sm"
+                          onClick={() => setWizardOpen(false)}>
+                    Close
+                  </Button>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Import history ─────────────────────────────────────────── */}
+      {history.length > 0 && (
+        <Card>
+          <CardContent className="p-5">
+            <h3 className="text-sm font-semibold mb-2">Import History</h3>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Started</TableHead>
+                    <TableHead>Imported</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Report</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {history.map((j) => (
+                    <TableRow key={j.job_id}
+                              data-testid={`ghl-history-${j.job_id}`}>
+                      <TableCell className="text-sm">
+                        {fmtDateTime(j.started_at)}
+                      </TableCell>
+                      <TableCell className="text-sm tabular-nums">
+                        {(j.imported || 0).toLocaleString()}
+                        {j.flagged > 0 && (
+                          <span className="text-xs text-amber-700 ml-1">
+                            (+{j.flagged} flagged)
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Badge className={
+                          j.status === "complete" ? "bg-emerald-100 text-emerald-900"
+                            : j.status === "running" ? "bg-amber-100 text-amber-900"
+                            : j.status === "cancelled" ? "bg-gray-200 text-gray-700"
+                            : "bg-red-100 text-red-900"
+                        }>
+                          {j.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <ReportLink jobId={j.job_id} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// Tiny progress bar — pure CSS, no third-party deps.
+function ProgressBar({ processed, total }) {
+  const pct = total > 0 ? Math.min(100, Math.round((processed / total) * 100))
+                         : 0;
+  return (
+    <div className="mt-3">
+      <div className="h-2 rounded-full bg-secondary overflow-hidden">
+        <div className="h-full bg-emerald-500 transition-all"
+              style={{ width: `${pct}%` }} />
+      </div>
+      <div className="text-xs text-muted-foreground mt-1">{pct}%</div>
+    </div>
+  );
+}
+
+// Row helper — small status/value row with optional colored dot prefix.
+function Row({ label, value, dot }) {
+  const dotClass =
+    dot === "green" ? "bg-emerald-500"
+    : dot === "amber" ? "bg-amber-500"
+    : dot === "red" ? "bg-red-500"
+    : dot === "gray" ? "bg-gray-400"
+    : null;
+  return (
+    <div className="flex items-center justify-between gap-3 text-sm">
+      <span className="text-muted-foreground flex items-center gap-2">
+        {dotClass && (
+          <span className={`inline-block w-2 h-2 rounded-full ${dotClass}`} />
+        )}
+        {label}
+      </span>
+      <span className="font-medium tabular-nums">{value}</span>
+    </div>
+  );
+}
+
+// Lazy report download link — fetches JSON and triggers a download.
+function ReportLink({ jobId }) {
+  const [busy, setBusy] = useState(false);
+  async function download() {
+    setBusy(true);
+    try {
+      const { data } = await api.get(`/ghl-import/jobs/${jobId}/report`);
+      const blob = new Blob(
+        [JSON.stringify(data, null, 2)],
+        { type: "application/json" },
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `ghl-import-${jobId}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Report fetch failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Button size="sm" variant="outline" onClick={download} disabled={busy}>
+      {busy ? "…" : "Report"}
+    </Button>
   );
 }

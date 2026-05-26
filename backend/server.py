@@ -60,6 +60,7 @@ from tags_router import router as tags_router, seed_tag_library  # noqa: E402
 from booking_router import router as booking_router  # noqa: E402
 from ops_router import router as ops_router  # noqa: E402
 from security_router import router as security_router  # noqa: E402
+from ghl_import_router import router as ghl_import_router  # noqa: E402
 import email_templates  # noqa: E402,F401 — ensure clean import
 from automations import start_automation_scheduler  # noqa: E402
 from feedback_router import router as feedback_router  # noqa: E402
@@ -191,6 +192,7 @@ app.include_router(tags_router, prefix="/api")
 app.include_router(booking_router, prefix="/api")
 app.include_router(ops_router, prefix="/api")
 app.include_router(security_router, prefix="/api")
+app.include_router(ghl_import_router, prefix="/api")
 # feedback_router declares its own /api/feedback prefix — no prefix here.
 app.include_router(feedback_router)
 # calendar_router declares /api/calendar; ics_router declares /api/appointments
@@ -463,6 +465,11 @@ _CSRF_EXEMPT_PREFIXES = (
     # AI security console — admin/owner read + control surface for the
     # security_intelligence loop. JWT (admin/owner) is the gate.
     "/api/security/",
+    # Per-agent GHL connect + bulk contact import. JWT is the gate;
+    # the connect endpoint takes the token in the body, so CSRF would
+    # need a cookie planted before the user even logs into the SPA —
+    # not worth the friction for a same-origin admin write.
+    "/api/ghl-import/",
     # Agency command center — admin-only GETs, but cover the prefix in
     # case we add stat-export POSTs later.
     "/api/agency/",
@@ -839,6 +846,18 @@ _PROD_INDEXES = [
     # the admin list view.
     ("ip_permanent_bans", "ip", {"background": True, "unique": True}),
     ("ip_permanent_bans", [("banned_at", -1)], {"background": True}),
+
+    # GHL connection + import (ghl_import_router).
+    # One ghl_integrations row per agent — unique guarantees the
+    # connect upsert can't fork into two rows under a race.
+    ("ghl_integrations", "agent_id", {"background": True, "unique": True}),
+    # import_jobs — listed by agent newest-first, plus a job_id key
+    # for the polling endpoint and a status index for "is anything
+    # running" admin sweeps.
+    ("import_jobs", [("agent_id", 1), ("started_at", -1)],
+     {"background": True}),
+    ("import_jobs", "job_id", {"background": True, "unique": True}),
+    ("import_jobs", "status", {"background": True}),
 ]
 
 

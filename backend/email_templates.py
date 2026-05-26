@@ -597,3 +597,47 @@ def security_alert_email(
         body_html=body,
         cta={"label": "Open Ops Console", "url": ops_url} if ops_url else None,
     )
+
+
+# ── 10. GHL import complete (to the agent) ──────────────────────────────
+def ghl_import_complete_email(
+    agent_name: str,
+    imported: int,
+    duplicates: int,
+    flagged: int,
+    portal_url: str = "",
+) -> str:
+    """Sent when a per-agent GHL contact import finishes. Imported is
+    the count of newly-created leads (flagged rows are counted on top —
+    they were imported with key fields missing)."""
+    first = (agent_name or "there").split()[0]
+    total_added = imported + flagged
+    summary_rows = [
+        ("Newly imported", str(imported)),
+        ("Imported but flagged", str(flagged)),
+        ("Duplicates skipped", str(duplicates)),
+        ("Total added to portal", str(total_added)),
+    ]
+    body = f"""
+      <p style="margin:0 0 14px 0;">Hi {escape(first)},</p>
+      <p style="margin:0 0 14px 0;">
+        Your GoHighLevel contact import is done. Here's how it shook out:
+      </p>
+      {_detail_table(summary_rows)}
+      {('<p style="margin:16px 0 0 0;color:' + _MUTED + ';font-size:13px;">' +
+        str(flagged) + ' record' + ('s were' if flagged != 1 else ' was') +
+        ' imported with missing email or date of birth — they are in your '
+        'Clients list under the <strong>flagged</strong> filter so you can '
+        'fill them in.</p>') if flagged else ""}
+      <p style="margin:16px 0 0 0;">
+        Your clients are ready to work in the portal — pipelines,
+        tags, and the booking page all connect through the same
+        record.
+      </p>"""
+    return _shell(
+        preheader=f"GHL import done — {imported} contacts added.",
+        title="Your GHL import is complete",
+        body_html=body,
+        cta={"label": "View your contacts", "url": portal_url}
+        if portal_url else None,
+    )
