@@ -17,10 +17,28 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from deps import get_db, get_phi_db, require_roles
+from deps import get_current_user, get_db, get_phi_db
+
+
+# ── Access gate ────────────────────────────────────────────────────────────
+# Wider than `require_roles("admin", "owner")` — also lets any user
+# whose record carries `ops_access=True` through. Tim uses this to
+# grant temporary ops visibility (compliance reviewer, security
+# contractor) without changing the user's primary role.
+_OPS_ROLES = {"admin", "owner"}
+
+
+def require_ops_access():
+    async def _checker(current_user=Depends(get_current_user)):
+        if current_user.get("role") in _OPS_ROLES:
+            return current_user
+        if current_user.get("ops_access") is True:
+            return current_user
+        raise HTTPException(status_code=403, detail="Ops access required")
+    return _checker
 
 
 logger = logging.getLogger(__name__)
@@ -546,7 +564,7 @@ async def ops_health(
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
     phi_db: AsyncIOMotorDatabase = Depends(get_phi_db),
-    _user=Depends(require_roles("admin", "owner")),
+    _user=Depends(require_ops_access()),
 ):
     """Single-shot ops dashboard payload. All sections fan out in
     parallel; each is independently degradable."""

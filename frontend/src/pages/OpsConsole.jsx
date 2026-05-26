@@ -10,7 +10,7 @@
  * only. Aggregation lives server-side; this file is purely view.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Navigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
   LineChart, Line, BarChart, Bar, XAxis, YAxis,
@@ -223,6 +223,23 @@ export default function OpsConsole() {
   // JSX so the App.js Protected wrapper is the actual access control;
   // this is belt-and-braces.
   const user = auth.getUser();
+  const navigate = useNavigate();
+
+  // Access guard. App.js's Protected wrapper is the primary gate, but
+  // we also re-check here as defence-in-depth: admin/owner pass, and
+  // a non-privileged user with `ops_access === true` on their record
+  // is allowed through (lets Tim grant temporary ops visibility to a
+  // contractor without changing their role). useEffect fires the nav
+  // so we redirect rather than render before bouncing.
+  const allowed = !!user && (
+    ["admin", "owner"].includes(user.role) || user.ops_access === true
+  );
+  useEffect(() => {
+    if (user && !allowed) {
+      navigate("/today", { replace: true });
+    }
+  }, [user, allowed, navigate]);
+
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [secondsAgo, setSecondsAgo] = useState(0);
@@ -262,10 +279,15 @@ export default function OpsConsole() {
   const scores = useMemo(() => deriveScores(data), [data]);
   const threat = useMemo(() => threatLevel(data), [data]);
 
-  // Role gate — runs AFTER all hooks. App.js's Protected wrapper is the
-  // primary gate; this is defence-in-depth against a direct mount.
-  if (!user || !["admin", "owner"].includes(user.role)) {
-    return <Navigate to="/today" replace />;
+  // Render guard — runs AFTER all hooks. Unauthenticated visitors are
+  // bounced synchronously; non-privileged authenticated visitors render
+  // nothing while the useEffect above fires the navigate (avoids a
+  // flash of restricted UI).
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+  if (!allowed) {
+    return null;
   }
 
   return (
