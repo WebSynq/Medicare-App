@@ -9,7 +9,7 @@
  * overlay, blinking indicators. No PHI surfaced — aggregated counts
  * only. Aggregation lives server-side; this file is purely view.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate } from "react-router-dom";
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
