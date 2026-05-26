@@ -1163,11 +1163,22 @@ async def submit_application(
         payload.contact_id = lead_resolution["ghl_contact_id"] or payload.contact_id
 
     ghl = GHLClient()
+    # Best-effort GHL sync. Historically this raised a 502 on failure
+    # and killed the submission — but the application is already
+    # persisted in S3 + Mongo by this point, so a GHL outage shouldn't
+    # erase the agent's work. We now stamp `ghl_synced` + `ghl_sync_error`
+    # into the response and update the lead row with the sync status so
+    # the SPA can surface a "GHL needs attention" banner and ops can
+    # retry the push later.
+    ghl_synced = False
+    ghl_sync_error = None
+    result = None
     try:
         result = await ghl.update_contact(payload.contact_id, custom_fields)
+        ghl_synced = True
     except Exception as e:
-        logger.error("GHL update failed: %s", e)
-        raise HTTPException(status_code=502, detail="GHL sync failed.")
+        logger.error("GHL update failed (non-fatal): %s", e)
+        ghl_sync_error = str(e)[:300]
 
     # S3 PDF storage: relocate the /extract-staged object to the canonical
     # agent-scoped key. Best-effort — if it fails we fall back to the
@@ -1198,6 +1209,10 @@ async def submit_application(
                 payload.contact_id, e,
             )
 
+    # `result` may be None when the best-effort GHL update above failed.
+    # Use a defensive .get on a dict fallback so the audit row schema
+    # stays stable across both paths.
+    ghl_mock = bool((result or {}).get("mock", False))
     await db["audit_logs"].insert_one({
         "action": "application_submitted",
         "agent_email": current_user.get("email"),
@@ -1205,7 +1220,9 @@ async def submit_application(
         "contact_name": payload.contact_name,
         "product_type": payload.product_type,
         "fields_synced": len(custom_fields),
-        "ghl_mock": result.get("mock", False),
+        "ghl_mock": ghl_mock,
+        "ghl_synced": ghl_synced,
+        "ghl_sync_error": ghl_sync_error,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 
@@ -1418,6 +1435,30 @@ async def submit_application(
                 payload.contact_id, e,
             )
 
+    # Stamp the submit-time GHL sync outcome onto the lead row so the
+    # client profile + ops dashboard reflect the same status the
+    # response below carries. Best-effort wrapped — a lead update
+    # failure here must not turn a successful submission into a 5xx.
+    if lead_id:
+        try:
+            await db.leads.update_one(
+                {"id": lead_id},
+                {"$set": safe_lead_set({
+                    "ghl_sync_status": "synced" if ghl_synced else "error",
+                    "ghl_sync_error": None if ghl_synced else ghl_sync_error,
+                    "ghl_synced_at": (
+                        datetime.now(timezone.utc).isoformat()
+                        if ghl_synced else None
+                    ),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })},
+            )
+        except Exception as e:
+            logger.warning(
+                "leads ghl_sync_status update failed (non-fatal) for %s: %s",
+                lead_id, e,
+            )
+
     return {
         "success": True,
         "contact_id": payload.contact_id,
@@ -1425,7 +1466,9 @@ async def submit_application(
         "lead_name": lead_resolution.get("lead_name"),
         "lead_created": lead_resolution.get("created_new", False),
         "fields_synced": len(custom_fields),
-        "ghl_mock": result.get("mock", False),
+        "ghl_mock": ghl_mock,
+        "ghl_synced": ghl_synced,
+        "ghl_sync_error": ghl_sync_error,
         "extracted_doc_count": len(extracted_by_doc),
         "conflict_count": len(conflicts),
         "ghl_canonical_pushed": len(ghl_canonical_payload),
