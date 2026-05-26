@@ -15,17 +15,21 @@ import {
 import {
   AlertCircle,
   AlertTriangle,
+  ArrowLeft,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
   ExternalLink,
   FileImage,
   FileText,
+  Loader2,
   Paperclip,
   Plus,
+  Search,
   Sparkles,
   Trash2,
   UploadCloud,
+  UserPlus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
@@ -192,6 +196,43 @@ function ImageThumb({ file, alt }) {
     />
   );
 }
+
+// Small wrapper around the new-client confirm-form input. Adds the
+// required-asterisk, a confidence badge when the AI gave us one, and an
+// amber outline ring when confidence is "warn" so the agent's eye lands
+// on the fields most likely to need correction.
+function NewClientField({
+  label, field, value, confidence, type = "text", required, onChange,
+}) {
+  const tone = confidenceTone(confidence);
+  const ring =
+    tone === "warn"
+      ? "border-amber-300 bg-amber-50/30 focus:border-amber-500"
+      : tone === "low"
+        ? "border-red-300 bg-red-50/30 focus:border-red-500"
+        : "border-border";
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <Label className="text-xs">
+          {label}
+          {required && (
+            <span className="text-[#B5451B] font-semibold ml-0.5">*</span>
+          )}
+        </Label>
+        {confidence != null && <ConfidenceBadge score={confidence} />}
+      </div>
+      <Input
+        type={type}
+        value={value || ""}
+        onChange={(e) => onChange(field, e.target.value)}
+        className={`min-h-[44px] ${ring}`}
+        data-testid={`new-client-field-${field}`}
+      />
+    </div>
+  );
+}
+
 
 function ConfidenceBadge({ score }) {
   const tone = confidenceTone(score);
@@ -401,10 +442,35 @@ export default function ApplicationSubmission() {
   const [step, setStep] = useState(STEP.FIND_CLIENT);
 
   // Step 1: contact
+  // `clientMode` gates the two-tab Step 1 UX added in 2026-05.
+  //   null      → "New Client" vs "Existing Client" choice screen
+  //   "new"     → upload-and-extract flow that creates a fresh lead
+  //   "existing"→ legacy search-by-name/phone/email flow (unchanged)
+  // The existing Step-1 search code below works identically; the
+  // mode just controls which UI is rendered around it.
+  const [clientMode, setClientMode] = useState(null);
   const [contactQuery, setContactQuery] = useState("");
   const [contacts, setContacts] = useState([]);
   const [searching, setSearching] = useState(false);
   const [selectedContact, setSelectedContact] = useState(null);
+
+  // Step 1 — New Client sub-flow state.
+  // newClientSubStep:
+  //   "upload"  → drop-zone before any file is picked
+  //   "confirm" → AI extraction running OR pre-filled form for review
+  const [newClientFile, setNewClientFile] = useState(null);
+  const [newClientExtracting, setNewClientExtracting] = useState(false);
+  const [newClientExtracted, setNewClientExtracted] = useState(null);
+  const [newClientConfidences, setNewClientConfidences] = useState({});
+  const [newClientForm, setNewClientForm] = useState({
+    first_name: "", last_name: "", phone: "", email: "",
+    date_of_birth: "", state: "", mbi_number: "",
+    current_carrier: "", current_plan: "",
+  });
+  const [newClientCreating, setNewClientCreating] = useState(false);
+  const [newClientSubStep, setNewClientSubStep] = useState("upload");
+  const newClientPickerRef = useRef(null);
+  const [newClientDragOver, setNewClientDragOver] = useState(false);
 
   // Step 2: documents (multi-file, unified)
   // Each entry: {
@@ -831,6 +897,7 @@ export default function ApplicationSubmission() {
 
   function resetAll() {
     setStep(STEP.FIND_CLIENT);
+    setClientMode(null);
     setContactQuery("");
     setContacts([]);
     setSelectedContact(null);
@@ -846,6 +913,146 @@ export default function ApplicationSubmission() {
     setDocEdits({});
     setSyncedCount(0);
     setGhlMock(false);
+    resetNewClient();
+  }
+
+  // ── New-client sub-flow handlers ──────────────────────────────────────
+  // Wipes only the new-client state — used by "Start over" inside the
+  // new-client flow, and from resetAll() at the end of the wizard.
+  function resetNewClient() {
+    setNewClientFile(null);
+    setNewClientExtracting(false);
+    setNewClientExtracted(null);
+    setNewClientConfidences({});
+    setNewClientSubStep("upload");
+    setNewClientForm({
+      first_name: "", last_name: "", phone: "", email: "",
+      date_of_birth: "", state: "", mbi_number: "",
+      current_carrier: "", current_plan: "",
+    });
+    setNewClientDragOver(false);
+  }
+
+  function resetClientMode() {
+    setClientMode(null);
+    resetNewClient();
+    setContactQuery("");
+    setContacts([]);
+    setSelectedContact(null);
+  }
+
+  async function handleNewClientFileUpload(file) {
+    if (!file) return;
+    setNewClientFile(file);
+    setNewClientExtracting(true);
+    // Flip to the confirm view immediately so the agent sees the
+    // "AI is reading…" state where the form will appear, rather than
+    // staring at a frozen upload zone.
+    setNewClientSubStep("confirm");
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      // No product_type — the backend auto-detects.
+      const { data } = await api.post(
+        "/applications/extract", formData,
+        { headers: { "Content-Type": "multipart/form-data" } },
+      );
+      const ext = data?.main_extracted || {};
+      const conf = data?.main_confidences || {};
+
+      // Try first_name/last_name fields first; fall back to splitting
+      // applicant_full_name. AI extractors are inconsistent about
+      // which shape they return.
+      const fullName = (ext.applicant_full_name || "").trim();
+      const parts = fullName.split(/\s+/).filter(Boolean);
+      const firstFromFull = parts[0] || "";
+      const lastFromFull = parts.slice(1).join(" ");
+
+      setNewClientForm({
+        first_name: ext.first_name || firstFromFull || "",
+        last_name: ext.last_name || lastFromFull || "",
+        phone: ext.applicant_phone || ext.phone || "",
+        email: ext.applicant_email || ext.email || "",
+        date_of_birth: ext.applicant_dob || ext.date_of_birth || "",
+        state: ext.applicant_state || ext.state || "",
+        mbi_number: ext.applicant_medicare_id || ext.mbi_number || "",
+        current_carrier: ext.carrier || ext.current_carrier || "",
+        current_plan: ext.plan_name || ext.current_plan || "",
+      });
+      setNewClientExtracted(ext);
+      setNewClientConfidences(conf);
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.detail ||
+        "Could not extract from this file. Please check it's a valid application.",
+      );
+      // Bounce back to upload so the agent can retry with a different
+      // file rather than being stuck on an empty confirm form.
+      setNewClientSubStep("upload");
+      setNewClientFile(null);
+    } finally {
+      setNewClientExtracting(false);
+    }
+  }
+
+  async function handleCreateNewClient() {
+    if (!newClientForm.first_name.trim() || !newClientForm.last_name.trim()) {
+      toast.error("First name and last name are required.");
+      return;
+    }
+    if (!newClientForm.phone.trim()) {
+      toast.error("Phone number is required.");
+      return;
+    }
+    setNewClientCreating(true);
+    try {
+      const { data } = await api.post("/leads", {
+        first_name: newClientForm.first_name.trim(),
+        last_name: newClientForm.last_name.trim(),
+        phone: newClientForm.phone.trim(),
+        email: newClientForm.email.trim() || undefined,
+        date_of_birth: newClientForm.date_of_birth || undefined,
+        state: newClientForm.state || undefined,
+        mbi_number: newClientForm.mbi_number || undefined,
+        current_carrier: newClientForm.current_carrier || undefined,
+        current_plan: newClientForm.current_plan || undefined,
+        status: "new",
+      });
+      // Shape matches the GHL contact-search result the rest of the
+      // wizard expects (contactDisplay reads firstName/lastName).
+      setSelectedContact({
+        id: data.id,
+        ghl_contact_id: data.ghl_contact_id,
+        firstName: data.first_name,
+        lastName: data.last_name,
+        email: data.email,
+        phone: data.phone,
+        name: `${data.first_name} ${data.last_name}`.trim(),
+      });
+      toast.success(
+        `Client created: ${data.first_name} ${data.last_name}`.trim(),
+      );
+      setStep(STEP.UPLOAD);
+    } catch (err) {
+      const detail =
+        err?.response?.data?.detail ||
+        err?.message ||
+        "Could not create client.";
+      toast.error(typeof detail === "string" ? detail : "Could not create client.");
+    } finally {
+      setNewClientCreating(false);
+    }
+  }
+
+  function onNewClientFieldChange(field, value) {
+    setNewClientForm((f) => ({ ...f, [field]: value }));
+  }
+
+  function onNewClientDrop(e) {
+    e.preventDefault();
+    setNewClientDragOver(false);
+    const file = e.dataTransfer?.files?.[0];
+    if (file) handleNewClientFileUpload(file);
   }
 
   function submitAnotherForSameContact() {
@@ -885,10 +1092,268 @@ export default function ApplicationSubmission() {
 
         <StepBar current={step} />
 
-        {/* Step 1: Find Client */}
-        {step === STEP.FIND_CLIENT && (
+        {/* Step 1: Find Client — three phases gated by clientMode.
+            Phase A (clientMode === null): pick "New" vs "Existing".
+            Phase B (clientMode === "new"): upload + AI-extract + confirm,
+                                            then POST /api/leads to mint
+                                            the new lead row.
+            Phase C (clientMode === "existing"): legacy search UI,
+                                                 unchanged. */}
+        {step === STEP.FIND_CLIENT && clientMode === null && (
+          <Card data-testid="client-mode-card">
+            <CardContent className="pt-6">
+              <p className="text-sm text-muted-foreground mb-5">
+                Is this a new client or someone already in the system?
+              </p>
+              <div className="grid sm:grid-cols-2 gap-4">
+                <button
+                  type="button"
+                  onClick={() => setClientMode("new")}
+                  data-testid="client-mode-new"
+                  className="text-left rounded-xl border-[1.5px] border-border bg-white p-7 transition hover:border-[#1B4332] hover:bg-[#D8F3DC] focus:outline-none focus-visible:border-[#1B4332] focus-visible:bg-[#D8F3DC] min-h-[180px]"
+                >
+                  <UserPlus className="w-12 h-12 text-[#1B4332] mb-3" />
+                  <div className="text-lg font-bold text-[#1B4332]">
+                    New Client
+                  </div>
+                  <p className="text-sm text-gray-600 mt-1.5 leading-relaxed">
+                    Upload their application and we'll create their
+                    profile automatically.
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setClientMode("existing")}
+                  data-testid="client-mode-existing"
+                  className="text-left rounded-xl border-[1.5px] border-border bg-white p-7 transition hover:border-[#1B4332] hover:bg-[#D8F3DC] focus:outline-none focus-visible:border-[#1B4332] focus-visible:bg-[#D8F3DC] min-h-[180px]"
+                >
+                  <Search className="w-12 h-12 text-[#1B4332] mb-3" />
+                  <div className="text-lg font-bold text-[#1B4332]">
+                    Existing Client
+                  </div>
+                  <p className="text-sm text-gray-600 mt-1.5 leading-relaxed">
+                    Search by name, phone, or email.
+                  </p>
+                </button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Phase B — New Client */}
+        {step === STEP.FIND_CLIENT && clientMode === "new" && (
+          <Card data-testid="new-client-card">
+            <CardContent className="pt-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={resetClientMode}
+                  className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-[#1B4332]"
+                  data-testid="new-client-back"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  Back to client choice
+                </button>
+              </div>
+
+              {newClientSubStep === "upload" && (
+                <div>
+                  <div className="text-[11px] uppercase tracking-widest text-[#B5451B] font-semibold mb-1">
+                    Step 1A · New Client
+                  </div>
+                  <h3 className="text-lg font-semibold text-[#1B4332]">
+                    Upload the application to create this client
+                  </h3>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    We'll read the PDF (or photo) with AI and pre-fill
+                    a confirmation form so you can review before the
+                    client record is created.
+                  </p>
+
+                  <label
+                    htmlFor="new-client-file-picker"
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setNewClientDragOver(true);
+                    }}
+                    onDragLeave={() => setNewClientDragOver(false)}
+                    onDrop={onNewClientDrop}
+                    data-testid="new-client-dropzone"
+                    className={`mt-4 block cursor-pointer rounded-xl border-2 border-dashed p-10 text-center transition ${
+                      newClientDragOver
+                        ? "border-[#1B4332] bg-[#D8F3DC]"
+                        : "border-border hover:border-[#1B4332] hover:bg-[#D8F3DC]/40"
+                    }`}
+                  >
+                    <UploadCloud className="w-10 h-10 mx-auto text-[#1B4332]" />
+                    <div className="font-semibold mt-3 text-[#1B4332]">
+                      Drop the application here, or click to pick a file
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      PDF, JPG, or PNG · single file
+                    </div>
+                    <input
+                      id="new-client-file-picker"
+                      ref={newClientPickerRef}
+                      type="file"
+                      accept="application/pdf,image/jpeg,image/png"
+                      className="hidden"
+                      data-testid="new-client-file-input"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) handleNewClientFileUpload(f);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+                </div>
+              )}
+
+              {newClientSubStep === "confirm" && (
+                <div data-testid="new-client-confirm">
+                  <div className="text-[11px] uppercase tracking-widest text-[#B5451B] font-semibold mb-1">
+                    Step 1B · Confirm New Client
+                  </div>
+                  <h3 className="text-lg font-semibold text-[#1B4332]">
+                    Creating new client
+                  </h3>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Review the fields the AI pulled from the application.
+                    Edit anything that looks wrong — required fields are
+                    marked with{" "}
+                    <span className="text-[#B5451B] font-semibold">*</span>.
+                  </p>
+
+                  {newClientExtracting && (
+                    <div
+                      className="mt-4 flex items-center gap-3 rounded-lg border border-border bg-secondary/40 p-4"
+                      data-testid="new-client-extracting"
+                    >
+                      <Loader2 className="w-4 h-4 text-[#1B4332] animate-spin" />
+                      <div className="text-sm">
+                        <div className="font-medium">
+                          AI is reading the application…
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Usually takes 5–15 seconds.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {!newClientExtracting && (
+                    <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <NewClientField
+                        label="First Name" required
+                        field="first_name"
+                        value={newClientForm.first_name}
+                        confidence={newClientConfidences.first_name}
+                        onChange={onNewClientFieldChange}
+                      />
+                      <NewClientField
+                        label="Last Name" required
+                        field="last_name"
+                        value={newClientForm.last_name}
+                        confidence={newClientConfidences.last_name}
+                        onChange={onNewClientFieldChange}
+                      />
+                      <NewClientField
+                        label="Phone" required
+                        field="phone"
+                        type="tel"
+                        value={newClientForm.phone}
+                        confidence={newClientConfidences.applicant_phone}
+                        onChange={onNewClientFieldChange}
+                      />
+                      <NewClientField
+                        label="Email"
+                        field="email"
+                        type="email"
+                        value={newClientForm.email}
+                        confidence={newClientConfidences.applicant_email}
+                        onChange={onNewClientFieldChange}
+                      />
+                      <NewClientField
+                        label="Date of Birth"
+                        field="date_of_birth"
+                        type="date"
+                        value={(newClientForm.date_of_birth || "").slice(0, 10)}
+                        confidence={newClientConfidences.applicant_dob}
+                        onChange={onNewClientFieldChange}
+                      />
+                      <NewClientField
+                        label="State"
+                        field="state"
+                        value={newClientForm.state}
+                        confidence={newClientConfidences.applicant_state}
+                        onChange={onNewClientFieldChange}
+                      />
+                      <NewClientField
+                        label="Medicare ID (MBI)"
+                        field="mbi_number"
+                        value={newClientForm.mbi_number}
+                        confidence={newClientConfidences.applicant_medicare_id}
+                        onChange={onNewClientFieldChange}
+                      />
+                      <NewClientField
+                        label="Current Carrier"
+                        field="current_carrier"
+                        value={newClientForm.current_carrier}
+                        confidence={newClientConfidences.carrier}
+                        onChange={onNewClientFieldChange}
+                      />
+                      <NewClientField
+                        label="Current Plan"
+                        field="current_plan"
+                        value={newClientForm.current_plan}
+                        confidence={newClientConfidences.plan_name}
+                        onChange={onNewClientFieldChange}
+                      />
+                    </div>
+                  )}
+
+                  {!newClientExtracting && (
+                    <div className="mt-6 flex flex-wrap items-center gap-3">
+                      <Button
+                        onClick={handleCreateNewClient}
+                        disabled={newClientCreating}
+                        data-testid="new-client-confirm-btn"
+                        className="bg-[#1B4332] hover:bg-[#163829] text-white font-semibold w-full sm:w-auto sm:min-w-[280px]"
+                      >
+                        {newClientCreating ? "Creating…" : "Confirm & Continue"}
+                      </Button>
+                      <button
+                        type="button"
+                        onClick={resetNewClient}
+                        className="text-xs text-muted-foreground hover:text-[#B5451B]"
+                        data-testid="new-client-start-over"
+                      >
+                        Start over
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Phase C — Existing Client (unchanged behaviour) */}
+        {step === STEP.FIND_CLIENT && clientMode === "existing" && (
           <Card>
             <CardContent className="pt-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={resetClientMode}
+                  className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-[#1B4332]"
+                  data-testid="existing-client-back"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  Back to client choice
+                </button>
+              </div>
               <div>
                 <Label htmlFor="contact-search">
                   Search contact by name or email
