@@ -634,6 +634,23 @@ def start_automation_scheduler(get_db_fn):
             except Exception as e:                            # noqa: BLE001
                 logger.exception("automation %s failed: %s", name, e)
 
+        # AI security loop. Lazy-imported so an import-time failure in
+        # security_intelligence (e.g. a missing optional dep) can't break
+        # the marketing/reminder automations above. Always wrapped — the
+        # function is documented as never-raises but defense in depth.
+        try:
+            from security_intelligence import run_ai_security_analysis
+            summary = await run_ai_security_analysis(db, db)
+            if summary and summary.get("threat_level") not in (None, "low", "unknown"):
+                logger.info(
+                    "ai_security tick: threat=%s findings=%d auto_actions=%d",
+                    summary.get("threat_level"),
+                    summary.get("findings_count", 0),
+                    len(summary.get("auto_actions") or []),
+                )
+        except Exception as e:                                # noqa: BLE001
+            logger.exception("ai_security tick failed: %s", e)
+
     scheduler.add_job(
         _tick,
         trigger=IntervalTrigger(minutes=15),

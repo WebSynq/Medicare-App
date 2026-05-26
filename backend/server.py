@@ -59,6 +59,7 @@ from agency_dashboard_router import router as agency_dashboard_router  # noqa: E
 from tags_router import router as tags_router, seed_tag_library  # noqa: E402
 from booking_router import router as booking_router  # noqa: E402
 from ops_router import router as ops_router  # noqa: E402
+from security_router import router as security_router  # noqa: E402
 import email_templates  # noqa: E402,F401 — ensure clean import
 from automations import start_automation_scheduler  # noqa: E402
 from feedback_router import router as feedback_router  # noqa: E402
@@ -189,6 +190,7 @@ app.include_router(agency_dashboard_router, prefix="/api")
 app.include_router(tags_router, prefix="/api")
 app.include_router(booking_router, prefix="/api")
 app.include_router(ops_router, prefix="/api")
+app.include_router(security_router, prefix="/api")
 # feedback_router declares its own /api/feedback prefix — no prefix here.
 app.include_router(feedback_router)
 # calendar_router declares /api/calendar; ics_router declares /api/appointments
@@ -458,6 +460,9 @@ _CSRF_EXEMPT_PREFIXES = (
     # Admin ops console — GET-only today, prefix-exempt to future-proof
     # for action endpoints. Admin/owner JWT is the auth gate.
     "/api/ops/",
+    # AI security console — admin/owner read + control surface for the
+    # security_intelligence loop. JWT (admin/owner) is the gate.
+    "/api/security/",
     # Agency command center — admin-only GETs, but cover the prefix in
     # case we add stat-export POSTs later.
     "/api/agency/",
@@ -815,6 +820,25 @@ _PROD_INDEXES = [
     ("booking_blocks", "ip", {"background": True, "unique": True}),
     ("booking_blocks", "expires_at",
      {"background": True, "expireAfterSeconds": 0}),
+
+    # AI security loop (security_intelligence.py).
+    # security_events — the audit trail of every 15-min analysis tick.
+    # Indexed for "latest events" and "filter by threat level" reads.
+    # ⚠️ HIPAA: no TTL — security events are part of the incident
+    # response record and must persist.
+    ("security_events", [("timestamp", -1)], {"background": True}),
+    ("security_events",
+     [("threat_level", 1), ("timestamp", -1)], {"background": True}),
+    # ip_intelligence cache — TTL evicts entries after 24 hours so the
+    # next lookup re-pulls from ipapi.co with fresh data.
+    ("ip_intelligence", "ip", {"background": True, "unique": True}),
+    ("ip_intelligence", "lookup_at",
+     {"background": True, "expireAfterSeconds": 86_400}),
+    # ip_permanent_bans — authoritative manual/auto ban log. Unique on
+    # `ip` so upserts can't duplicate, plus a banned_at sort index for
+    # the admin list view.
+    ("ip_permanent_bans", "ip", {"background": True, "unique": True}),
+    ("ip_permanent_bans", [("banned_at", -1)], {"background": True}),
 ]
 
 

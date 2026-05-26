@@ -378,6 +378,51 @@ async def _automations_section(
 
 
 # ── Compliance section ──────────────────────────────────────────────────────
+async def _ai_security_section(db) -> Dict[str, Any]:
+    """Snapshot of the AI security loop for the Ops Console card."""
+    try:
+        from security_intelligence import get_security_config
+        config = await get_security_config(db)
+        now = _utc_now()
+        day_ago = now - timedelta(hours=24)
+
+        last_event, events_24hr, bans_active, bans_ai_24hr = await asyncio.gather(
+            db.security_events.find({}, {"_id": 0, "timestamp": 1,
+                                          "threat_level": 1})
+                .sort("timestamp", -1).limit(1).to_list(length=1),
+            db.security_events.count_documents({
+                "timestamp": {"$gte": day_ago},
+            }),
+            db.ip_permanent_bans.count_documents({
+                "$or": [
+                    {"expires_at": None},
+                    {"expires_at": {"$gt": now}},
+                ],
+            }),
+            db.ip_permanent_bans.count_documents({
+                "banned_at": {"$gte": day_ago},
+                "source": "ai_auto_ban",
+            }),
+        )
+        last_ts = None
+        last_threat = None
+        if last_event:
+            ts = last_event[0].get("timestamp")
+            last_ts = ts.isoformat() if hasattr(ts, "isoformat") else str(ts or "")
+            last_threat = last_event[0].get("threat_level")
+        return {
+            "auto_ban_enabled": bool(config.get("ai_auto_ban_enabled", True)),
+            "last_analysis": last_ts,
+            "last_threat_level": last_threat,
+            "events_24hr": events_24hr,
+            "bans_active": bans_active,
+            "bans_ai_24hr": bans_ai_24hr,
+        }
+    except Exception as e:                                    # noqa: BLE001
+        logger.warning("ops ai_security section failed: %s", e)
+        return {"error": "unavailable"}
+
+
 async def _compliance_section(
     db: AsyncIOMotorDatabase, phi_db: AsyncIOMotorDatabase,
     security_section: Dict[str, Any],
@@ -515,6 +560,7 @@ async def ops_health(
         automations,
         activity_7d,
         threat_log,
+        ai_security,
     ) = await asyncio.gather(
         _system_section(request, db),
         _security_section(db, phi_db),
@@ -523,6 +569,7 @@ async def ops_health(
         _automations_section(request, db, phi_db),
         _activity_7d_section(phi_db),
         _threat_log_section(db),
+        _ai_security_section(db),
     )
     compliance = await _compliance_section(db, phi_db, security)
 
@@ -536,4 +583,5 @@ async def ops_health(
         "compliance": compliance,
         "activity_7d": activity_7d,
         "threat_log": threat_log,
+        "ai_security": ai_security,
     }

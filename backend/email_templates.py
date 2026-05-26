@@ -462,3 +462,138 @@ def stale_lead_agent_alert(
         body_html=body,
         cta={"label": "Open lead", "url": portal_url} if portal_url else None,
     )
+
+
+# ── 9. Security alert (to admin / owner inbox) ───────────────────────────
+def security_alert_email(
+    threat_level: str,
+    narrative: str,
+    findings: list,
+    banned_ips: list,
+    auto_ban_enabled: bool,
+    ops_url: str = "https://app.ghwcrm.com/ops",
+) -> str:
+    """AI-triaged security alert. Plain-language summary + findings
+    table + auto-ban readout, with a forest-green CTA to the Ops
+    Console for the full report."""
+    level = (threat_level or "low").lower()
+    badge_bg = {
+        "critical": "#7F1D1D",
+        "high":     "#B91C1C",
+        "medium":   "#B45309",
+        "low":      "#15803D",
+    }.get(level, "#374151")
+    badge_label = {
+        "critical": "CRITICAL THREAT",
+        "high":     "HIGH THREAT",
+        "medium":   "MEDIUM THREAT",
+        "low":      "ALL CLEAR",
+    }.get(level, level.upper())
+
+    # Findings table.
+    findings_html = ""
+    if findings:
+        rows = ""
+        for f in findings:
+            sev = (f.get("severity") or "").lower()
+            sev_color = {
+                "critical": "#B91C1C",
+                "high":     "#B45309",
+                "medium":   "#92400E",
+                "low":      _MUTED,
+            }.get(sev, _MUTED)
+            ips = ", ".join((f.get("affected_ips") or [])[:5]) or "—"
+            rows += f"""
+              <tr>
+                <td style="padding:6px 10px;font-size:12px;color:{_CHARCOAL};
+                           border-top:1px solid {_BORDER};">
+                  {escape(f.get('type','—'))}
+                </td>
+                <td style="padding:6px 10px;font-size:12px;color:{sev_color};
+                           font-weight:700;border-top:1px solid {_BORDER};">
+                  {escape(sev.upper() or '—')}
+                </td>
+                <td style="padding:6px 10px;font-size:12px;color:{_CHARCOAL};
+                           border-top:1px solid {_BORDER};">
+                  {escape((f.get('description') or '')[:200])}
+                </td>
+                <td style="padding:6px 10px;font-size:12px;color:{_MUTED};
+                           border-top:1px solid {_BORDER};">{escape(ips)}</td>
+              </tr>"""
+        findings_html = f"""
+          <h3 style="margin:18px 0 6px 0;color:{_FOREST};font-size:14px;">
+            Findings
+          </h3>
+          <table style="width:100%;border-collapse:collapse;
+                        border:1px solid {_BORDER};border-radius:6px;
+                        overflow:hidden;">
+            <thead>
+              <tr style="background:{_CREAM};">
+                <th style="text-align:left;padding:8px 10px;font-size:11px;
+                           color:{_MUTED};letter-spacing:0.6px;
+                           text-transform:uppercase;">Type</th>
+                <th style="text-align:left;padding:8px 10px;font-size:11px;
+                           color:{_MUTED};letter-spacing:0.6px;
+                           text-transform:uppercase;">Severity</th>
+                <th style="text-align:left;padding:8px 10px;font-size:11px;
+                           color:{_MUTED};letter-spacing:0.6px;
+                           text-transform:uppercase;">Description</th>
+                <th style="text-align:left;padding:8px 10px;font-size:11px;
+                           color:{_MUTED};letter-spacing:0.6px;
+                           text-transform:uppercase;">IPs</th>
+              </tr>
+            </thead>
+            <tbody>{rows}</tbody>
+          </table>"""
+
+    bans_html = ""
+    if banned_ips:
+        ban_items = "".join(
+            f'<li style="font-family:monospace;font-size:13px;'
+            f'color:{_CHARCOAL};">{escape(ip)}</li>'
+            for ip in banned_ips
+        )
+        bans_html = f"""
+          <h3 style="margin:18px 0 6px 0;color:{_FOREST};font-size:14px;">
+            IPs auto-banned this cycle
+          </h3>
+          <ul style="margin:0;padding:0 0 0 18px;">{ban_items}</ul>"""
+
+    kill_switch_html = ""
+    if not auto_ban_enabled:
+        kill_switch_html = f"""
+          <div style="margin-top:16px;padding:12px 14px;border-radius:6px;
+                      background:#FEF3C7;border-left:4px solid #B45309;">
+            <strong style="color:#92400E;font-size:13px;">
+              ⚠️ Auto-ban is DISABLED.
+            </strong>
+            <div style="color:#92400E;font-size:12px;margin-top:4px;">
+              Threats will alert but won't auto-block. Re-enable from
+              Ops Console &rarr; Security &rarr; Kill switch.
+            </div>
+          </div>"""
+
+    body = f"""
+      <p style="margin:0 0 8px 0;">
+        <span style="display:inline-block;background:{badge_bg};
+                     color:#ffffff;padding:4px 10px;border-radius:4px;
+                     font-size:11px;letter-spacing:1.4px;font-weight:700;">
+          {escape(badge_label)}
+        </span>
+      </p>
+      <p style="margin:14px 0 0 0;font-size:15px;line-height:1.6;color:{_CHARCOAL};">
+        {escape(narrative or 'No narrative produced.')}
+      </p>
+      {findings_html}
+      {bans_html}
+      {kill_switch_html}
+      <p style="margin:18px 0 0 0;color:{_MUTED};font-size:12px;">
+        Generated automatically by the GHW security intelligence loop.
+      </p>"""
+
+    return _shell(
+        preheader=f"{badge_label} — GHW security analysis",
+        title="Security analysis",
+        body_html=body,
+        cta={"label": "Open Ops Console", "url": ops_url} if ops_url else None,
+    )

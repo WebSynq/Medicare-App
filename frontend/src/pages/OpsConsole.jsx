@@ -343,6 +343,8 @@ export default function OpsConsole() {
         {/* Compliance command */}
         <ComplianceCommand data={data} />
 
+        <AISecurityPanel opsData={data} />
+
         {/* Charts */}
         <div className="ghw-ops-grid-3" style={{ ...styles.grid3,
                                                   gridTemplateColumns: "1fr 1fr" }}>
@@ -1100,3 +1102,437 @@ const styles = {
     padding: "6px 0", borderBottom: `1px dashed ${BORDER_DIM}`,
   },
 };
+
+
+// ── AI Security Intelligence panel ─────────────────────────────────────────
+// Owns its own data lifecycle (config + recent events + banned-ips list)
+// so the parent's 60-s refresh keeps this card in sync without us
+// duplicating queries from /api/ops/health (which already exposes the
+// summary counts on opsData.ai_security).
+function AISecurityPanel({ opsData }) {
+  const [config, setConfig] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [bans, setBans] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [analysisBusy, setAnalysisBusy] = useState(false);
+  const [openEventId, setOpenEventId] = useState(null);
+  const [lookupIp, setLookupIp] = useState("");
+  const [lookupResult, setLookupResult] = useState(null);
+  const [lookupBusy, setLookupBusy] = useState(false);
+
+  const reload = useCallback(async () => {
+    try {
+      const [c, e, b] = await Promise.all([
+        api.get("/security/config").catch(() => null),
+        api.get("/security/events", { params: { limit: 5 } }).catch(() => null),
+        api.get("/security/banned-ips").catch(() => null),
+      ]);
+      if (c) setConfig(c.data);
+      if (e) setEvents(e.data?.events || []);
+      if (b) setBans(b.data?.banned_ips || []);
+    } catch {
+      /* surfaced via ops error banner */
+    }
+  }, []);
+
+  useEffect(() => {
+    reload();
+    const i = setInterval(reload, 60_000);
+    return () => clearInterval(i);
+  }, [reload]);
+
+  async function toggleKillSwitch() {
+    if (!config) return;
+    setBusy(true);
+    try {
+      const next = !config.ai_auto_ban_enabled;
+      const { data } = await api.patch("/security/config", {
+        ai_auto_ban_enabled: next,
+      });
+      setConfig(data);
+    } catch {
+      /* ignore */
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runAnalysisNow() {
+    setAnalysisBusy(true);
+    try {
+      await api.post("/security/run-analysis");
+      await reload();
+    } catch {
+      /* ignore */
+    } finally {
+      setAnalysisBusy(false);
+    }
+  }
+
+  async function doLookup() {
+    if (!lookupIp.trim()) return;
+    setLookupBusy(true);
+    setLookupResult(null);
+    try {
+      const { data } = await api.get(
+        `/security/ip/${encodeURIComponent(lookupIp.trim())}`,
+      );
+      setLookupResult(data);
+    } catch (err) {
+      setLookupResult({
+        ip: lookupIp.trim(),
+        error: err?.response?.data?.detail || "Lookup failed",
+      });
+    } finally {
+      setLookupBusy(false);
+    }
+  }
+
+  async function unbanIp(ip) {
+    // eslint-disable-next-line no-restricted-globals
+    if (!window.confirm(`Unban ${ip}? This removes the ban immediately.`)) {
+      return;
+    }
+    try {
+      await api.delete(`/security/ban-ip/${encodeURIComponent(ip)}`);
+      await reload();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const autoOn = !!config?.ai_auto_ban_enabled;
+  const aiOps = opsData?.ai_security || {};
+  const lastTs = aiOps.last_analysis;
+  const lastThreat = (aiOps.last_threat_level || "unknown").toLowerCase();
+  const threatColor =
+    lastThreat === "critical" ? RED_ALERT
+    : lastThreat === "high" ? RED_ALERT
+    : lastThreat === "medium" ? AMBER
+    : lastThreat === "low" ? GREEN_OK
+    : GRAY_MID;
+
+  return (
+    <div style={styles.sectionCard} className="ghw-ops-countup">
+      <SectionTitle>◉ AI SECURITY INTELLIGENCE</SectionTitle>
+
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        gap: 14, flexWrap: "wrap",
+        padding: "12px 14px", borderRadius: 8,
+        background: autoOn ? GREEN_DIM : RED_DIM,
+        border: `1px solid ${autoOn ? GREEN_OK : RED_ALERT}`,
+        marginBottom: 14, fontFamily: FONT_MONO,
+      }}>
+        <div>
+          <div style={{ color: autoOn ? GREEN_OK : RED_ALERT,
+                         fontWeight: 700, letterSpacing: 0.6 }}>
+            AI AUTO-BAN: {autoOn ? "● ACTIVE" : "○ DISABLED"}
+          </div>
+          <div style={{ color: GRAY_MID, fontSize: 11, marginTop: 4 }}>
+            {autoOn
+              ? "AI auto-bans high/critical-threat IPs every 15 min."
+              : "⚠ Threats will alert but will NOT be auto-blocked."}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={toggleKillSwitch}
+          disabled={busy || !config}
+          data-testid="ai-kill-switch"
+          style={{
+            background: autoOn ? RED_ALERT : GREEN_OK,
+            color: WHITE, border: "none", borderRadius: 6,
+            padding: "10px 18px", fontFamily: FONT_MONO,
+            fontWeight: 700, fontSize: 13, letterSpacing: 0.6,
+            cursor: busy ? "not-allowed" : "pointer",
+            opacity: busy ? 0.6 : 1,
+          }}
+        >
+          {busy ? "…" : autoOn ? "DISABLE" : "ENABLE"}
+        </button>
+      </div>
+
+      <div style={{ display: "grid",
+                     gridTemplateColumns: "1fr auto", gap: 14,
+                     alignItems: "stretch", marginBottom: 14 }}>
+        <div style={{
+          background: BG_CARD_2, border: `1px solid ${BORDER_DIM}`,
+          borderRadius: 8, padding: 14, fontFamily: FONT_MONO,
+        }}>
+          <div style={styles.smallLabel}>LAST ANALYSIS</div>
+          <div style={{ color: WHITE, fontSize: 18, fontWeight: 700,
+                         marginTop: 4 }}>
+            {lastTs ? relativeTime(lastTs) : "no runs yet"}
+          </div>
+          <div style={{ marginTop: 4, color: threatColor, fontSize: 12,
+                         fontWeight: 700, letterSpacing: 0.6 }}>
+            THREAT LEVEL: ● {lastThreat.toUpperCase()}
+          </div>
+          <div style={{ marginTop: 4, color: GRAY_MID, fontSize: 11 }}>
+            {aiOps.events_24hr ?? 0} runs in last 24h ·{" "}
+            {aiOps.bans_ai_24hr ?? 0} AI bans ·{" "}
+            {aiOps.bans_active ?? 0} bans active
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={runAnalysisNow}
+          disabled={analysisBusy}
+          data-testid="ai-run-now"
+          style={{
+            background: CYAN_DIM, color: CYAN,
+            border: `1px solid ${CYAN}`, borderRadius: 8,
+            padding: "10px 18px", fontFamily: FONT_MONO,
+            fontWeight: 700, fontSize: 12, letterSpacing: 0.6,
+            cursor: analysisBusy ? "not-allowed" : "pointer",
+            minWidth: 140, alignSelf: "stretch",
+          }}
+        >
+          {analysisBusy ? "RUNNING…" : "RUN NOW"}
+        </button>
+      </div>
+
+      <div style={styles.smallLabel}>RECENT EVENTS · LAST 5</div>
+      <table style={styles.threatTable} data-testid="ai-events-table">
+        <thead>
+          <tr>
+            <th style={styles.threatTh}>TIME</th>
+            <th style={styles.threatTh}>LEVEL</th>
+            <th style={styles.threatTh}>SUMMARY</th>
+          </tr>
+        </thead>
+        <tbody>
+          {events.length === 0 && (
+            <tr>
+              <td colSpan={3} style={{ ...styles.threatTd,
+                                         color: GRAY_MID,
+                                         textAlign: "center" }}>
+                — no security analyses recorded yet —
+              </td>
+            </tr>
+          )}
+          {events.map((e) => {
+            const lvl = (e.threat_level || "low").toLowerCase();
+            const c = lvl === "critical" || lvl === "high" ? RED_ALERT
+                      : lvl === "medium" ? AMBER
+                      : lvl === "low" ? GREEN_OK : GRAY_MID;
+            const ts = e.timestamp;
+            const isOpen = openEventId === e.event_id;
+            const rows = [
+              <tr key={e.event_id}
+                  onClick={() => setOpenEventId(isOpen ? null : e.event_id)}
+                  style={{ cursor: "pointer" }}
+                  data-testid={`ai-event-row-${e.event_id}`}>
+                <td style={styles.threatTd}>
+                  {ts ? new Date(ts).toLocaleTimeString("en-US",
+                        { hour12: false, hour: "2-digit", minute: "2-digit" })
+                      : "—"}
+                </td>
+                <td style={{ ...styles.threatTd, color: c, fontWeight: 700 }}>
+                  {lvl.toUpperCase()}
+                </td>
+                <td style={styles.threatTd}>
+                  {(e.ai_narrative || "(no narrative)").slice(0, 80)}
+                  {((e.ai_narrative || "").length > 80) ? "…" : ""}
+                </td>
+              </tr>,
+            ];
+            if (isOpen) {
+              rows.push(
+                <tr key={`${e.event_id}-detail`}>
+                  <td colSpan={3} style={{
+                    ...styles.threatTd,
+                    background: BG_CARD_2, color: WHITE, padding: 14,
+                    whiteSpace: "pre-wrap", lineHeight: 1.5,
+                  }}>
+                    <div style={{ color: CYAN, fontWeight: 700,
+                                   marginBottom: 6 }}>
+                      AI NARRATIVE
+                    </div>
+                    <div>{e.ai_narrative || "(no narrative)"}</div>
+                    {(e.findings || []).length > 0 && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ color: AMBER, fontWeight: 700 }}>
+                          FINDINGS ({(e.findings || []).length})
+                        </div>
+                        <ul style={{ paddingLeft: 18, marginTop: 6 }}>
+                          {(e.findings || []).map((f, i) => (
+                            <li key={i} style={{ color: GRAY_MID,
+                                                  fontSize: 12 }}>
+                              <strong style={{ color: WHITE }}>
+                                {f.type}
+                              </strong>{" · "}
+                              {f.severity?.toUpperCase()}
+                              {" — "}{f.description}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {(e.auto_actions_taken || []).length > 0 && (
+                      <div style={{ marginTop: 10, color: RED_ALERT,
+                                     fontSize: 12 }}>
+                        AUTO-ACTIONS: {(e.auto_actions_taken || [])
+                          .map((a) => `${a.type}:${a.ip || ""}`).join(", ")}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            }
+            return rows;
+          })}
+        </tbody>
+      </table>
+
+      <div style={{ ...styles.smallLabel, marginTop: 18 }}>
+        ACTIVE IP BANS · {bans.length}
+      </div>
+      <table style={styles.threatTable} data-testid="ai-banned-table">
+        <thead>
+          <tr>
+            <th style={styles.threatTh}>IP</th>
+            <th style={styles.threatTh}>LOCATION</th>
+            <th style={styles.threatTh}>BANNED</th>
+            <th style={styles.threatTh}>REASON</th>
+            <th style={styles.threatTh}>ACTION</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bans.length === 0 && (
+            <tr>
+              <td colSpan={5} style={{ ...styles.threatTd,
+                                         color: GRAY_MID,
+                                         textAlign: "center" }}>
+                — no active bans —
+              </td>
+            </tr>
+          )}
+          {bans.slice(0, 10).map((b) => {
+            const intel = b.intel || {};
+            const loc = [intel.city, intel.country_code]
+              .filter(Boolean).join(", ") || "—";
+            const banned = b.banned_at;
+            return (
+              <tr key={b.ip} data-testid={`ai-ban-${b.ip}`}>
+                <td style={{ ...styles.threatTd, fontFamily: "monospace" }}>
+                  {b.ip}
+                </td>
+                <td style={styles.threatTd}>{loc}</td>
+                <td style={styles.threatTd}>
+                  {banned ? relativeTime(
+                    typeof banned === "string" ? banned : (banned?.$date || "")
+                  ) : "—"}
+                </td>
+                <td style={{ ...styles.threatTd, color: GRAY_MID }}>
+                  {(b.reason || b.source || "—").slice(0, 40)}
+                </td>
+                <td style={styles.threatTd}>
+                  <button
+                    type="button"
+                    onClick={() => unbanIp(b.ip)}
+                    data-testid={`ai-unban-${b.ip}`}
+                    style={{
+                      background: "transparent", color: AMBER,
+                      border: `1px solid ${AMBER}`, borderRadius: 4,
+                      padding: "3px 10px", fontFamily: FONT_MONO,
+                      fontSize: 11, cursor: "pointer",
+                    }}
+                  >
+                    UNBAN
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+
+      <div style={{ marginTop: 18 }}>
+        <div style={styles.smallLabel}>IP LOOKUP</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            type="text"
+            value={lookupIp}
+            onChange={(e) => setLookupIp(e.target.value)}
+            placeholder="Enter IP address…"
+            data-testid="ai-lookup-input"
+            style={{
+              flex: 1, background: BG_CARD_2, color: WHITE,
+              border: `1px solid ${BORDER_BRIGHT}`, borderRadius: 6,
+              padding: "8px 12px", fontFamily: FONT_MONO, fontSize: 13,
+            }}
+          />
+          <button
+            type="button"
+            onClick={doLookup}
+            disabled={lookupBusy || !lookupIp.trim()}
+            data-testid="ai-lookup-go"
+            style={{
+              background: CYAN_DIM, color: CYAN,
+              border: `1px solid ${CYAN}`, borderRadius: 6,
+              padding: "8px 18px", fontFamily: FONT_MONO,
+              fontWeight: 700, fontSize: 12, cursor: "pointer",
+              minWidth: 90,
+            }}
+          >
+            {lookupBusy ? "…" : "LOOKUP"}
+          </button>
+        </div>
+        {lookupResult && (
+          <div data-testid="ai-lookup-result" style={{
+            marginTop: 10, padding: 12, borderRadius: 8,
+            background: BG_CARD_2, border: `1px solid ${BORDER_DIM}`,
+            fontFamily: FONT_MONO, fontSize: 12, color: WHITE,
+          }}>
+            {lookupResult.error ? (
+              <div style={{ color: RED_ALERT }}>
+                ✗ {lookupResult.error}
+              </div>
+            ) : lookupResult.private ? (
+              <div style={{ color: GRAY_MID }}>
+                {lookupResult.ip} is a private / loopback IP — no geo data.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 4 }}>
+                <AiRow label="IP" value={lookupResult.ip} />
+                <AiRow label="Location"
+                       value={[lookupResult.city, lookupResult.region,
+                               lookupResult.country].filter(Boolean).join(", ")
+                               || "—"} />
+                <AiRow label="ISP" value={lookupResult.isp || "—"} />
+                <AiRow label="VPN/Proxy"
+                       value={lookupResult.is_vpn ? "YES" : "no"} />
+                <AiRow label="Tor"
+                       value={lookupResult.is_tor ? "YES" : "no"} />
+                {lookupResult.threat_score != null && (
+                  <AiRow label="Abuse score"
+                         value={`${lookupResult.threat_score} / 100`} />
+                )}
+                {lookupResult.lookup_error && (
+                  <div style={{ color: AMBER, marginTop: 4 }}>
+                    Note: {lookupResult.lookup_error}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AiRow({ label, value }) {
+  return (
+    <div style={{
+      display: "flex", justifyContent: "space-between",
+      gap: 12, padding: "2px 0",
+      fontFamily: FONT_MONO, fontSize: 12,
+    }}>
+      <span style={{ color: GRAY_MID }}>{label}</span>
+      <span style={{ color: WHITE, fontWeight: 600 }}>{value}</span>
+    </div>
+  );
+}
