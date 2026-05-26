@@ -178,6 +178,27 @@ async def download_document(
 ):
     meta = await db.documents.find_one({"id": doc_id}, {"_id": 0})
     meta = _idor_or_403(meta, current_user, "Document")
+
+    # S3-backed docs (e.g. application PDFs written by application_router
+    # at submit time) are stored externally — redirect to the s3_url
+    # rather than trying to read local-disk ciphertext that was never
+    # written. The audit row is still stamped so the trail is intact
+    # whether the bytes streamed from S3 or local storage.
+    if meta.get("storage_type") == "s3" and meta.get("s3_url"):
+        await write_audit(
+            db, "doc_downloaded",
+            actor_email=current_user.get("email"),
+            actor_id=current_user.get("id"),
+            target_type="document", target_id=doc_id,
+            request=request,
+            metadata={"lead_id": meta.get("lead_id"), "source": "s3"},
+        )
+        from fastapi.responses import RedirectResponse
+        # 307 preserves the method and isn't cached — safe for the
+        # one-shot download the SPA initiates from the Documents tab.
+        return RedirectResponse(url=meta["s3_url"], status_code=307)
+
+    # Local-disk path (the original encrypt-then-stream behaviour).
     path = STORAGE / meta["lead_id"] / f"{doc_id}.enc"
     if not path.exists():
         raise HTTPException(status_code=404, detail="File missing on storage")

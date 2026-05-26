@@ -1459,6 +1459,51 @@ async def submit_application(
                 lead_id, e,
             )
 
+    # Write the application PDF into the documents collection so it
+    # surfaces in the client profile's Documents tab alongside any
+    # locally-encrypted uploads. storage_type="s3" tells the download
+    # endpoint to redirect to ``s3_url`` instead of reading local disk.
+    # Best-effort wrapped — a documents-write failure must not 5xx a
+    # successful submission. Also push the doc_id onto leads.document_ids
+    # so the legacy callsites that iterate that list pick it up.
+    if final_s3_url and lead_id:
+        try:
+            doc_id = str(uuid.uuid4())
+            now_iso = datetime.now(timezone.utc).isoformat()
+            doc_record = {
+                "id": doc_id,
+                "lead_id": lead_id,
+                "agent_id": agent_id,
+                "agent_email": (effective.get("email") or "").lower() or None,
+                "filename": (
+                    f"application_{payload.product_type}_"
+                    f"{policy_id[:8]}.pdf"
+                ),
+                "content_type": "application/pdf",
+                "size_bytes": 0,                # not known at this point
+                "doc_type": "application_pdf",
+                "encrypted": False,             # S3 object — not Fernet-wrapped
+                "storage_type": "s3",
+                "s3_url": final_s3_url,
+                "s3_key": final_s3_key or None,
+                "uploaded_by": current_user.get("id"),
+                "uploaded_at": now_iso,
+                "source": "application_submission",
+                "product_type": payload.product_type,
+                "policy_id": policy_id,
+            }
+            await db.documents.insert_one(doc_record)
+            await db.leads.update_one(
+                {"id": lead_id},
+                {"$push": {"document_ids": doc_id},
+                 "$set": safe_lead_set({"updated_at": now_iso})},
+            )
+        except Exception as e:                                # noqa: BLE001
+            logger.warning(
+                "documents row insert failed (non-fatal) for lead %s: %s",
+                lead_id, e,
+            )
+
     return {
         "success": True,
         "contact_id": payload.contact_id,

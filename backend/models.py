@@ -500,18 +500,34 @@ class SOARecord(BaseModel):
 
 # ----- Documents -----
 class DocumentMeta(BaseModel):
+    # Allow extra fields so the documents.find_one cursor round-trips
+    # provenance data (s3_url, source, product_type, policy_id) without
+    # tripping Pydantic — the list endpoint serialises these back to the
+    # SPA verbatim.
+    model_config = ConfigDict(extra="allow")
     id: str
     lead_id: str
     filename: str
     content_type: str
     size_bytes: int
-    doc_type: str  # "medicare_card", "id", "voided_check", "other"
+    doc_type: str  # "medicare_card", "id", "voided_check", "other", "application_pdf"
     encrypted: bool = True
     uploaded_by: Optional[str] = None
     uploaded_at: str
     # Workspace-isolation scoping (Phase 2).
     agent_id: Optional[str] = None
     agent_email: Optional[str] = None
+    # S3-backed storage (Phase 4). When `storage_type == "s3"` the
+    # download endpoint 307-redirects to ``s3_url`` instead of streaming
+    # from local disk. Application PDFs submitted via the wizard land
+    # here so they appear in the client's Documents tab alongside
+    # locally-encrypted uploads.
+    storage_type: Optional[str] = None   # "local" | "s3"
+    s3_url: Optional[str] = None
+    s3_key: Optional[str] = None
+    source: Optional[str] = None         # e.g. "application_submission"
+    product_type: Optional[str] = None
+    policy_id: Optional[str] = None
 
 
 # ----- Tags -----
