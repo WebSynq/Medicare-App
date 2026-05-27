@@ -148,6 +148,53 @@ async def test_save_cna_upserts_on_second_call(client, db, admin_headers):
     assert count == 1
 
 
+@pytest.mark.asyncio
+async def test_second_save_never_sets_immutable_id(client, db, admin_headers):
+    """Regression for the prod "couldn't save cna" bug.
+
+    Real MongoDB rejects any $set that touches the immutable _id field
+    (mongomock doesn't, which is why the bug only surfaced on Render).
+    Approach: seed the cna_assessments row directly with a known
+    sentinel _id, then issue a save via the endpoint. If the endpoint
+    were carrying _id into its $set payload, mongomock would silently
+    overwrite our sentinel. After the save we assert the _id is still
+    the sentinel value — i.e. the endpoint never touched it.
+    """
+    lead = _create_lead(client, admin_headers)
+
+    # Seed an existing CNA row with a sentinel _id.
+    sentinel = "test-sentinel-id-do-not-overwrite"
+    await db.cna_assessments.insert_one({
+        "_id": sentinel,
+        "id": sentinel,
+        "lead_id": lead["id"],
+        "agent_id": "seeded-agent",
+        "agency_id": "ghw_001",
+        "employment_status": "working",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "completed_at": "2026-01-01T00:00:00+00:00",
+    })
+
+    # Now POST an update — this is the path that pre-fix would have
+    # $set'd _id back in. 200 + sentinel preserved means we stripped it.
+    r = client.post(
+        f"/api/cna/{lead['id']}",
+        headers=admin_headers,
+        json={"employment_status": "retired"},
+    )
+    assert r.status_code == 200, r.text
+
+    stored = await db.cna_assessments.find_one({"lead_id": lead["id"]})
+    assert stored is not None
+    assert stored["_id"] == sentinel, (
+        f"endpoint mutated immutable _id (was {sentinel!r}, "
+        f"now {stored['_id']!r}) — $set payload must strip _id"
+    )
+    # Sanity: the rest of the doc DID update.
+    assert stored["employment_status"] == "retired"
+
+
 # ── AI analysis (safe-default path) ─────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_save_cna_with_run_ai_returns_safe_default(client, admin_headers,
@@ -241,6 +288,76 @@ async def test_agent_cannot_read_anothers_cna(client, db, admin_headers):
     # Agent B can't see it.
     r = client.get(f"/api/cna/{lead['id']}", headers=b_headers)
     assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_can_read_and_write_any_agents_cna(client, db, admin_headers):
+    """Regression test for production 403 bug.
+
+    An admin must be able to GET + POST a CNA for a lead owned by
+    another agent — directly (no impersonation header) AND while
+    impersonating a third agent. The pre-fix code only checked the
+    effective agent's role, so an admin who didn't own the lead got
+    403 even though they have agency-wide access.
+    """
+    # Agent A creates a lead with a CNA they own.
+    _, a_headers = _make_agent_with_token(
+        client, admin_headers, "agent.alpha2@example.com", "Agent Alpha",
+    )
+    lead = _create_lead(client, a_headers,
+                         first_name="Cross", last_name="Agent",
+                         email="cross@example.com")
+
+    # Admin GETs the (empty) CNA template for that lead — should
+    # succeed even though admin doesn't own the lead.
+    r = client.get(f"/api/cna/{lead['id']}", headers=admin_headers)
+    assert r.status_code == 200, r.text
+
+    # Admin POSTs a CNA save against the lead they don't own.
+    r2 = client.post(
+        f"/api/cna/{lead['id']}",
+        headers=admin_headers,
+        json={"employment_status": "working"},
+    )
+    assert r2.status_code == 200, r2.text
+
+
+@pytest.mark.asyncio
+async def test_admin_impersonating_third_agent_still_works(
+    client, db, admin_headers,
+):
+    """Admin uses X-Agent-ID to impersonate Agent A while saving a CNA
+    for a lead Agent A actually owns. The impersonated agent owns the
+    lead so the IDOR check passes via the ownership branch, regardless
+    of role bypass."""
+    # Agent A owns the lead.
+    a_id, a_headers = _make_agent_with_token(
+        client, admin_headers, "agent.imp@example.com", "Agent Imp",
+    )
+    lead = _create_lead(client, a_headers,
+                         first_name="Imp", last_name="Lead",
+                         email="imp@example.com")
+
+    # Admin impersonates Agent A — POST succeeds (lead is in scope).
+    impersonate_headers = {**admin_headers, "X-Agent-ID": a_id}
+    r = client.post(
+        f"/api/cna/{lead['id']}",
+        headers=impersonate_headers,
+        json={"employment_status": "retired"},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_is_privileged_handles_case_and_missing_role():
+    """The lowercased role check must survive legacy capitalised roles
+    and an unset role field (e.g. a row that pre-dates the role column)."""
+    from cna_router import _is_privileged
+    assert _is_privileged({"role": "admin"}) is True
+    assert _is_privileged({"role": "Admin"}) is True
+    assert _is_privileged({"role": "OWNER"}) is True
+    assert _is_privileged({"role": "agent"}) is False
+    assert _is_privileged({}) is False
+    assert _is_privileged(None) is False
 
 
 # ── Urgency scoring (pure-function unit tests) ──────────────────────────────

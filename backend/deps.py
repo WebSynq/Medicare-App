@@ -434,8 +434,15 @@ async def get_effective_agent(
     target_id = request.headers.get("X-Agent-ID", "")
     if not target_id:
         return current_user
-    role = current_user.get("role", "agent")
-    if role not in IMPERSONATION_ROLES:
+    # Case-insensitive membership check. A legacy row in production
+    # had role="Admin" (capitalised), which silently fell out of the
+    # tuple match and produced a misleading "Only admins can
+    # impersonate agents" 403 for an actual admin. Normalise both
+    # sides before comparing — mirrors the fix in
+    # cna_router._is_privileged.
+    role = (current_user.get("role") or "agent").strip().lower()
+    allowed = {r.lower() for r in IMPERSONATION_ROLES}
+    if role not in allowed:
         raise HTTPException(403, "Only admins can impersonate agents")
     target = await db.users.find_one({"id": target_id}, {"_id": 0})
     if not target:

@@ -141,17 +141,27 @@ class CNAPayload(BaseModel):
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 def _is_privileged(user: Optional[dict]) -> bool:
+    """True when this user can bypass per-lead IDOR scoping.
+
+    Logs the exact role value seen from the DB and the resolved
+    decision so prod Render logs surface the case/capitalisation that
+    came back from Mongo (most common cause of "I'm admin but I'm
+    403'd" reports).
+    """
     if not user:
+        logger.info("cna._is_privileged: user=None → False")
         return False
-    role = (user.get("role") or "").strip().lower()
-    if not role:
-        return False
-    # admin / owner always bypass the per-lead IDOR check. Other full-
-    # agency-scope roles (compliance, coach, accounting, client_success)
-    # also bypass — they need read access across the whole book to do
-    # their jobs. Lowercased so a legacy "Admin"/"Owner" capitalisation
-    # in the user row can't mask the role.
-    return role in {r.lower() for r in FULL_AGENCY_SCOPE_ROLES}
+    raw_role = user.get("role")
+    role = (raw_role or "").strip().lower()
+    allowed = {r.lower() for r in FULL_AGENCY_SCOPE_ROLES}
+    decision = bool(role) and role in allowed
+    logger.info(
+        "cna._is_privileged: user_id=%s email=%s raw_role=%r "
+        "normalised=%r allowed=%s decision=%s",
+        user.get("id"), user.get("email"), raw_role, role,
+        sorted(allowed), decision,
+    )
+    return decision
 
 
 async def _resolve_lead_or_403(
@@ -169,14 +179,57 @@ async def _resolve_lead_or_403(
     even when the actual caller is an admin — relying on ``effective``
     alone would 403 an admin who never owned the lead.
     """
-    lead = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0}))
+    raw = await db.leads.find_one({"id": lead_id}, {"_id": 0})
+    lead = safe_lead_load(raw)
     if not lead:
+        logger.warning(
+            "cna._resolve_lead_or_403: lead NOT FOUND lead_id=%s "
+            "caller=%s effective=%s",
+            lead_id,
+            (current_user or {}).get("email"),
+            (effective or {}).get("email"),
+        )
         raise HTTPException(404, "Lead not found")
-    if _is_privileged(current_user) or _is_privileged(effective):
+
+    cu_priv = _is_privileged(current_user)
+    eff_priv = _is_privileged(effective)
+    eff_id = (effective or {}).get("id")
+    lead_agent_id = lead.get("agent_id")
+    owns_lead = lead_agent_id == eff_id
+
+    if cu_priv or eff_priv:
+        logger.info(
+            "cna._resolve_lead_or_403: ALLOW (privileged) lead_id=%s "
+            "lead_agent_id=%s effective_id=%s current_user_role=%r "
+            "effective_role=%r current_user_priv=%s effective_priv=%s",
+            lead_id, lead_agent_id, eff_id,
+            (current_user or {}).get("role"),
+            (effective or {}).get("role"),
+            cu_priv, eff_priv,
+        )
         return lead
-    if lead.get("agent_id") != effective.get("id"):
-        raise HTTPException(403, "Lead is not in your book")
-    return lead
+
+    if owns_lead:
+        logger.info(
+            "cna._resolve_lead_or_403: ALLOW (owner) lead_id=%s "
+            "lead_agent_id=%s effective_id=%s",
+            lead_id, lead_agent_id, eff_id,
+        )
+        return lead
+
+    logger.warning(
+        "cna._resolve_lead_or_403: DENY 403 lead_id=%s lead_agent_id=%s "
+        "effective_id=%s current_user_id=%s current_user_role=%r "
+        "effective_role=%r impersonated_by=%s current_user_priv=%s "
+        "effective_priv=%s",
+        lead_id, lead_agent_id, eff_id,
+        (current_user or {}).get("id"),
+        (current_user or {}).get("role"),
+        (effective or {}).get("role"),
+        (effective or {}).get("_impersonated_by"),
+        cu_priv, eff_priv,
+    )
+    raise HTTPException(403, "Lead is not in your book")
 
 
 def _public(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -474,6 +527,24 @@ async def upsert_cna(
     ``run_ai=true`` is passed we synchronously call Claude before
     returning so the SPA gets the freshest recommendation in one
     round-trip (used by the "Save & Generate AI Analysis" button)."""
+    # Entry-point trace. If this line shows up in Render logs but the
+    # _resolve_lead_or_403 logs don't, the request actually reached
+    # the body — useful to rule out get_effective_agent as the 403
+    # source. (get_effective_agent raises BEFORE the body executes,
+    # so its 403s never log this line.)
+    logger.info(
+        "cna.upsert_cna ENTER lead_id=%s x_agent_id=%r current_user_id=%s "
+        "current_user_role=%r effective_id=%s effective_role=%r "
+        "impersonated_by=%s run_ai=%s",
+        lead_id,
+        request.headers.get("X-Agent-ID", ""),
+        (current_user or {}).get("id"),
+        (current_user or {}).get("role"),
+        (effective or {}).get("id"),
+        (effective or {}).get("role"),
+        (effective or {}).get("_impersonated_by"),
+        run_ai,
+    )
     lead = await _resolve_lead_or_403(db, lead_id, effective, current_user)
 
     now = datetime.now(timezone.utc)
@@ -597,6 +668,18 @@ async def trigger_ai(
 ):
     """Force a fresh AI analysis against the stored CNA. 404 when no
     CNA exists yet — the SPA must save one before asking for AI."""
+    logger.info(
+        "cna.trigger_ai ENTER lead_id=%s x_agent_id=%r current_user_id=%s "
+        "current_user_role=%r effective_id=%s effective_role=%r "
+        "impersonated_by=%s",
+        lead_id,
+        request.headers.get("X-Agent-ID", ""),
+        (current_user or {}).get("id"),
+        (current_user or {}).get("role"),
+        (effective or {}).get("id"),
+        (effective or {}).get("role"),
+        (effective or {}).get("_impersonated_by"),
+    )
     lead = await _resolve_lead_or_403(db, lead_id, effective, current_user)
     cna = await db.cna_assessments.find_one({"lead_id": lead_id})
     if not cna:
