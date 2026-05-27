@@ -140,18 +140,41 @@ class CNAPayload(BaseModel):
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
-def _is_privileged(user: dict) -> bool:
-    return user.get("role") in FULL_AGENCY_SCOPE_ROLES
+def _is_privileged(user: Optional[dict]) -> bool:
+    if not user:
+        return False
+    role = (user.get("role") or "").strip().lower()
+    if not role:
+        return False
+    # admin / owner always bypass the per-lead IDOR check. Other full-
+    # agency-scope roles (compliance, coach, accounting, client_success)
+    # also bypass — they need read access across the whole book to do
+    # their jobs. Lowercased so a legacy "Admin"/"Owner" capitalisation
+    # in the user row can't mask the role.
+    return role in {r.lower() for r in FULL_AGENCY_SCOPE_ROLES}
 
 
 async def _resolve_lead_or_403(
-    db: AsyncIOMotorDatabase, lead_id: str, effective: dict,
+    db: AsyncIOMotorDatabase,
+    lead_id: str,
+    effective: dict,
+    current_user: Optional[dict] = None,
 ) -> Dict[str, Any]:
-    """404 missing / 403 not in caller's book. Privileged roles bypass."""
+    """404 missing / 403 not in caller's book.
+
+    Bypasses the IDOR check when EITHER the JWT-authenticated user
+    (``current_user``) OR the effective agent has a full-agency role.
+    The two-input shape matters because, during impersonation,
+    ``get_effective_agent`` returns the impersonated agent (role=agent)
+    even when the actual caller is an admin — relying on ``effective``
+    alone would 403 an admin who never owned the lead.
+    """
     lead = safe_lead_load(await db.leads.find_one({"id": lead_id}, {"_id": 0}))
     if not lead:
         raise HTTPException(404, "Lead not found")
-    if not _is_privileged(effective) and lead.get("agent_id") != effective["id"]:
+    if _is_privileged(current_user) or _is_privileged(effective):
+        return lead
+    if lead.get("agent_id") != effective.get("id"):
         raise HTTPException(403, "Lead is not in your book")
     return lead
 
@@ -424,7 +447,9 @@ async def get_cna(
     """Return the CNA for this lead, or a blank pre-filled template
     when none exists yet. The blank template is identifiable by the
     absence of ``completed_at``."""
-    lead = await _resolve_lead_or_403(db, lead_id, current_user)
+    lead = await _resolve_lead_or_403(
+        db, lead_id, current_user, current_user,
+    )
 
     existing = await db.cna_assessments.find_one(
         {"lead_id": lead_id}, {"_id": 0},
@@ -443,12 +468,13 @@ async def upsert_cna(
     run_ai: bool = False,
     db: AsyncIOMotorDatabase = Depends(get_phi_db),
     effective: dict = Depends(get_effective_agent),
+    current_user: dict = Depends(get_current_user),
 ):
     """Create or update the CNA. Returns the persisted row. When
     ``run_ai=true`` is passed we synchronously call Claude before
     returning so the SPA gets the freshest recommendation in one
     round-trip (used by the "Save & Generate AI Analysis" button)."""
-    lead = await _resolve_lead_or_403(db, lead_id, effective)
+    lead = await _resolve_lead_or_403(db, lead_id, effective, current_user)
 
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
@@ -524,10 +550,11 @@ async def trigger_ai(
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_phi_db),
     effective: dict = Depends(get_effective_agent),
+    current_user: dict = Depends(get_current_user),
 ):
     """Force a fresh AI analysis against the stored CNA. 404 when no
     CNA exists yet — the SPA must save one before asking for AI."""
-    lead = await _resolve_lead_or_403(db, lead_id, effective)
+    lead = await _resolve_lead_or_403(db, lead_id, effective, current_user)
     cna = await db.cna_assessments.find_one({"lead_id": lead_id})
     if not cna:
         raise HTTPException(404, "CNA not found — save the assessment first.")
@@ -569,7 +596,9 @@ async def get_ai(
     """Return just the cached AI recommendation. Used by the Overview
     panel after a save+analyse round-trip; the SPA polls this to know
     whether the recommendation is ready."""
-    await _resolve_lead_or_403(db, lead_id, current_user)
+    await _resolve_lead_or_403(
+        db, lead_id, current_user, current_user,
+    )
     cna = await db.cna_assessments.find_one(
         {"lead_id": lead_id}, {"_id": 0},
     )
