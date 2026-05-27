@@ -202,7 +202,10 @@ class GHLClient:
             resp = await client.put(
                 f"{self.base_url}/contacts/{contact_id}",
                 headers=self._headers(),
-                json={"customFields": custom_fields},
+                json={
+                    "locationId": self.location_id,
+                    "customFields": custom_fields,
+                },
             )
             resp.raise_for_status()
             return resp.json()
@@ -285,6 +288,12 @@ class GHLClient:
             if v is None:
                 continue
             payload[translation.get(k, k)] = v
+        # GHL's contact-update endpoint requires locationId in the body
+        # even when contact_id is in the path — otherwise the API 422s
+        # on "locationId is required". Stamp it server-side so callers
+        # never have to remember.
+        if self.location_id:
+            payload["locationId"] = self.location_id
 
         async def _do():
             async with httpx.AsyncClient(timeout=_SAFE_TIMEOUT) as client:
