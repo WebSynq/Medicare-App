@@ -489,7 +489,13 @@ async def upsert_cna(
         for d in (body.preferred_doctors or [])
     ]
 
-    existing = await db.cna_assessments.find_one({"lead_id": lead_id})
+    # Fetch the existing row WITHOUT `_id` — MongoDB rejects any $set
+    # that touches the immutable _id field, so we keep it out of the
+    # update payload entirely. The upsert filter (lead_id) is enough
+    # to target the same row across saves.
+    existing = await db.cna_assessments.find_one(
+        {"lead_id": lead_id}, {"_id": 0},
+    )
     doc: Dict[str, Any] = {
         **(existing or {}),
         **incoming,
@@ -499,10 +505,14 @@ async def upsert_cna(
         "updated_at": now_iso,
     }
     if not existing:
-        doc["_id"] = str(uuid.uuid4())
-        doc["id"] = doc["_id"]
+        doc["id"] = str(uuid.uuid4())
         doc["created_at"] = now_iso
     doc["completed_at"] = now_iso
+
+    # Defense in depth: a future projection slip on the find_one above
+    # would otherwise drag _id back into the update payload. Strip
+    # unconditionally so the $set never touches an immutable field.
+    doc.pop("_id", None)
 
     # Updating the CNA invalidates the cached recommendation. We clear
     # the timestamp so the next read knows the cache is stale; if
@@ -512,27 +522,60 @@ async def upsert_cna(
 
     ai_payload: Optional[Dict[str, Any]] = None
     if run_ai:
-        ai_payload = await generate_ai_recommendation(lead, doc)
-        doc["ai_recommendation"] = ai_payload
-        doc["ai_generated_at"] = now_iso
+        try:
+            ai_payload = await generate_ai_recommendation(lead, doc)
+            doc["ai_recommendation"] = ai_payload
+            doc["ai_generated_at"] = now_iso
+        except Exception as e:                                # noqa: BLE001
+            # generate_ai_recommendation is documented as never-raises
+            # but we wrap defensively — a Claude SDK regression should
+            # never cost the agent their CNA save.
+            logger.exception(
+                "cna upsert: AI generation failed lead_id=%s agent_id=%s: %s",
+                lead_id, effective.get("id"), e,
+            )
 
-    await db.cna_assessments.update_one(
-        {"lead_id": lead_id},
-        {"$set": doc},
-        upsert=True,
-    )
+    try:
+        await db.cna_assessments.update_one(
+            {"lead_id": lead_id},
+            {"$set": doc},
+            upsert=True,
+        )
+    except Exception as e:                                    # noqa: BLE001
+        # Surface the underlying error to Render logs with full
+        # stacktrace + context. Frontend sees a generic 500 detail so
+        # we don't leak collection internals to the SPA.
+        logger.exception(
+            "cna upsert FAILED lead_id=%s agent_id=%s impersonator=%s "
+            "incoming_keys=%s err=%s",
+            lead_id,
+            effective.get("id"),
+            effective.get("_impersonated_by"),
+            sorted(incoming.keys()),
+            e,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Couldn't save CNA — see server logs for details.",
+        )
 
-    await write_audit(
-        db, "cna_saved",
-        actor_email=effective.get("email"),
-        actor_id=effective["id"],
-        target_type="lead", target_id=lead_id,
-        request=request,
-        metadata={
-            "ai_generated": bool(run_ai),
-            "impersonated_by": effective.get("_impersonated_by"),
-        },
-    )
+    try:
+        await write_audit(
+            db, "cna_saved",
+            actor_email=effective.get("email"),
+            actor_id=effective["id"],
+            target_type="lead", target_id=lead_id,
+            request=request,
+            metadata={
+                "ai_generated": bool(run_ai),
+                "impersonated_by": effective.get("_impersonated_by"),
+            },
+        )
+    except Exception as e:                                    # noqa: BLE001
+        # Audit-write failure shouldn't roll back the user's CNA save.
+        logger.warning(
+            "cna upsert: audit write failed lead_id=%s: %s", lead_id, e,
+        )
 
     saved = await db.cna_assessments.find_one(
         {"lead_id": lead_id}, {"_id": 0},
@@ -561,25 +604,41 @@ async def trigger_ai(
 
     ai_payload = await generate_ai_recommendation(lead, cna)
     now_iso = datetime.now(timezone.utc).isoformat()
-    await db.cna_assessments.update_one(
-        {"lead_id": lead_id},
-        {"$set": {
-            "ai_recommendation": ai_payload,
-            "ai_generated_at": now_iso,
-            "updated_at": now_iso,
-        }},
-    )
-    await write_audit(
-        db, "cna_ai_analysis",
-        actor_email=effective.get("email"),
-        actor_id=effective["id"],
-        target_type="lead", target_id=lead_id,
-        request=request,
-        metadata={
-            "impersonated_by": effective.get("_impersonated_by"),
-            "fallback": bool(ai_payload.get("_fallback")),
-        },
-    )
+    try:
+        await db.cna_assessments.update_one(
+            {"lead_id": lead_id},
+            {"$set": {
+                "ai_recommendation": ai_payload,
+                "ai_generated_at": now_iso,
+                "updated_at": now_iso,
+            }},
+        )
+    except Exception as e:                                    # noqa: BLE001
+        logger.exception(
+            "cna trigger_ai write FAILED lead_id=%s agent_id=%s: %s",
+            lead_id, effective.get("id"), e,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Couldn't persist AI analysis — see server logs.",
+        )
+
+    try:
+        await write_audit(
+            db, "cna_ai_analysis",
+            actor_email=effective.get("email"),
+            actor_id=effective["id"],
+            target_type="lead", target_id=lead_id,
+            request=request,
+            metadata={
+                "impersonated_by": effective.get("_impersonated_by"),
+                "fallback": bool(ai_payload.get("_fallback")),
+            },
+        )
+    except Exception as e:                                    # noqa: BLE001
+        logger.warning(
+            "cna trigger_ai: audit write failed lead_id=%s: %s", lead_id, e,
+        )
     return {
         "ai_recommendation": ai_payload,
         "ai_generated_at": now_iso,
