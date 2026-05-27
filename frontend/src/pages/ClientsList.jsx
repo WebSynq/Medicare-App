@@ -119,6 +119,11 @@ export default function ClientsList() {
   const [hasNext, setHasNext] = useState(false);
   const [hasPrev, setHasPrev] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
+  // AI score sort — client-side because the score lives on the lead row
+  // already (stamped by the daily-brief tick). "score" sorts by ai_score
+  // descending; null is treated as 0. ``date`` falls back to the default
+  // server order (newest first).
+  const [sortBy, setSortBy] = useState("score");
 
   // Debounce search box (server query)
   useEffect(() => {
@@ -173,6 +178,16 @@ export default function ClientsList() {
     ).length;
     return { newThisMonth, soa, synced };
   }, [leads]);
+
+  // Client-side sort for the visible page. When sortBy=="score" we
+  // re-order by ai_score desc (null=0). When sortBy=="date" we keep
+  // the server's default created_at desc order untouched.
+  const sortedLeads = useMemo(() => {
+    if (sortBy !== "score") return leads;
+    return [...leads].sort(
+      (a, b) => (b.ai_score ?? 0) - (a.ai_score ?? 0),
+    );
+  }, [leads, sortBy]);
 
   return (
     <div className="p-6 md:p-8">
@@ -289,6 +304,25 @@ export default function ClientsList() {
             <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSortBy((s) => (s === "score" ? "date" : "score"))
+                        }
+                        className={`inline-flex items-center gap-1 text-xs uppercase tracking-wider font-semibold ${
+                          sortBy === "score"
+                            ? "text-[#1B4332]"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                        title="Click to sort by AI score"
+                        data-testid="clients-sort-score"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        AI
+                        {sortBy === "score" && <span aria-hidden>↓</span>}
+                      </button>
+                    </TableHead>
                     <TableHead>Name</TableHead>
                     <TableHead>Contact Info</TableHead>
                     <TableHead>Status</TableHead>
@@ -303,12 +337,18 @@ export default function ClientsList() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {leads.map((l) => (
+                  {sortedLeads.map((l) => (
                     <TableRow
                       key={l.id}
                       className="hover:bg-secondary/40"
                       data-testid={`client-row-${l.id}`}
                     >
+                      <TableCell>
+                        <AIScoreBadge
+                          score={l.ai_score}
+                          reason={l.ai_score_reason}
+                        />
+                      </TableCell>
                       <TableCell className="font-medium">
                         <Link
                           to={`/clients/${l.id}`}
@@ -460,5 +500,47 @@ export default function ClientsList() {
         onCreated={() => load()}
       />
     </div>
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// AI urgency badge — coloured pill keyed off the same thresholds the
+// daily-brief job uses (urgent ≥75, high ≥50, moderate ≥25, low <25).
+// "—" when the score hasn't been computed yet (nightly job hasn't run
+// against a brand-new lead).
+// ─────────────────────────────────────────────────────────────────────────
+function AIScoreBadge({ score, reason }) {
+  if (score === undefined || score === null) {
+    return (
+      <span
+        className="inline-flex items-center justify-center w-10 h-6 rounded-full text-xs text-muted-foreground bg-secondary/40"
+        title="No AI score yet — refreshes nightly"
+      >
+        —
+      </span>
+    );
+  }
+  const s = Number(score) || 0;
+  let bg = "rgba(75,85,99,0.12)";
+  let fg = "#374151";
+  if (s >= 75) {
+    bg = "rgba(220,38,38,0.12)";
+    fg = "#991b1b";
+  } else if (s >= 50) {
+    bg = "rgba(217,119,6,0.12)";
+    fg = "#92400e";
+  } else if (s >= 25) {
+    bg = "rgba(37,99,235,0.12)";
+    fg = "#1e40af";
+  }
+  return (
+    <span
+      className="inline-flex items-center justify-center w-10 h-6 rounded-full text-xs font-bold tabular-nums"
+      style={{ background: bg, color: fg }}
+      title={reason || "AI urgency score"}
+    >
+      {s}
+    </span>
   );
 }

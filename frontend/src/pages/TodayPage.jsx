@@ -121,6 +121,7 @@ function todayDateLabel(isoDate) {
 export default function TodayPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [brief, setBrief] = useState(null);
 
   // Privileged-role + not-impersonating = agency view. When impersonating
   // an agent we fall back to the regular Today page so leadership can
@@ -154,6 +155,26 @@ export default function TodayPage() {
     };
   }, [isAgencyView]);
 
+  // AI priority list — independent fetch so a brief failure doesn't
+  // block the rest of the page. Skipped in agency view (privileged
+  // roles see agency-wide summaries instead).
+  useEffect(() => {
+    if (isAgencyView) return;
+    let alive = true;
+    (async () => {
+      try {
+        const res = await api.get("/brief/today");
+        if (!alive) return;
+        setBrief(res.data);
+      } catch {
+        if (alive) setBrief(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [isAgencyView]);
+
   if (isAgencyView) {
     return <AgencyTodaySummary />;
   }
@@ -179,6 +200,8 @@ export default function TodayPage() {
   return (
     <div className="p-6 md:p-8">
       <main className="max-w-[1400px] mx-auto w-full">
+        <AIBriefWidget brief={brief} />
+
         <div className="mb-6">
           <div className="flex items-center gap-2 mb-1">
             <Sparkles className="w-4 h-4 text-[#e85d2f]" />
@@ -605,6 +628,101 @@ function SummaryCard({
             {linkLabel} <ArrowUpRight className="w-3 h-3" />
           </Link>
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// AI Brief widget — top-of-page priority list. Hides itself when the
+// brief is empty (silent on "nothing to do" days, per spec).
+// ─────────────────────────────────────────────────────────────────────────
+function _briefBadge(level) {
+  const map = {
+    urgent: { bg: "rgba(220,38,38,0.12)", text: "#991b1b", label: "URGENT" },
+    high: { bg: "rgba(217,119,6,0.12)", text: "#92400e", label: "HIGH" },
+    moderate: { bg: "rgba(37,99,235,0.12)", text: "#1e40af", label: "MODERATE" },
+    low: { bg: "rgba(75,85,99,0.12)", text: "#374151", label: "LOW" },
+  };
+  return map[level] || map.low;
+}
+
+function AIBriefWidget({ brief }) {
+  if (!brief) return null;
+  const calls = brief.top_calls || [];
+  if (calls.length === 0) return null;
+  const generatedLabel = brief.generated_at
+    ? new Date(brief.generated_at).toLocaleString()
+    : "";
+  const top = calls.slice(0, 3);
+  const remainder = calls.length - top.length;
+  return (
+    <Card
+      className="mb-6"
+      style={{ borderLeft: "4px solid #1B4332" }}
+      data-testid="ai-brief-widget"
+    >
+      <CardContent className="p-5">
+        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-[#1B4332]" />
+            <h3 className="text-sm font-semibold">
+              Your AI Priority List — {brief.date}
+            </h3>
+          </div>
+          <span className="text-xs text-muted-foreground">
+            Generated {generatedLabel}
+          </span>
+        </div>
+        <ol className="space-y-3">
+          {top.map((c, i) => {
+            const badge = _briefBadge(c.urgency_level);
+            return (
+              <li
+                key={c.lead_id || `brief-${i}`}
+                className="flex items-start gap-3 border-b border-border pb-3 last:border-b-0 last:pb-0"
+                data-testid={`ai-brief-row-${i}`}
+              >
+                <div className="text-xs text-muted-foreground w-5 pt-1 tabular-nums">
+                  {i + 1}.
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-sm">{c.name}</span>
+                    <span
+                      className="text-[10px] font-bold rounded-full px-2 py-0.5"
+                      style={{ background: badge.bg, color: badge.text }}
+                    >
+                      [{c.score}] {badge.label}
+                    </span>
+                  </div>
+                  <div className="text-sm mt-0.5">{c.reason}</div>
+                  {c.phone && (
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      {c.phone}
+                    </div>
+                  )}
+                </div>
+                <div className="flex-shrink-0">
+                  {c.lead_id && (
+                    <Button asChild size="sm" variant="outline" className="h-8 text-xs">
+                      <Link to={`/clients/${c.lead_id}`}>
+                        Open Profile <ArrowUpRight className="w-3 h-3 ml-1" />
+                      </Link>
+                    </Button>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+        {remainder > 0 && (
+          <div className="mt-3 text-xs text-muted-foreground">
+            + {remainder} more priority {remainder === 1 ? "call" : "calls"} on
+            your list — open the full Clients view to see them.
+          </div>
+        )}
       </CardContent>
     </Card>
   );

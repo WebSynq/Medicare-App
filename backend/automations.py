@@ -601,9 +601,356 @@ async def run_soa_signed_notification(db, soa_id: str) -> bool:
     return ok
 
 
+# ── 8. Daily agent brief (AI priority list) ─────────────────────────────
+# Heuristic urgency model. Each rule adds points; the final score is
+# clamped to 0-100 and stamped onto the lead row as `ai_score` so the
+# Clients list can sort by it without re-running this loop.
+
+_BRIEF_SKIP_STATUSES = {"enrolled", "lost", "do_not_contact",
+                         "not_interested", "inactive", "dnc"}
+_AEP_START = (10, 15)   # Oct 15
+_AEP_END = (12, 7)      # Dec 7
+_TOP_N = 10
+
+
+def _parse_lead_dob(s):
+    """Tolerant DOB → date. Returns None on any failure."""
+    if not s or not isinstance(s, str):
+        return None
+    try:
+        head = s.split("T", 1)[0].split(" ", 1)[0]
+        if "/" in head:
+            mm, dd, yyyy = head.split("/")
+            return datetime(int(yyyy), int(mm), int(dd)).date()
+        parts = head.split("-")
+        if len(parts) == 3:
+            return datetime(int(parts[0]), int(parts[1]), int(parts[2])).date()
+    except Exception:
+        return None
+    return None
+
+
+def _parse_lead_updated(s):
+    if not s or not isinstance(s, str):
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _in_aep(today) -> bool:
+    """True when today is inside AEP (Oct 15 – Dec 7)."""
+    m, d = today.month, today.day
+    if (m, d) < _AEP_START:
+        return False
+    if (m, d) > _AEP_END:
+        return False
+    return True
+
+
+def _next_birthday(dob, today):
+    try:
+        candidate = dob.replace(year=today.year)
+    except ValueError:
+        candidate = datetime(today.year, 2, 28).date()
+    if candidate < today:
+        try:
+            candidate = dob.replace(year=today.year + 1)
+        except ValueError:
+            candidate = datetime(today.year + 1, 2, 28).date()
+    return candidate
+
+
+def compute_lead_urgency(lead: dict, today=None) -> dict:
+    """Return ``{score, reasons, urgency_level, primary_reason}`` for a
+    single lead. Pure function — no IO — so it can be unit tested and
+    re-used by both the daily brief and the nightly ``ai_score`` stamp.
+
+    ``urgency_level`` is one of: urgent (75+), high (50-74),
+    moderate (25-49), low (<25).
+    """
+    if today is None:
+        today = datetime.now(timezone.utc).date()
+
+    score = 0
+    reasons = []
+
+    dob = _parse_lead_dob(lead.get("date_of_birth"))
+    state = (lead.get("state") or "").upper()
+    tags = set(lead.get("tags") or [])
+    status = (lead.get("status") or "").lower()
+    updated = _parse_lead_updated(lead.get("updated_at"))
+    created = _parse_lead_updated(lead.get("created_at"))
+    contacted_at = _parse_lead_updated(lead.get("last_contacted_at"))
+
+    # Birthday window — IL is the only state that runs the rule today.
+    if dob and state == "IL":
+        try:
+            this_year_bday = dob.replace(year=today.year)
+        except ValueError:
+            this_year_bday = datetime(today.year, 2, 28).date()
+        # Window open: today is within 63 days of this year's birthday.
+        days_into_window = (today - this_year_bday).days
+        if 0 <= days_into_window <= 63:
+            score += 40
+            reasons.append("Birthday window OPEN — call today")
+        else:
+            nb = _next_birthday(dob, today)
+            days_until = (nb - today).days
+            if 0 < days_until <= 30:
+                score += 25
+                reasons.append(
+                    f"Birthday window opens in {days_until} days",
+                )
+
+    # AEP
+    if _in_aep(today):
+        score += 20
+        reasons.append("AEP open enrollment season")
+
+    # Contact recency — compare against the ``today`` argument so the
+    # function is fully deterministic for unit tests + for the daily-
+    # brief tick that pins a single "today" across the agent's run.
+    last_touch = contacted_at or updated
+    today_dt = datetime(today.year, today.month, today.day, tzinfo=timezone.utc)
+    if last_touch:
+        days_since = (today_dt - last_touch).days
+        if days_since > 60:
+            score += 25
+            reasons.append(f"{days_since} days since contact — going cold")
+        elif days_since > 30:
+            score += 15
+            reasons.append(f"{days_since} days since contact")
+    if not contacted_at and not updated and created:
+        score += 30
+        reasons.append("Never contacted")
+    elif not last_touch:
+        score += 30
+        reasons.append("No contact record")
+
+    # Turning 65 in 90 days
+    if dob:
+        try:
+            sixty_fifth = dob.replace(year=dob.year + 65)
+            days_to_65 = (sixty_fifth - today).days
+            if 0 <= days_to_65 <= 90:
+                score += 30
+                reasons.append(f"Turning 65 in {days_to_65} days")
+        except ValueError:
+            pass
+
+    # Employer transition tag
+    transition_tags = {
+        "employer-transition", "leaving-employer", "retiring-soon",
+        "cobra-ending",
+    }
+    if tags & transition_tags:
+        score += 25
+        reasons.append("Transitioning from employer coverage")
+
+    # CNA completed (signals ready for formal recommendation)
+    if lead.get("_cna_completed"):
+        score += 10
+        reasons.append("CNA on file — ready to recommend")
+
+    # SOA signed but not enrolled
+    if lead.get("soa_signed") and status not in ("enrolled",):
+        score += 25
+        reasons.append("SOA signed — awaiting enrollment")
+
+    score = max(0, min(100, score))
+    if score >= 75:
+        level = "urgent"
+    elif score >= 50:
+        level = "high"
+    elif score >= 25:
+        level = "moderate"
+    else:
+        level = "low"
+    primary = reasons[0] if reasons else "Routine follow-up"
+    return {
+        "score": score,
+        "reasons": reasons,
+        "urgency_level": level,
+        "primary_reason": primary,
+    }
+
+
+async def _agent_lead_cursor(db, agent_id: str):
+    """Iterate over an agent's open leads (status not closed)."""
+    return db.leads.find({
+        "agent_id": agent_id,
+        "status": {"$nin": list(_BRIEF_SKIP_STATUSES)},
+    }, {"_id": 0})
+
+
+async def _completed_cna_lead_ids(db, agent_id: str) -> set:
+    """Set of lead_ids where the agent has a saved CNA. Used to add
+    the "+10 CNA completed" bonus without an N+1 lookup per lead."""
+    out = set()
+    try:
+        cursor = db.cna_assessments.find(
+            {"agent_id": agent_id, "completed_at": {"$exists": True}},
+            {"_id": 0, "lead_id": 1},
+        )
+        async for row in cursor:
+            lid = row.get("lead_id")
+            if lid:
+                out.add(lid)
+    except Exception as e:                                    # noqa: BLE001
+        logger.warning("brief: cna lookup failed: %s", e)
+    return out
+
+
+async def build_brief_for_agent(
+    db, agent: dict, persist: bool = True,
+) -> dict:
+    """Compute today's prioritized call list for a single agent.
+
+    Returns the brief dict (also written to ``db.agent_daily_briefs``
+    when ``persist=True``). Each lead's score is also stamped onto
+    the lead itself as ``ai_score`` + ``ai_score_reason`` +
+    ``ai_score_updated`` so the Clients list can sort by it.
+    """
+    today = datetime.now(timezone.utc).date()
+    today_str = today.strftime("%Y-%m-%d")
+
+    cna_lead_ids = await _completed_cna_lead_ids(db, agent["id"])
+
+    scored: list = []
+    cursor = await _agent_lead_cursor(db, agent["id"])
+    now_iso = datetime.now(timezone.utc).isoformat()
+    async for raw in cursor:
+        lead = safe_lead_load(raw)
+        lead["_cna_completed"] = lead.get("id") in cna_lead_ids
+        verdict = compute_lead_urgency(lead, today=today)
+        # Stamp the score on the lead row so the Clients list can sort
+        # by it without re-running the heuristic per request.
+        try:
+            await db.leads.update_one(
+                {"id": lead["id"]},
+                {"$set": {
+                    "ai_score": verdict["score"],
+                    "ai_score_reason": verdict["primary_reason"],
+                    "ai_score_updated": now_iso,
+                }},
+            )
+        except Exception as e:                                # noqa: BLE001
+            logger.warning("brief: ai_score stamp failed: %s", e)
+        if verdict["score"] <= 0:
+            continue
+        full_name = (
+            f"{lead.get('first_name', '')} {lead.get('last_name', '')}".strip()
+            or lead.get("email") or "Unknown"
+        )
+        scored.append({
+            "lead_id": lead.get("id"),
+            "name": full_name,
+            "phone": lead.get("phone") or "",
+            "email": lead.get("email") or "",
+            "score": verdict["score"],
+            "urgency_level": verdict["urgency_level"],
+            "reason": verdict["primary_reason"],
+            "reasons": verdict["reasons"][:4],
+        })
+
+    scored.sort(key=lambda r: r["score"], reverse=True)
+    top = scored[:_TOP_N]
+    total_urgent = sum(1 for r in scored if r["urgency_level"] == "urgent")
+    total_priority = sum(1 for r in scored if r["score"] >= 50)
+
+    brief = {
+        "agent_id": agent["id"],
+        "date": today_str,
+        "generated_at": now_iso,
+        "top_calls": top,
+        "total_urgent": total_urgent,
+        "total_priority": total_priority,
+    }
+
+    if persist:
+        try:
+            await db.agent_daily_briefs.update_one(
+                {"agent_id": agent["id"], "date": today_str},
+                {"$set": brief},
+                upsert=True,
+            )
+        except Exception as e:                                # noqa: BLE001
+            logger.warning("brief: persist failed: %s", e)
+
+    return brief
+
+
+async def run_daily_agent_brief(db) -> int:
+    """Build today's brief for every active agent and email the top
+    calls. Returns the number of briefs generated."""
+    from email_templates import daily_brief_email
+    from resend_client import send_email
+
+    portal_url = _frontend_url()
+    generated = 0
+    cursor = db.users.find({
+        "is_active": True,
+        "status": "active",
+        "role": {"$in": ["agent", "admin", "owner"]},
+    }, {"_id": 0})
+
+    async for agent in cursor:
+        try:
+            brief = await build_brief_for_agent(db, agent, persist=True)
+        except Exception as e:                                # noqa: BLE001
+            logger.exception("brief: build failed for %s: %s",
+                              agent.get("email"), e)
+            continue
+        generated += 1
+
+        # Email when the agent has any priority calls (50+). Empty
+        # briefs are kept in the DB but not emailed — agents don't
+        # need a "you're caught up" daily nag.
+        if not brief["top_calls"]:
+            continue
+        if not agent.get("email"):
+            continue
+
+        try:
+            html = daily_brief_email(
+                agent_name=agent.get("full_name") or "Agent",
+                date_str=brief["date"],
+                top_calls=brief["top_calls"],
+                portal_url=portal_url,
+            )
+            ok = await send_email(
+                to=agent["email"],
+                subject=f"Your Medicare Priority List — {brief['date']}",
+                html=html,
+            )
+            await _audit(
+                db, "automation_daily_brief_sent" if ok
+                else "automation_daily_brief_failed",
+                actor_email=agent.get("email"),
+                actor_id=agent.get("id"),
+                target_type="user", target_id=agent.get("id"),
+                metadata={"top_count": len(brief["top_calls"]),
+                          "urgent": brief["total_urgent"]},
+            )
+        except Exception as e:                                # noqa: BLE001
+            logger.warning("brief: email failed for %s: %s",
+                            agent.get("email"), e)
+    return generated
+
+
 # ── Scheduler ────────────────────────────────────────────────────────────
+# The daily brief job runs at 12:00 UTC (7am CT) every day. We use a
+# dedicated CronTrigger rather than piggy-backing on the 15-min tick so
+# the brief fires exactly once per day even after a scheduler restart.
+
 def start_automation_scheduler(get_db_fn):
-    """15-min IntervalTrigger that runs the time-windowed jobs.
+    """15-min IntervalTrigger that runs the time-windowed jobs + a
+    daily CronTrigger at 12:00 UTC for the agent brief.
 
     Disabled when DISABLE_SCHEDULER=1 (set in conftest.py so pytest
     never starts background timers). max_instances=1 prevents
@@ -614,6 +961,7 @@ def start_automation_scheduler(get_db_fn):
         return None
 
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.cron import CronTrigger
     from apscheduler.triggers.interval import IntervalTrigger
 
     scheduler = AsyncIOScheduler(timezone="UTC")
@@ -651,6 +999,13 @@ def start_automation_scheduler(get_db_fn):
         except Exception as e:                                # noqa: BLE001
             logger.exception("ai_security tick failed: %s", e)
 
+    async def _daily_brief_tick():
+        try:
+            count = await run_daily_agent_brief(get_db_fn())
+            logger.info("automation daily_brief generated %d", count)
+        except Exception as e:                                # noqa: BLE001
+            logger.exception("automation daily_brief failed: %s", e)
+
     scheduler.add_job(
         _tick,
         trigger=IntervalTrigger(minutes=15),
@@ -659,6 +1014,16 @@ def start_automation_scheduler(get_db_fn):
         next_run_time=datetime.now(timezone.utc),
         replace_existing=True,
     )
+    # 12:00 UTC = 7:00 AM Central (standard time). MVP runs at a single
+    # cron time for all agents; per-timezone splits can come later when
+    # the team is more than one US time zone.
+    scheduler.add_job(
+        _daily_brief_tick,
+        trigger=CronTrigger(hour=12, minute=0, timezone="UTC"),
+        id="daily_agent_brief",
+        max_instances=1,
+        replace_existing=True,
+    )
     scheduler.start()
-    logger.info("automations: scheduler started (15-min interval)")
+    logger.info("automations: scheduler started (15-min interval + daily brief 12:00 UTC)")
     return scheduler

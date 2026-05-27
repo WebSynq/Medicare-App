@@ -456,6 +456,14 @@ class Lead(LeadBase):
     # is True.
     tcpa_consent_timestamp: Optional[str] = None
     tcpa_consent_ip: Optional[str] = None
+    # AI urgency score, refreshed nightly by the daily-brief job.
+    # ``ai_score`` is a 0-100 integer (higher = call sooner);
+    # ``ai_score_reason`` is the headline reason for the score so the
+    # Clients list can show "why" alongside the badge without a second
+    # lookup. ``ai_score_updated`` is the last refresh stamp.
+    ai_score: Optional[int] = None
+    ai_score_reason: Optional[str] = None
+    ai_score_updated: Optional[str] = None
     created_at: str = Field(default_factory=utcnow_iso)
     updated_at: str = Field(default_factory=utcnow_iso)
 

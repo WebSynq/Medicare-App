@@ -61,6 +61,8 @@ from booking_router import router as booking_router  # noqa: E402
 from ops_router import router as ops_router  # noqa: E402
 from security_router import router as security_router  # noqa: E402
 from ghl_import_router import router as ghl_import_router  # noqa: E402
+from cna_router import router as cna_router  # noqa: E402
+from brief_router import router as brief_router  # noqa: E402
 import email_templates  # noqa: E402,F401 — ensure clean import
 from automations import start_automation_scheduler  # noqa: E402
 from feedback_router import router as feedback_router  # noqa: E402
@@ -193,6 +195,8 @@ app.include_router(booking_router, prefix="/api")
 app.include_router(ops_router, prefix="/api")
 app.include_router(security_router, prefix="/api")
 app.include_router(ghl_import_router, prefix="/api")
+app.include_router(cna_router, prefix="/api")
+app.include_router(brief_router, prefix="/api")
 # feedback_router declares its own /api/feedback prefix — no prefix here.
 app.include_router(feedback_router)
 # calendar_router declares /api/calendar; ics_router declares /api/appointments
@@ -858,6 +862,24 @@ _PROD_INDEXES = [
      {"background": True}),
     ("import_jobs", "job_id", {"background": True, "unique": True}),
     ("import_jobs", "status", {"background": True}),
+
+    # CNA + AI Client Intelligence (cna_router).
+    # One CNA per lead — unique guarantees the upsert in POST /cna/{lead_id}
+    # can't fork into parallel rows under a race.
+    ("cna_assessments", "lead_id", {"background": True, "unique": True}),
+    ("cna_assessments", "agent_id", {"background": True}),
+    ("cna_assessments", [("completed_at", -1)], {"background": True}),
+
+    # Daily Agent Brief (brief_router + automations.run_daily_agent_brief).
+    # Compound key + date so the Today widget read is a single-key point
+    # lookup and the persist upsert can't race itself.
+    ("agent_daily_briefs",
+     [("agent_id", 1), ("date", -1)],
+     {"background": True, "unique": True}),
+
+    # AI scoring index on leads — sorted descending so the Clients list
+    # can paginate top scores without an in-memory sort.
+    ("leads", [("agent_id", 1), ("ai_score", -1)], {"background": True}),
 ]
 
 

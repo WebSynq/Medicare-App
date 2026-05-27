@@ -599,6 +599,110 @@ def security_alert_email(
     )
 
 
+# ── Helper: urgency-level badge ──────────────────────────────────────────
+def _urgency_badge(level: str) -> str:
+    """Coloured pill matching the SPA legend (urgent/high/moderate/low)."""
+    palette = {
+        "urgent":   ("#7F1D1D", "#FEE2E2", "URGENT"),
+        "high":     ("#92400E", "#FEF3C7", "HIGH"),
+        "moderate": ("#1E40AF", "#DBEAFE", "MODERATE"),
+        "low":      ("#374151", "#E5E7EB", "LOW"),
+    }
+    fg, bg, label = palette.get((level or "low").lower(), palette["low"])
+    return (
+        f'<span style="background:{bg};color:{fg};padding:2px 8px;'
+        f'border-radius:999px;font-size:11px;font-weight:700;'
+        f'letter-spacing:0.4px;">{label}</span>'
+    )
+
+
+# ── 11. Daily agent brief (to the agent) ────────────────────────────────
+def daily_brief_email(
+    agent_name: str,
+    date_str: str,
+    top_calls: list,
+    portal_url: str = "",
+) -> str:
+    """Morning priority-list email — numbered top calls with reasons.
+
+    ``top_calls`` is a list of dicts from ``build_brief_for_agent``:
+    ``{name, phone, score, reason, urgency_level}``. Anything beyond
+    the first 10 is silently truncated so the email stays scannable.
+    """
+    first = (agent_name or "there").split()[0]
+    rows = ""
+    for idx, call in enumerate(top_calls[:10], start=1):
+        name = escape(str(call.get("name", "Unknown")))
+        phone = escape(str(call.get("phone") or "—"))
+        reason = escape(str(call.get("reason") or "Priority follow-up"))
+        score = int(call.get("score") or 0)
+        badge = _urgency_badge(call.get("urgency_level") or "low")
+        rows += f"""
+        <tr>
+          <td style="padding:14px 0 14px 0;border-bottom:1px solid {_BORDER};
+                     vertical-align:top;">
+            <table cellpadding="0" cellspacing="0" border="0"
+                   style="width:100%;border-collapse:collapse;">
+              <tr>
+                <td style="font-size:13px;color:{_MUTED};width:24px;
+                           vertical-align:top;padding-top:2px;">
+                  {idx}.
+                </td>
+                <td>
+                  <div style="font-size:15px;color:{_CHARCOAL};
+                              font-weight:700;">
+                    {name}
+                    <span style="margin-left:8px;color:{_MUTED};
+                                 font-weight:600;font-size:12px;">
+                      [{score}]
+                    </span>
+                    <span style="margin-left:6px;">{badge}</span>
+                  </div>
+                  <div style="font-size:13px;color:{_CHARCOAL};
+                              margin-top:4px;line-height:1.4;">
+                    {reason}
+                  </div>
+                  <div style="font-size:12px;color:{_MUTED};
+                              margin-top:2px;">
+                    {phone}
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>"""
+
+    if not rows:
+        rows = f"""
+        <tr><td style="padding:14px 0;font-size:14px;color:{_MUTED};">
+          No priority calls today — you're caught up. Keep the warm
+          touches going.
+        </td></tr>"""
+
+    body = f"""
+      <p style="margin:0 0 14px 0;">Good morning {escape(first)},</p>
+      <p style="margin:0 0 12px 0;">
+        Your AI priority list for <strong>{escape(date_str)}</strong>
+        is below — the top calls sorted by urgency score. Higher score
+        = more reason to call today.
+      </p>
+      <table cellpadding="0" cellspacing="0" border="0"
+             style="width:100%;border-collapse:collapse;margin-top:8px;">
+        {rows}
+      </table>
+      <p style="margin:18px 0 0 0;color:{_MUTED};font-size:13px;">
+        Open the portal to see all priority calls, log call notes,
+        and drop into each client's profile.
+      </p>"""
+    return _shell(
+        preheader=f"Your priority list for {date_str}.",
+        title="Your Medicare priority list",
+        body_html=body,
+        cta={"label": "Open your portal", "url": portal_url}
+        if portal_url else None,
+    )
+
+
 # ── 10. GHL import complete (to the agent) ──────────────────────────────
 def ghl_import_complete_email(
     agent_name: str,

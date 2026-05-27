@@ -244,6 +244,19 @@ export default function ClientProfile() {
   const [soaRecords, setSoaRecords] = useState([]);
   const [soaLoading, setSoaLoading] = useState(false);
 
+  // CNA + AI Client Intelligence. ``cna`` is the live form state
+  // (autosaved on blur). ``ai`` is the cached recommendation surfaced
+  // on the Overview panel. ``activeTab`` lets the "Save & Generate AI"
+  // button jump back to Overview after a fresh analysis.
+  const [cna, setCna] = useState(null);
+  const [cnaExists, setCnaExists] = useState(false);
+  const [cnaSavedAt, setCnaSavedAt] = useState(null);
+  const [cnaSaving, setCnaSaving] = useState(false);
+  const [ai, setAi] = useState(null);
+  const [aiGeneratedAt, setAiGeneratedAt] = useState(null);
+  const [aiRunning, setAiRunning] = useState(false);
+  const [activeTab, setActiveTab] = useState("overview");
+
   const loadSoaRecords = useCallback(async () => {
     if (!leadId) return;
     setSoaLoading(true);
@@ -260,6 +273,85 @@ export default function ClientProfile() {
   useEffect(() => {
     loadSoaRecords();
   }, [loadSoaRecords]);
+
+  const loadCna = useCallback(async () => {
+    if (!leadId) return;
+    try {
+      const { data } = await api.get(`/cna/${leadId}`);
+      setCna(data?.cna || null);
+      setCnaExists(Boolean(data?.exists));
+      setCnaSavedAt(data?.cna?.updated_at || data?.cna?.completed_at || null);
+      setAi(data?.cna?.ai_recommendation || null);
+      setAiGeneratedAt(data?.cna?.ai_generated_at || null);
+    } catch {
+      setCna(null);
+      setCnaExists(false);
+    }
+  }, [leadId]);
+
+  useEffect(() => {
+    loadCna();
+  }, [loadCna]);
+
+  // Persist a partial CNA update. Used by the autosave-on-blur handlers
+  // and by the explicit Save buttons. ``runAi`` triggers a fresh AI
+  // analysis on the same round-trip and flips back to the Overview tab.
+  const saveCna = useCallback(
+    async (patch = {}, { runAi = false, silent = false } = {}) => {
+      if (!leadId) return;
+      const next = { ...(cna || {}), ...patch };
+      setCna(next);
+      setCnaSaving(true);
+      if (runAi) setAiRunning(true);
+      try {
+        const url = runAi
+          ? `/cna/${leadId}?run_ai=true`
+          : `/cna/${leadId}`;
+        const { data } = await api.post(url, next);
+        setCna(data?.cna || next);
+        setCnaExists(true);
+        setCnaSavedAt(data?.cna?.updated_at || new Date().toISOString());
+        if (runAi) {
+          setAi(data?.ai_recommendation || null);
+          setAiGeneratedAt(data?.ai_generated_at || null);
+          if (!silent) {
+            toast.success("AI analysis ready");
+          }
+          setActiveTab("overview");
+          window?.scrollTo?.({ top: 0, behavior: "smooth" });
+        } else if (!silent) {
+          // Soft "saved" indicator handled by cnaSavedAt — no toast.
+        }
+      } catch (err) {
+        if (!silent) {
+          toast.error(
+            err?.response?.data?.detail || "Couldn't save the CNA"
+          );
+        }
+      } finally {
+        setCnaSaving(false);
+        setAiRunning(false);
+      }
+    },
+    [leadId, cna],
+  );
+
+  const refreshAi = useCallback(async () => {
+    if (!leadId) return;
+    setAiRunning(true);
+    try {
+      const { data } = await api.post(`/cna/${leadId}/ai-analysis`);
+      setAi(data?.ai_recommendation || null);
+      setAiGeneratedAt(data?.ai_generated_at || null);
+      toast.success("AI analysis refreshed");
+    } catch (err) {
+      toast.error(
+        err?.response?.data?.detail || "Couldn't refresh AI analysis"
+      );
+    } finally {
+      setAiRunning(false);
+    }
+  }, [leadId]);
 
   async function sendNewSoa() {
     try {
@@ -1040,7 +1132,7 @@ export default function ClientProfile() {
         </Card>
 
         {/* Tabs */}
-        <Tabs defaultValue="overview" className="w-full">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList>
             <TabsTrigger value="overview" data-testid="tab-overview">
               Overview
@@ -1050,6 +1142,9 @@ export default function ClientProfile() {
             </TabsTrigger>
             <TabsTrigger value="soa" data-testid="tab-soa">
               SOA
+            </TabsTrigger>
+            <TabsTrigger value="cna" data-testid="tab-cna">
+              CNA
             </TabsTrigger>
             <TabsTrigger value="documents" data-testid="tab-documents">
               Documents
@@ -1064,6 +1159,15 @@ export default function ClientProfile() {
 
           {/* Tab 1: Overview */}
           <TabsContent value="overview" className="space-y-4 mt-4">
+            <AIIntelligencePanel
+              ai={ai}
+              generatedAt={aiGeneratedAt}
+              cnaExists={cnaExists}
+              running={aiRunning}
+              onRefresh={refreshAi}
+              onStartCna={() => setActiveTab("cna")}
+            />
+
             {policySummary && (
               <div className="grid grid-cols-3 gap-3" data-testid="policy-summary">
                 <Card>
@@ -1472,6 +1576,18 @@ export default function ClientProfile() {
                 )}
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* Tab 2.75: Client Needs Assessment */}
+          <TabsContent value="cna" className="mt-4">
+            <CnaTab
+              cna={cna || {}}
+              savedAt={cnaSavedAt}
+              saving={cnaSaving}
+              aiRunning={aiRunning}
+              onPatch={(patch) => saveCna(patch, { silent: true })}
+              onSaveAndGenerate={() => saveCna({}, { runAi: true })}
+            />
           </TabsContent>
 
           {/* Tab 3: Documents */}
@@ -2061,6 +2177,877 @@ function ApplicationDataTab({ leadId }) {
           />
         ))
       )}
+    </div>
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// AI Intelligence Panel — drops in at the top of the Overview tab.
+// Renders three states:
+//   1. No CNA yet → empty card with "Start CNA →" button
+//   2. CNA saved but AI not run / pending → empty card with "Generate AI"
+//   3. AI available → full recommendation panel (urgency, plan, talking
+//      points, formal script)
+// ─────────────────────────────────────────────────────────────────────────
+function _urgencyTone(score) {
+  if (score >= 75) return { label: "URGENT", bar: "bg-red-500", text: "text-red-700" };
+  if (score >= 50) return { label: "HIGH PRIORITY", bar: "bg-amber-500", text: "text-amber-700" };
+  if (score >= 25) return { label: "MODERATE", bar: "bg-blue-500", text: "text-blue-700" };
+  return { label: "LOW", bar: "bg-gray-400", text: "text-gray-600" };
+}
+
+function _severityDot(severity) {
+  const s = (severity || "").toLowerCase();
+  if (s === "high") return "bg-red-500";
+  if (s === "medium") return "bg-amber-500";
+  return "bg-emerald-500";
+}
+
+function AIIntelligencePanel({
+  ai,
+  generatedAt,
+  cnaExists,
+  running,
+  onRefresh,
+  onStartCna,
+}) {
+  // No CNA yet — empty-state card pointing the agent at the CNA tab.
+  if (!cnaExists) {
+    return (
+      <Card
+        className="border-l-4 border-l-[#1B4332]"
+        data-testid="ai-panel-empty"
+      >
+        <CardContent className="p-5">
+          <div className="flex items-start gap-3">
+            <Sparkles className="w-5 h-5 text-[#1B4332] mt-0.5" />
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold mb-1">
+                AI Client Intelligence
+              </h3>
+              <p className="text-sm text-muted-foreground mb-3">
+                Complete the Client Needs Assessment to unlock AI-powered
+                recommendations for this client.
+              </p>
+              <Button size="sm" onClick={onStartCna}>
+                Start CNA →
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // CNA saved but no AI yet (or AI cache was cleared by an update).
+  if (!ai) {
+    return (
+      <Card className="border-l-4 border-l-[#1B4332]">
+        <CardContent className="p-5">
+          <div className="flex items-start gap-3">
+            <Sparkles className="w-5 h-5 text-[#1B4332] mt-0.5" />
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold mb-1">
+                AI Client Intelligence
+              </h3>
+              <p className="text-sm text-muted-foreground mb-3">
+                CNA on file. Generate an AI recommendation to see urgency,
+                plan suggestion, and talking points.
+              </p>
+              <Button
+                size="sm"
+                onClick={onRefresh}
+                disabled={running}
+                data-testid="ai-panel-generate"
+              >
+                {running ? "Analyzing…" : "Generate AI Analysis"}
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const score = Number(ai.urgency_score || 0);
+  const tone = _urgencyTone(score);
+  const exposures = ai.key_exposures || [];
+  const cross = ai.cross_sell_opportunities || [];
+  const talkingPoints = ai.talking_points || [];
+  const objections = ai.objection_handles || [];
+  const generatedLabel = generatedAt
+    ? new Date(generatedAt).toLocaleString()
+    : "—";
+
+  return (
+    <Card
+      className="border-l-4 border-l-[#1B4332]"
+      data-testid="ai-panel"
+    >
+      <CardContent className="p-5 space-y-4">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-5 h-5 text-[#1B4332]" />
+            <h3 className="text-sm font-semibold">AI Client Intelligence</h3>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">
+              Generated {generatedLabel}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onRefresh}
+              disabled={running}
+              data-testid="ai-panel-refresh"
+            >
+              <RefreshCw className={`w-4 h-4 ${running ? "animate-spin" : ""}`} />
+            </Button>
+          </div>
+        </div>
+
+        {/* Urgency score */}
+        <div>
+          <div className="flex items-baseline justify-between mb-1">
+            <span className="text-xs uppercase tracking-widest text-muted-foreground">
+              Urgency score
+            </span>
+            <span
+              className="text-2xl font-bold tabular-nums"
+              style={{ fontFamily: "Outfit" }}
+            >
+              {score}
+              <span className="text-sm text-muted-foreground font-normal">
+                /100
+              </span>
+            </span>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+            <div
+              className={`${tone.bar} h-full transition-all`}
+              style={{ width: `${Math.min(100, Math.max(0, score))}%` }}
+            />
+          </div>
+          <div className="mt-1 flex justify-between items-center text-xs">
+            <span className={`font-semibold ${tone.text}`}>{tone.label}</span>
+            {ai.urgency_reason && (
+              <span className="text-muted-foreground truncate ml-2">
+                {ai.urgency_reason}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Recommendation summary */}
+        <div className="bg-gray-50 rounded-md p-3">
+          <div className="text-xs uppercase tracking-widest text-muted-foreground mb-1">
+            Recommendation
+          </div>
+          <div className="font-semibold text-sm">
+            Medicare{" "}
+            {ai.recommended_plan_type === "supplement"
+              ? "Supplement"
+              : ai.recommended_plan_type === "advantage"
+                ? "Advantage"
+                : "Supplement or Advantage"}{" "}
+            + Umbrella {ai.recommended_umbrella || "—"}
+          </div>
+          {ai.estimated_monthly_range && (
+            <div className="text-xs text-muted-foreground mt-0.5">
+              Estimated {ai.estimated_monthly_range} ·{" "}
+              {ai.confidence || "medium"} confidence
+            </div>
+          )}
+          {ai.primary_reason && (
+            <p className="text-sm mt-2">{ai.primary_reason}</p>
+          )}
+        </div>
+
+        {/* Exposures + cross-sell side by side */}
+        {(exposures.length > 0 || cross.length > 0) && (
+          <div className="grid md:grid-cols-2 gap-4">
+            {exposures.length > 0 && (
+              <div>
+                <div className="text-xs uppercase tracking-widest text-muted-foreground mb-2">
+                  Key exposures
+                </div>
+                <ul className="space-y-1.5">
+                  {exposures.map((x, i) => (
+                    <li
+                      key={`exp-${i}`}
+                      className="flex items-start gap-2 text-sm"
+                    >
+                      <span
+                        className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${_severityDot(x.severity)}`}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium">{x.description}</div>
+                        {x.talking_point && (
+                          <div className="text-xs text-muted-foreground">
+                            {x.talking_point}
+                          </div>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {cross.length > 0 && (
+              <div>
+                <div className="text-xs uppercase tracking-widest text-muted-foreground mb-2">
+                  Cross-sell
+                </div>
+                <ul className="space-y-1.5">
+                  {cross.map((c, i) => (
+                    <li
+                      key={`cross-${i}`}
+                      className="flex items-start gap-2 text-sm"
+                    >
+                      <DollarSign className="w-3.5 h-3.5 text-emerald-600 mt-0.5 flex-shrink-0" />
+                      <div className="min-w-0">
+                        <div className="font-medium">
+                          {(c.product || "").toString().replace(/_/g, " ")}
+                          {c.priority === "immediate" && (
+                            <Badge className="ml-2 bg-amber-100 text-amber-900 text-[10px]">
+                              IMMEDIATE
+                            </Badge>
+                          )}
+                        </div>
+                        {c.reason && (
+                          <div className="text-xs text-muted-foreground">
+                            {c.reason}
+                          </div>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Talking points */}
+        {talkingPoints.length > 0 && (
+          <div>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground mb-2">
+              Talking points
+            </div>
+            <ul className="space-y-1 text-sm list-disc list-inside marker:text-muted-foreground">
+              {talkingPoints.map((tp, i) => (
+                <li key={`tp-${i}`}>{tp}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Objection handles */}
+        {objections.length > 0 && (
+          <div>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground mb-2">
+              Objection handles
+            </div>
+            <ul className="space-y-2 text-sm">
+              {objections.map((o, i) => (
+                <li
+                  key={`obj-${i}`}
+                  className="border-l-2 border-amber-300 pl-3"
+                >
+                  <div className="font-medium">{o.objection}</div>
+                  {o.response && (
+                    <div className="text-muted-foreground text-xs mt-0.5">
+                      {o.response}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Formal script + copy */}
+        {ai.formal_recommendation_script && (
+          <div className="bg-gray-50 rounded-md p-3">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs uppercase tracking-widest text-muted-foreground">
+                Formal recommendation script
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(
+                      ai.formal_recommendation_script,
+                    );
+                    toast.success("Script copied");
+                  } catch {
+                    toast.error("Couldn't copy");
+                  }
+                }}
+                data-testid="ai-panel-copy-script"
+              >
+                <Copy className="w-3.5 h-3.5 mr-1" /> Copy
+              </Button>
+            </div>
+            <p className="text-sm italic">{ai.formal_recommendation_script}</p>
+          </div>
+        )}
+
+        {/* Next best action */}
+        {ai.next_best_action && (
+          <div>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground mb-1">
+              Next best action
+            </div>
+            <p className="text-sm font-medium">{ai.next_best_action}</p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────
+// CNA Tab — the structured assessment form. Every field calls back into
+// ``onPatch`` on blur so partial answers persist without an explicit
+// save action. The "Save & Generate AI" button does one final round-
+// trip with run_ai=true, which the parent uses to jump to Overview.
+// ─────────────────────────────────────────────────────────────────────────
+function CnaTab({ cna, savedAt, saving, aiRunning, onPatch, onSaveAndGenerate }) {
+  // Local mirror so typing doesn't trip every keystroke through the
+  // server. We only fire ``onPatch`` on blur or list-mutating actions.
+  const [draft, setDraft] = useState(cna || {});
+
+  useEffect(() => {
+    setDraft(cna || {});
+  }, [cna]);
+
+  const set = (key, value) => {
+    setDraft((d) => ({ ...d, [key]: value }));
+  };
+
+  // Patch on blur — only fire when the field actually changed since
+  // last persisted value.
+  const flush = (key) => {
+    const next = draft[key];
+    const prev = (cna || {})[key];
+    if (next === prev) return;
+    onPatch({ [key]: next });
+  };
+
+  // List helpers — used by prescriptions + preferred doctors.
+  const addRow = (key, blank) => {
+    const list = Array.isArray(draft[key]) ? [...draft[key]] : [];
+    list.push(blank);
+    setDraft((d) => ({ ...d, [key]: list }));
+    onPatch({ [key]: list });
+  };
+  const removeRow = (key, idx) => {
+    const list = Array.isArray(draft[key]) ? [...draft[key]] : [];
+    list.splice(idx, 1);
+    setDraft((d) => ({ ...d, [key]: list }));
+    onPatch({ [key]: list });
+  };
+  const updateRow = (key, idx, patch, persistImmediately = false) => {
+    const list = Array.isArray(draft[key]) ? [...draft[key]] : [];
+    list[idx] = { ...(list[idx] || {}), ...patch };
+    setDraft((d) => ({ ...d, [key]: list }));
+    if (persistImmediately) onPatch({ [key]: list });
+  };
+
+  const savedLabel = savedAt
+    ? new Date(savedAt).toLocaleString()
+    : "Not saved yet";
+
+  return (
+    <Card>
+      <CardContent className="p-5 space-y-6" data-testid="cna-form">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h3 className="text-sm font-semibold">Client Needs Assessment</h3>
+            <p className="text-xs text-muted-foreground">
+              Based on COACHG Initial Appointment Script
+            </p>
+          </div>
+          <span className="text-xs text-muted-foreground">
+            {saving ? "Saving…" : `Last saved: ${savedLabel}`}
+          </span>
+        </div>
+
+        {/* Appointment goal */}
+        <section>
+          <Label htmlFor="cna-goal" className="text-xs uppercase tracking-wider">
+            Appointment goal
+          </Label>
+          <Textarea
+            id="cna-goal"
+            rows={2}
+            placeholder="What would you like to accomplish today?"
+            value={draft.appointment_goal || ""}
+            onChange={(e) => set("appointment_goal", e.target.value)}
+            onBlur={() => flush("appointment_goal")}
+            className="mt-1"
+          />
+        </section>
+
+        {/* Employment & Income */}
+        <CnaSection title="Employment & Income">
+          <CnaSelect
+            label="Current situation"
+            value={draft.employment_status || ""}
+            onChange={(v) => { set("employment_status", v); onPatch({ employment_status: v }); }}
+            options={[
+              { value: "working", label: "Working" },
+              { value: "retired", label: "Retired" },
+              { value: "other", label: "Other" },
+            ]}
+          />
+          <CnaYesNo
+            label="Drawing Social Security"
+            value={draft.drawing_social_security}
+            onChange={(v) => { set("drawing_social_security", v); onPatch({ drawing_social_security: v }); }}
+          />
+          <CnaSelect
+            label="Household income range"
+            value={draft.household_income_range || ""}
+            onChange={(v) => { set("household_income_range", v); onPatch({ household_income_range: v }); }}
+            options={[
+              { value: "under_85k", label: "Under $85k" },
+              { value: "85k_107k", label: "$85k–$107k" },
+              { value: "107k_133k", label: "$107k–$133k" },
+              { value: "133k_160k", label: "$133k–$160k" },
+              { value: "over_160k", label: "Over $160k" },
+            ]}
+          />
+          <CnaYesNo
+            label="Qualified assets >$200k"
+            value={draft.has_qualified_assets_200k}
+            onChange={(v) => { set("has_qualified_assets_200k", v); onPatch({ has_qualified_assets_200k: v }); }}
+          />
+        </CnaSection>
+
+        {/* Current Coverage */}
+        <CnaSection title="Current Coverage">
+          <CnaSelect
+            label="Coverage type"
+            value={draft.current_coverage_type || ""}
+            onChange={(v) => { set("current_coverage_type", v); onPatch({ current_coverage_type: v }); }}
+            options={[
+              { value: "employer", label: "Employer" },
+              { value: "marketplace", label: "Marketplace" },
+              { value: "medicaid", label: "Medicaid" },
+              { value: "tricare", label: "TRICARE" },
+              { value: "none", label: "None" },
+              { value: "other", label: "Other" },
+            ]}
+          />
+          <CnaText
+            label="Carrier"
+            value={draft.current_carrier || ""}
+            onChange={(v) => set("current_carrier", v)}
+            onBlur={() => flush("current_carrier")}
+          />
+          <CnaYesNo
+            label="Employer-sponsored"
+            value={draft.is_employer_sponsored}
+            onChange={(v) => { set("is_employer_sponsored", v); onPatch({ is_employer_sponsored: v }); }}
+          />
+          <CnaNumber
+            label="Monthly premium ($)"
+            value={draft.current_monthly_premium}
+            onChange={(v) => set("current_monthly_premium", v)}
+            onBlur={() => flush("current_monthly_premium")}
+          />
+          <CnaNumber
+            label="Deductible ($)"
+            value={draft.current_deductible}
+            onChange={(v) => set("current_deductible", v)}
+            onBlur={() => flush("current_deductible")}
+          />
+          <CnaNumber
+            label="Max out-of-pocket ($)"
+            value={draft.current_max_oop}
+            onChange={(v) => set("current_max_oop", v)}
+            onBlur={() => flush("current_max_oop")}
+          />
+          <CnaYesNo
+            label="Hit deductible this year"
+            value={draft.hit_deductible_this_year}
+            onChange={(v) => { set("hit_deductible_this_year", v); onPatch({ hit_deductible_this_year: v }); }}
+          />
+        </CnaSection>
+
+        {/* Health & Prescriptions */}
+        <CnaSection title="Health & Prescriptions">
+          <div className="md:col-span-2">
+            <Label className="text-xs uppercase tracking-wider">
+              Health history notes
+            </Label>
+            <Textarea
+              rows={2}
+              value={draft.health_history_notes || ""}
+              onChange={(e) => set("health_history_notes", e.target.value)}
+              onBlur={() => flush("health_history_notes")}
+              className="mt-1"
+            />
+          </div>
+          <CnaNumber
+            label="Prescription count"
+            value={draft.prescription_count}
+            onChange={(v) => set("prescription_count", v)}
+            onBlur={() => flush("prescription_count")}
+          />
+          <div className="md:col-span-2">
+            <div className="flex items-center justify-between mb-2">
+              <Label className="text-xs uppercase tracking-wider">
+                Prescriptions
+              </Label>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  addRow("prescriptions", { name: "", condition: "" })
+                }
+              >
+                <Plus className="w-3.5 h-3.5 mr-1" /> Add
+              </Button>
+            </div>
+            <div className="space-y-2">
+              {(draft.prescriptions || []).map((rx, i) => (
+                <div key={`rx-${i}`} className="flex gap-2 items-center">
+                  <Input
+                    placeholder="Medication"
+                    value={rx?.name || ""}
+                    onChange={(e) =>
+                      updateRow("prescriptions", i, { name: e.target.value })
+                    }
+                    onBlur={() => onPatch({ prescriptions: draft.prescriptions })}
+                  />
+                  <Input
+                    placeholder="Treats"
+                    value={rx?.condition || ""}
+                    onChange={(e) =>
+                      updateRow("prescriptions", i, {
+                        condition: e.target.value,
+                      })
+                    }
+                    onBlur={() => onPatch({ prescriptions: draft.prescriptions })}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => removeRow("prescriptions", i)}
+                  >
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+          <CnaSelect
+            label="Critical illness history"
+            value={draft.critical_illness_history || ""}
+            onChange={(v) => { set("critical_illness_history", v); onPatch({ critical_illness_history: v }); }}
+            options={[
+              { value: "personal", label: "Personal" },
+              { value: "family", label: "Family" },
+              { value: "both", label: "Both" },
+              { value: "none", label: "None" },
+            ]}
+          />
+          <div className="md:col-span-2">
+            <Label className="text-xs uppercase tracking-wider">
+              Critical illness notes
+            </Label>
+            <Textarea
+              rows={2}
+              value={draft.critical_illness_notes || ""}
+              onChange={(e) => set("critical_illness_notes", e.target.value)}
+              onBlur={() => flush("critical_illness_notes")}
+              className="mt-1"
+            />
+          </div>
+          <CnaYesNo
+            label="Skilled nursing experience"
+            value={draft.skilled_nursing_experience}
+            onChange={(v) => { set("skilled_nursing_experience", v); onPatch({ skilled_nursing_experience: v }); }}
+          />
+          <CnaYesNo
+            label="Home healthcare experience"
+            value={draft.home_healthcare_experience}
+            onChange={(v) => { set("home_healthcare_experience", v); onPatch({ home_healthcare_experience: v }); }}
+          />
+        </CnaSection>
+
+        {/* Coverage Gaps */}
+        <CnaSection title="Coverage Gaps">
+          <CnaYesNo
+            label="Dental important"
+            value={draft.dental_important}
+            onChange={(v) => { set("dental_important", v); onPatch({ dental_important: v }); }}
+          />
+          <CnaYesNo
+            label="Has dental coverage"
+            value={draft.has_dental_coverage}
+            onChange={(v) => { set("has_dental_coverage", v); onPatch({ has_dental_coverage: v }); }}
+          />
+          <div className="md:col-span-2">
+            <div className="flex items-center justify-between mb-2">
+              <Label className="text-xs uppercase tracking-wider">
+                Preferred doctors
+              </Label>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  addRow("preferred_doctors", { name: "", specialty: "" })
+                }
+              >
+                <Plus className="w-3.5 h-3.5 mr-1" /> Add
+              </Button>
+            </div>
+            <div className="space-y-2">
+              {(draft.preferred_doctors || []).map((d, i) => (
+                <div key={`doc-${i}`} className="flex gap-2 items-center">
+                  <Input
+                    placeholder="Name"
+                    value={d?.name || ""}
+                    onChange={(e) =>
+                      updateRow("preferred_doctors", i, { name: e.target.value })
+                    }
+                    onBlur={() =>
+                      onPatch({ preferred_doctors: draft.preferred_doctors })
+                    }
+                  />
+                  <Input
+                    placeholder="Specialty"
+                    value={d?.specialty || ""}
+                    onChange={(e) =>
+                      updateRow("preferred_doctors", i, {
+                        specialty: e.target.value,
+                      })
+                    }
+                    onBlur={() =>
+                      onPatch({ preferred_doctors: draft.preferred_doctors })
+                    }
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => removeRow("preferred_doctors", i)}
+                  >
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+          <CnaSelect
+            label="Knows MA vs Supplement difference"
+            value={draft.knows_ma_vs_supp_difference || ""}
+            onChange={(v) => { set("knows_ma_vs_supp_difference", v); onPatch({ knows_ma_vs_supp_difference: v }); }}
+            options={[
+              { value: "yes", label: "Yes" },
+              { value: "no", label: "No" },
+              { value: "somewhat", label: "Somewhat" },
+            ]}
+          />
+        </CnaSection>
+
+        {/* Financial Protection */}
+        <CnaSection title="Financial Protection">
+          <CnaYesNo
+            label="Has life insurance"
+            value={draft.has_life_insurance}
+            onChange={(v) => { set("has_life_insurance", v); onPatch({ has_life_insurance: v }); }}
+          />
+          <CnaSelect
+            label="Life insurance type"
+            value={draft.life_insurance_type || ""}
+            onChange={(v) => { set("life_insurance_type", v); onPatch({ life_insurance_type: v }); }}
+            options={[
+              { value: "permanent", label: "Permanent" },
+              { value: "term", label: "Term" },
+              { value: "none", label: "None" },
+            ]}
+          />
+          <CnaYesNo
+            label="Important to them"
+            value={draft.life_insurance_important}
+            onChange={(v) => { set("life_insurance_important", v); onPatch({ life_insurance_important: v }); }}
+          />
+          <CnaYesNo
+            label="Final expense covered"
+            value={draft.final_expense_covered}
+            onChange={(v) => { set("final_expense_covered", v); onPatch({ final_expense_covered: v }); }}
+          />
+          <CnaYesNo
+            label="Retirement questions"
+            value={draft.has_retirement_questions}
+            onChange={(v) => { set("has_retirement_questions", v); onPatch({ has_retirement_questions: v }); }}
+          />
+        </CnaSection>
+
+        {/* Medicare Direction */}
+        <CnaSection title="Medicare Direction">
+          <div className="md:col-span-2">
+            <Label className="text-xs uppercase tracking-wider">
+              Leaning toward
+            </Label>
+            <div className="flex flex-wrap gap-2 mt-2">
+              {[
+                { value: "supplement", label: "Medicare Supplement" },
+                { value: "advantage", label: "Medicare Advantage" },
+                { value: "undecided", label: "Undecided" },
+              ].map((opt) => (
+                <Button
+                  key={opt.value}
+                  type="button"
+                  variant={
+                    draft.medicare_direction_preference === opt.value
+                      ? "default"
+                      : "outline"
+                  }
+                  size="sm"
+                  onClick={() => {
+                    set("medicare_direction_preference", opt.value);
+                    onPatch({ medicare_direction_preference: opt.value });
+                  }}
+                >
+                  {opt.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+          <div className="md:col-span-2">
+            <Label className="text-xs uppercase tracking-wider">
+              Direction notes
+            </Label>
+            <Textarea
+              rows={2}
+              value={draft.direction_notes || ""}
+              onChange={(e) => set("direction_notes", e.target.value)}
+              onBlur={() => flush("direction_notes")}
+              className="mt-1"
+            />
+          </div>
+        </CnaSection>
+
+        <div className="flex items-center justify-between flex-wrap gap-2 pt-3 border-t border-border">
+          <span className="text-xs text-muted-foreground">
+            Fields autosave on blur.
+          </span>
+          <Button
+            type="button"
+            onClick={onSaveAndGenerate}
+            disabled={aiRunning}
+            data-testid="cna-save-generate"
+          >
+            <Sparkles className="w-4 h-4 mr-1" />
+            {aiRunning ? "Analyzing…" : "Save & Generate AI Analysis →"}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+
+// ── CNA sub-components ──────────────────────────────────────────────────
+function CnaSection({ title, children }) {
+  return (
+    <section>
+      <h4 className="text-xs uppercase tracking-widest text-muted-foreground mb-3 border-b border-border pb-1">
+        {title}
+      </h4>
+      <div className="grid md:grid-cols-2 gap-4">{children}</div>
+    </section>
+  );
+}
+
+function CnaText({ label, value, onChange, onBlur }) {
+  return (
+    <div>
+      <Label className="text-xs uppercase tracking-wider">{label}</Label>
+      <Input
+        value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
+        className="mt-1"
+      />
+    </div>
+  );
+}
+
+function CnaNumber({ label, value, onChange, onBlur }) {
+  return (
+    <div>
+      <Label className="text-xs uppercase tracking-wider">{label}</Label>
+      <Input
+        type="number"
+        value={value ?? ""}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === "") onChange(null);
+          else onChange(Number(v));
+        }}
+        onBlur={onBlur}
+        className="mt-1"
+      />
+    </div>
+  );
+}
+
+function CnaSelect({ label, value, onChange, options }) {
+  return (
+    <div>
+      <Label className="text-xs uppercase tracking-wider">{label}</Label>
+      <Select value={value || ""} onValueChange={onChange}>
+        <SelectTrigger className="mt-1">
+          <SelectValue placeholder="Select…" />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((opt) => (
+            <SelectItem key={opt.value} value={opt.value}>
+              {opt.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+function CnaYesNo({ label, value, onChange }) {
+  return (
+    <div>
+      <Label className="text-xs uppercase tracking-wider">{label}</Label>
+      <div className="flex gap-2 mt-1">
+        <Button
+          type="button"
+          size="sm"
+          variant={value === true ? "default" : "outline"}
+          onClick={() => onChange(value === true ? null : true)}
+        >
+          Yes
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={value === false ? "default" : "outline"}
+          onClick={() => onChange(value === false ? null : false)}
+        >
+          No
+        </Button>
+      </div>
     </div>
   );
 }
