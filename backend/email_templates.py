@@ -599,6 +599,147 @@ def security_alert_email(
     )
 
 
+# ── Billing emails (Phase 3) ─────────────────────────────────────────────
+# All sent to the agency owner (agencies.owner_email). PHI-free —
+# templates only mention agency name + dollar amounts + dates.
+
+def _fmt_iso_date(iso: Optional[str]) -> str:
+    if not iso:
+        return ""
+    try:
+        from datetime import datetime as _dt
+        dt = _dt.fromisoformat(iso.replace("Z", "+00:00"))
+        return dt.strftime("%B %d, %Y")
+    except Exception:
+        return iso
+
+
+def billing_payment_failed(
+    agency_name: str,
+    grace_ends_iso: str,
+    grace_days: int,
+) -> str:
+    """Sent immediately on invoice.payment_failed. Tells the owner
+    they have N days to restore billing before the account suspends."""
+    body = f"""
+      <p style="margin:0 0 14px 0;">Hello,</p>
+      <p style="margin:0 0 14px 0;">
+        We weren't able to process your most recent payment for
+        <strong>{escape(agency_name)}</strong>.
+      </p>
+      <p style="margin:0 0 14px 0;">
+        Your account stays fully active for the next
+        <strong>{grace_days} days</strong>. If we don't receive a
+        successful payment by <strong>{escape(_fmt_iso_date(grace_ends_iso))}</strong>,
+        your account will be suspended and the team will lose access
+        until billing is restored.
+      </p>
+      <p style="margin:0 0 14px 0;">
+        Update your payment method through the billing portal and the
+        retry will run automatically.
+      </p>"""
+    return _shell(
+        preheader="Update your payment method to keep your account active.",
+        title="Payment failed",
+        body_html=body,
+        cta=None,
+    )
+
+
+def billing_grace_warning(
+    agency_name: str,
+    days_remaining: int,
+) -> str:
+    """Day-3 nudge while the grace period is still running."""
+    body = f"""
+      <p style="margin:0 0 14px 0;">Hello,</p>
+      <p style="margin:0 0 14px 0;">
+        Just a reminder — <strong>{escape(agency_name)}</strong> has
+        <strong>{days_remaining} day{'s' if days_remaining != 1 else ''}</strong>
+        remaining to restore billing before the account is suspended.
+      </p>
+      <p style="margin:0 0 14px 0;">
+        Update your payment method through the billing portal. The
+        retry runs automatically and brings the account back to active
+        as soon as it succeeds.
+      </p>"""
+    return _shell(
+        preheader=f"{days_remaining} days remaining — update your payment.",
+        title="Update your payment method",
+        body_html=body,
+    )
+
+
+def billing_payment_received(agency_name: str) -> str:
+    """Sent on invoice.payment_succeeded when the prior status was
+    past_due or suspended — recovery confirmation."""
+    body = f"""
+      <p style="margin:0 0 14px 0;">Hello,</p>
+      <p style="margin:0 0 14px 0;">
+        Your payment was processed and
+        <strong>{escape(agency_name)}</strong> is fully active again.
+      </p>
+      <p style="margin:0 0 14px 0;">
+        Thanks for staying with us — your team has full access
+        restored.
+      </p>"""
+    return _shell(
+        preheader="Your payment landed — back to active.",
+        title="Payment received",
+        body_html=body,
+    )
+
+
+def billing_suspended(agency_name: str) -> str:
+    """Sent when the grace period expires and we flip the agency to
+    suspended. Note the data-preservation message — agencies under
+    HIPAA can never have their records actually deleted."""
+    body = f"""
+      <p style="margin:0 0 14px 0;">Hello,</p>
+      <p style="margin:0 0 14px 0;">
+        The grace period has expired and
+        <strong>{escape(agency_name)}</strong> has been suspended.
+        Your team can no longer create new records or send new
+        communications until billing is restored.
+      </p>
+      <p style="margin:0 0 14px 0;">
+        Your data is safe — every lead, document, and audit row is
+        preserved. Restoring billing through the portal lifts the
+        suspension automatically.
+      </p>"""
+    return _shell(
+        preheader="Account suspended — restore billing to continue.",
+        title="Account suspended",
+        body_html=body,
+    )
+
+
+def billing_trial_ending(
+    agency_name: str,
+    trial_end_iso: Optional[str],
+) -> str:
+    """Stripe fires customer.subscription.trial_will_end ~3 days
+    before conversion."""
+    end_label = _fmt_iso_date(trial_end_iso) if trial_end_iso else "soon"
+    body = f"""
+      <p style="margin:0 0 14px 0;">Hello,</p>
+      <p style="margin:0 0 14px 0;">
+        The free trial for <strong>{escape(agency_name)}</strong> ends
+        on <strong>{escape(end_label)}</strong>. We'll automatically
+        convert the subscription using the payment method on file —
+        no action needed if everything's good.
+      </p>
+      <p style="margin:0 0 14px 0;">
+        If you want to update the payment method or adjust the plan
+        before conversion, the billing portal has both.
+      </p>"""
+    return _shell(
+        preheader="Your free trial ends soon — confirm payment details.",
+        title="Free trial ending",
+        body_html=body,
+    )
+
+
 # ── Helper: urgency-level badge ──────────────────────────────────────────
 def _urgency_badge(level: str) -> str:
     """Coloured pill matching the SPA legend (urgent/high/moderate/low)."""

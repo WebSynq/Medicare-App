@@ -15,7 +15,9 @@ from datetime import datetime, timezone
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from deps import get_db, get_phi_db, get_current_user, agent_filter
 from encryption import safe_lead_load
@@ -24,6 +26,11 @@ from encryption import safe_lead_load
 logger = logging.getLogger("gruening.clients")
 
 router = APIRouter(prefix="/api/clients", tags=["clients"])
+
+# Per-IP rate limiter for the two read endpoints. Conftest disables it
+# for the full test suite (mod.limiter.enabled = False) so the inline
+# decorators don't pinch on repeated test setup.
+limiter = Limiter(key_func=get_remote_address)
 
 
 # Display palette for policy product badges. Consumed by the frontend; kept
@@ -50,8 +57,10 @@ def _is_inactive(status: str) -> bool:
 
 
 @router.get("/{contact_id}/policies")
+@limiter.limit("60/hour")
 async def get_client_policies(
     contact_id: str,
+    request: Request,
     db=Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
 ):
@@ -97,8 +106,10 @@ async def get_client_policies(
 
 
 @router.get("/{contact_id}/summary")
+@limiter.limit("60/hour")
 async def get_client_summary(
     contact_id: str,
+    request: Request,
     db=Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):

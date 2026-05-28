@@ -365,6 +365,10 @@ async def test_birthday_automation_finds_window_leads(client, db):
         "status": "new",
         "date_of_birth": dob_iso,
         "agent_id": aid,
+        # Phase-1 multi-tenant stamp — real lead writes go through
+        # leads_router which sets this for us. Direct-DB test fixtures
+        # have to stamp it manually now that the scheduler filters by it.
+        "agency_id": "ghw_001",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })
@@ -394,6 +398,7 @@ async def test_reminder_48hr_fires_correctly(client, db):
     await db.appointments.insert_one({
         "appointment_id": "appt-48",
         "agent_id": aid,
+        "agency_id": "ghw_001",
         "client_name": "Time Window",
         "client_email": "tw@example.com",
         "appointment_date": target.date().isoformat(),
@@ -465,14 +470,14 @@ async def test_stale_lead_threshold_30_days(client, db):
         {
             "id": "stale-old",
             "first_name": "Old", "last_name": "Lead",
-            "agent_id": aid, "status": "new",
+            "agent_id": aid, "agency_id": "ghw_001", "status": "new",
             "updated_at": (now - timedelta(days=31)).isoformat(),
             "created_at": (now - timedelta(days=31)).isoformat(),
         },
         {
             "id": "stale-fresh",
             "first_name": "Fresh", "last_name": "Lead",
-            "agent_id": aid, "status": "new",
+            "agent_id": aid, "agency_id": "ghw_001", "status": "new",
             "updated_at": (now - timedelta(days=29)).isoformat(),
             "created_at": (now - timedelta(days=29)).isoformat(),
         },

@@ -52,6 +52,7 @@ import {
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import NewAppointmentSheet from "@/components/NewAppointmentSheet";
 import { api } from "@/lib/api";
+import { useAgent } from "@/context/AgentContext";
 
 // react-big-calendar's CSS — page-local import so it only loads here.
 import "react-big-calendar/lib/css/react-big-calendar.css";
@@ -610,6 +611,7 @@ function RightSidebar({ appointments, onPickAppointment }) {
 // ── Main page ───────────────────────────────────────────────────────────
 export default function CalendarPage() {
   const isMobile = useIsMobile();
+  const { selectedAgent } = useAgent();
   const [view, setView] = useState(() =>
     typeof window !== "undefined" && window.innerWidth < 768
       ? Views.AGENDA
@@ -648,7 +650,7 @@ export default function CalendarPage() {
 
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, selectedAgent]);
 
   // Build rbc events. Only appointments — birthday + renewal alerts
   // intentionally NOT pulled (those are action queues, not events).

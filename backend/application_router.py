@@ -11,7 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from deps import get_db, get_phi_db, get_effective_agent, agent_filter
+from deps import (
+    agent_filter,
+    get_db,
+    get_effective_agent,
+    get_phi_db,
+    require_feature,
+)
 from encryption import safe_lead_set, safe_lead_load
 from auth_router import get_current_user
 from ghl_client import GHLClient
@@ -584,6 +590,7 @@ async def extract_application(
     file: UploadFile = File(...),
     product_type: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user),
+    _feat: dict = Depends(require_feature("ai_application_intake")),
 ):
     """Extract insurance application fields from a PDF.
 
@@ -669,6 +676,19 @@ async def extract_application(
         )
     except Exception as e:
         logger.warning("Main-schema extraction failed (non-fatal): %s", e)
+
+    # Metering — fire-and-forget. One app_intake event per successful
+    # extraction; per-call pricing (no token tracking needed because
+    # OVERAGE_RATES.app_intake_each is a flat per-extraction cost).
+    try:
+        from metering import track_app_intake
+        track_app_intake(
+            agency_id=current_user.get("agency_id"),
+            agent_id=current_user.get("id"),
+            metadata={"product_type": product_type, "auto_detected": auto},
+        )
+    except Exception as _e:                                    # noqa: BLE001
+        logger.debug("application/extract: metering hook failed: %s", _e)
 
     return {"product_type": product_type, "product_label": PRODUCT_LABELS[product_type],
             "extracted": extracted, "field_count": field_count,

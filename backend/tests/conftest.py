@@ -44,6 +44,13 @@ os.environ.setdefault("JWT_IDLE_TIMEOUT_MINUTES", "30")
 # helper. Tests don't actually send mail (RESEND_API_KEY is unset)
 # but the helper still runs the env-read path.
 os.environ.setdefault("ADMIN_EMAIL", "admin-alerts@example.com")
+# Phase 3 — multi-tenant billing. Webhook tests construct + verify
+# signatures against this secret. STRIPE_SECRET_KEY left unset so
+# the user-facing checkout/portal endpoints 503 by design in tests
+# (we mock the SDK module when exercising them).
+os.environ.setdefault(
+    "STRIPE_WEBHOOK_SECRET", "whsec_test_phase3_signing_secret_padding_xx",
+)
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -92,7 +99,10 @@ for module_name in ("server", "auth_router", "leads_router",
                      "today_router", "appointments_router",
                      "dashboard_router", "notes_router",
                      "search_router", "notifications_router",
-                     "agency_dashboard_router", "booking_router"):
+                     "agency_dashboard_router", "booking_router",
+                     "billing_router", "email_domain_router",
+                     "super_admin_router", "agency_settings_router",
+                     "clients_router"):
     try:
         mod = sys.modules.get(module_name) or __import__(module_name)
         if hasattr(mod, "limiter"):
@@ -103,10 +113,16 @@ for module_name in ("server", "auth_router", "leads_router",
 
 @pytest.fixture(autouse=True)
 async def _clean_db():
-    """Per-test clean DB. Drops everything, then seeds the admin row directly.
+    """Per-test clean DB. Drops everything, seeds the GHW agency row,
+    then seeds the admin row directly.
 
-    autouse=True means every test gets a fresh DB without having to declare
-    the fixture explicitly.
+    autouse=True means every test gets a fresh DB without having to
+    declare the fixture explicitly.
+
+    Multi-tenant (Phase 1): seeds db.agencies with the GHW super-admin
+    record + stamps the admin user with agency_id="ghw_001". Existing
+    tests should pass unchanged because every feature flag is True on
+    the GHW agency and super_admin bypasses billing/feature gates.
     """
     inst = _fake_get_db()
     for coll in await inst.list_collection_names():
@@ -114,6 +130,12 @@ async def _clean_db():
     from security import hash_password
     from datetime import datetime, timezone
     import uuid
+
+    # Seed the GHW agency FIRST so the JWT enrichment in _jwt_claims
+    # finds an agency row when the admin logs in.
+    from seed import seed_ghw_agency, GHW_AGENCY_ID
+    await seed_ghw_agency(inst)
+
     await inst.users.insert_one({
         "id": str(uuid.uuid4()),
         "email": os.environ["SEED_ADMIN_EMAIL"],
@@ -121,6 +143,7 @@ async def _clean_db():
         "role": "admin",
         "is_active": True,
         "status": "active",
+        "agency_id": GHW_AGENCY_ID,
         "agency_name": None,
         "agent_name": None,
         "agent_npn": None,

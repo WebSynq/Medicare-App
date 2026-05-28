@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 
 from deps import (
     COMPLIANCE_ROLES,
+    get_agency_id,
     get_db,
     get_phi_db,
     require_roles,
@@ -62,9 +63,14 @@ async def list_soa(
     mtd_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     # Build a leads-by-id index for joining contact info onto SOA records.
+    # Multi-tenant scoping: every read is filtered to this tenant's
+    # agency_id. get_agency_id() returns the static ghw_001 stamp every
+    # lead/SOA write also uses, so the filter narrows the view without
+    # excluding legacy records (which were backfilled to the same id).
+    agency_id = get_agency_id()
     leads_index: Dict[str, dict] = {}
     async for ld in db.leads.find(
-        {},
+        {"agency_id": agency_id},
         {"_id": 0, "id": 1, "first_name": 1, "last_name": 1,
          "agent_id": 1, "agent_email": 1, "agent_name": 1,
          "soa_signed": 1, "soa_signed_at": 1, "created_at": 1},
@@ -73,7 +79,7 @@ async def list_soa(
         leads_index[ld["id"]] = ld
 
     records: List[Dict[str, Any]] = []
-    cursor = db.soa_records.find({}, {"_id": 0})
+    cursor = db.soa_records.find({"agency_id": agency_id}, {"_id": 0})
     async for s in cursor:
         signed = _parse_iso(s.get("signed_at"))
         expires = signed + timedelta(days=SOA_VALIDITY_DAYS) if signed else None
@@ -101,7 +107,7 @@ async def list_soa(
     # touchpoint but no SOA record yet. Surface them so the agent can
     # nudge the client to sign.
     async for ld in db.leads.find(
-        {"soa_signed": {"$ne": True}},
+        {"agency_id": agency_id, "soa_signed": {"$ne": True}},
         {"_id": 0, "id": 1, "first_name": 1, "last_name": 1,
          "agent_name": 1, "agent_email": 1, "created_at": 1,
          "status": 1},
@@ -139,7 +145,9 @@ async def list_soa(
     expired_total = 0
     # Recount using leads + soa_records to avoid double counting from the
     # filtered records list above.
-    async for s in db.soa_records.find({}, {"_id": 0, "signed_at": 1}):
+    async for s in db.soa_records.find(
+        {"agency_id": agency_id}, {"_id": 0, "signed_at": 1},
+    ):
         signed_dt = _parse_iso(s.get("signed_at"))
         if signed_dt and signed_dt >= mtd_start:
             signed_mtd += 1
@@ -147,6 +155,7 @@ async def list_soa(
         if signed_dt and (signed_dt + timedelta(days=SOA_VALIDITY_DAYS)) < now:
             expired_total += 1
     pending_total = await db.leads.count_documents({
+        "agency_id": agency_id,
         "soa_signed": {"$ne": True},
         "status": {"$nin": ["lost", "not_interested"]},
     })
@@ -175,15 +184,22 @@ async def list_tcpa(
     via the SPA intake set this explicitly; older rows may not have
     the field set, which we treat as "no consent on file".
     """
-    total = await db.leads.count_documents({})
-    consented = await db.leads.count_documents({"tcpa_consent": True})
+    # Multi-tenant scoping — same agency_id filter applied across the
+    # three counts + the list query so the percentage rate doesn't
+    # cross-pollute between tenants.
+    agency_id = get_agency_id()
+    total = await db.leads.count_documents({"agency_id": agency_id})
+    consented = await db.leads.count_documents(
+        {"agency_id": agency_id, "tcpa_consent": True},
+    )
     no_consent = total - consented
 
     cursor = db.leads.find(
-        {"$or": [
+        {"agency_id": agency_id,
+         "$or": [
             {"tcpa_consent": {"$exists": False}},
             {"tcpa_consent": False},
-        ]},
+         ]},
         {"_id": 0, "id": 1, "first_name": 1, "last_name": 1,
          "phone": 1, "email": 1, "lead_source": 1, "created_at": 1,
          "agent_name": 1, "agent_email": 1, "tcpa_consent": 1},
@@ -237,7 +253,9 @@ async def export_soa(
         "soa_id", "lead_id", "beneficiary_name", "agent_name",
         "plan_types_discussed", "signed_at", "ip_address", "user_agent",
     ]]
-    async for s in db.soa_records.find({}, {"_id": 0}):
+    async for s in db.soa_records.find(
+        {"agency_id": get_agency_id()}, {"_id": 0},
+    ):
         rows.append([
             s.get("id"),
             s.get("lead_id"),
@@ -263,7 +281,7 @@ async def export_tcpa(
         "agent_name", "created_at",
     ]]
     async for ld in db.leads.find(
-        {},
+        {"agency_id": get_agency_id()},
         {"_id": 0, "id": 1, "first_name": 1, "last_name": 1,
          "phone": 1, "email": 1, "tcpa_consent": 1,
          "tcpa_consent_timestamp": 1, "tcpa_consent_ip": 1, "lead_source": 1,

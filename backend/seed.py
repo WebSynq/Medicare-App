@@ -1,4 +1,7 @@
-"""Idempotent admin seed + agent-identity backfill. Both run on app startup."""
+"""Idempotent admin seed + agent-identity backfill + multi-tenant
+foundation seeds. Everything in this module runs on app startup, in
+order, and every function is a no-op when there's nothing to do.
+"""
 import logging
 import os
 import uuid
@@ -8,6 +11,83 @@ from security import hash_password
 
 
 logger = logging.getLogger(__name__)
+
+
+# ── Multi-tenant: GHW agency seed ───────────────────────────────────────
+# The GHW agency is the platform's first tenant and the home for every
+# super admin. It carries super_admin=True so callers from this agency
+# bypass per-feature gates (they own the platform). agency_id is a
+# stable string — not a UUID — because the rest of the codebase already
+# stamps "ghw_001" on legacy records via deps.get_agency_id().
+
+GHW_AGENCY_ID = "ghw_001"
+GHW_SLUG = "ghw"
+
+
+async def seed_ghw_agency(db) -> None:
+    """Create the GHW agency record if it doesn't exist.
+
+    Idempotent: runs on every startup, no-op after first success. Safe
+    to redeploy. Never overwrites an existing row — super admins can
+    tweak fields via the admin panel after seeding.
+
+    Why a fixed agency_id="ghw_001": every existing leads/clients/
+    policies/users row already carries this value (stamped by
+    deps.get_agency_id() since the multi-tenant scaffolding landed).
+    Migrating GHW now means seeding the agency record to match,
+    NOT changing the historical agency_id on 6,666+ records.
+    """
+    from agency_models import build_agency_defaults
+    from tiers import FEATURE_REGISTRY
+
+    existing = await db.agencies.find_one({"agency_id": GHW_AGENCY_ID})
+    if existing:
+        return
+
+    owner_email = (
+        os.environ.get("SEED_ADMIN_EMAIL", "admin@grueninghw.com")
+        .strip().lower()
+    )
+    # GHW gets every feature on — including ops_console and add-ons —
+    # because it IS the platform team. Other agencies get their tier
+    # defaults instead.
+    features = {k: True for k in FEATURE_REGISTRY}
+    agency = build_agency_defaults(
+        name="Gruening Health & Wealth",
+        slug=GHW_SLUG,
+        owner_email=owner_email,
+        tier="domination",
+        super_admin=True,
+        created_by="system",
+        features_override=features,
+    )
+    # Pin the agency_id to "ghw_001" so it matches every legacy stamp.
+    doc = agency.model_dump()
+    doc["agency_id"] = GHW_AGENCY_ID
+    await db.agencies.insert_one(doc)
+    logger.info(
+        "Seeded GHW agency: agency_id=%s slug=%s owner=%s tier=%s",
+        GHW_AGENCY_ID, GHW_SLUG, owner_email, agency.tier,
+    )
+
+
+async def backfill_agency_id_on_users(db) -> int:
+    """Stamp ``agency_id=ghw_001`` on every existing user row.
+
+    Pre-multi-tenant users have no agency_id. Without this, the new
+    deps.get_agency dependency would 404 on every legacy login.
+    Idempotent — only touches rows missing the field.
+    """
+    result = await db.users.update_many(
+        {"agency_id": {"$exists": False}},
+        {"$set": {"agency_id": GHW_AGENCY_ID}},
+    )
+    if result.modified_count:
+        logger.info(
+            "backfill_agency_id_on_users: stamped %d user rows with %s",
+            result.modified_count, GHW_AGENCY_ID,
+        )
+    return result.modified_count
 
 
 async def seed_admin(db) -> None:

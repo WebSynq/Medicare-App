@@ -22,6 +22,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from deps import get_agency_id
 from encryption import safe_lead_load
 
 
@@ -91,7 +92,11 @@ async def run_birthday_window_automation(db) -> int:
     # in Python. IL is the only state with a birthday rule today so the
     # scan stays small.
     sent = 0
+    # Multi-tenant scoping — every scheduler job filters by agency_id
+    # so a future cross-tenant deploy doesn't leak nudges across
+    # agencies. ghw_001 today; per-tenant scheduling lands later.
     cursor = db.leads.find({
+        "agency_id": get_agency_id(),
         "state": "IL",
         "email": {"$nin": [None, ""]},
         "birthday_email_sent": {"$ne": True},
@@ -171,6 +176,7 @@ async def run_enrolled_welcome_automation(db) -> int:
 
     sent = 0
     cursor = db.leads.find({
+        "agency_id": get_agency_id(),
         "status": "enrolled",
         "email": {"$nin": [None, ""]},
         "enrolled_welcome_sent": {"$ne": True},
@@ -297,6 +303,7 @@ async def run_stale_lead_alerts(db) -> int:
 
     sent = 0
     cursor = db.leads.find({
+        "agency_id": get_agency_id(),
         "stale_alert_sent": {"$ne": True},
         "updated_at": {"$lte": cutoff_iso},
         "status": {"$nin": list(_STALE_CLOSED_STATUSES)},
@@ -442,6 +449,7 @@ async def run_appointment_reminders(db) -> int:
     upcoming_cutoff = now + timedelta(hours=50)
 
     cursor = db.appointments.find({
+        "agency_id": get_agency_id(),
         "status": "scheduled",
         "appointment_date": {
             "$gte": now.date().isoformat(),
@@ -488,6 +496,7 @@ async def run_post_appointment_followup(db) -> int:
     cutoff_end = now - timedelta(hours=24)
 
     cursor = db.appointments.find({
+        "agency_id": get_agency_id(),
         "followup_sent": {"$ne": True},
         "client_email": {"$nin": [None, ""]},
         "appointment_date": {
@@ -781,8 +790,16 @@ def compute_lead_urgency(lead: dict, today=None) -> dict:
 
 
 async def _agent_lead_cursor(db, agent_id: str):
-    """Iterate over an agent's open leads (status not closed)."""
+    """Iterate over an agent's open leads (status not closed).
+
+    agency_id filter is belt-and-suspenders here — agent_id already
+    isolates to one user, who only belongs to one tenant. But once
+    we cut over to true multi-tenant scheduling the explicit filter
+    will let the planner use the compound (agency_id, agent_id)
+    index added in server.on_startup.
+    """
     return db.leads.find({
+        "agency_id": get_agency_id(),
         "agent_id": agent_id,
         "status": {"$nin": list(_BRIEF_SKIP_STATUSES)},
     }, {"_id": 0})
@@ -927,6 +944,8 @@ async def run_daily_agent_brief(db) -> int:
                 to=agent["email"],
                 subject=f"Your Medicare Priority List — {brief['date']}",
                 html=html,
+                agency_id=agent.get("agency_id"),
+                agent_id=agent.get("id"),
             )
             await _audit(
                 db, "automation_daily_brief_sent" if ok

@@ -9,6 +9,8 @@
 - Real GHW email domain: `grueninghealthwealth.com`
   (the `grueninghw.com` references in older docs/code are aliases —
   production accounts use the longer domain.)
+- Multi-tenant: GHW agency_id = `ghw_001`. Every lead / SOA / appointment /
+  audit row carries this stamp; Phase 1+ scheduler queries filter on it.
 
 ## Team Accounts
 | Name                    | Email                            | Role   |
@@ -20,6 +22,7 @@
 | Matt Monacelli (legacy) | admin@grueninghw.com             | admin  |
 
 ## What's Built
+### Core (single-tenant baseline)
 - Auth: magic-link sign-in (primary) + email/password (Option B) + TOTP MFA
   (opt-in per agent, see "MFA (TOTP)" below), invite-only register, lockout,
   profile PATCH, idle-timeout JWT (idle_exp + /auth/refresh)
@@ -47,7 +50,106 @@
 - Security: CORS locked, /docs disabled, headers (CORP cross-origin),
   rate limits, CSRF cookies, PostHog locked down, MBI Fernet-encrypted,
   password history (last 5), per-IP booking blocks
-- **Tests: 285 passing** (mongomock-motor + TestClient)
+
+### CNA + AI Client Intelligence (May 2026)
+- CNA tab on client profile — COACHG-script-aligned structured assessment
+  form, auto-saves on blur, pre-fills from existing lead data
+- AI Client Intelligence panel on Overview tab — Claude-generated
+  urgency score (0-100), recommendation (Supplement vs Advantage +
+  Umbrella tier), exposures, talking points, cross-sell, objection
+  handles, formal-recommendation script with copy-to-clipboard
+- Lead scoring + Today-page priority widget — heuristic urgency model
+  stamps `ai_score` on every lead via the daily-brief tick; sortable
+  AI column on Clients list
+- Daily Brief — APScheduler cron at 12:00 UTC, emails each agent their
+  top-10 priority calls; widget on /today reads `agent_daily_briefs`
+- 21 tests in `test_cna.py`
+
+### Multi-Tenant SaaS — Phases 1-6 (all on staging, not yet merged to main)
+**Phase 1 — Foundation**
+- `tiers.py` — FEATURE_REGISTRY (29 keys), TIER_DEFAULTS, OVERAGE_RATES
+- `agency_models.py` — Pydantic shapes for Agency, UsageEvent,
+  AgencyUsageSummary, Invitation
+- `seed.py` — GHW agency seeded at `agency_id="ghw_001"` with every
+  feature ON + `super_admin=True`; `backfill_agency_id_on_users` for
+  legacy rows
+- New deps: `get_agency`, `require_super_admin`, `require_feature`,
+  `require_billing_active`, `check_seat_available`
+- JWT now carries `agency_id`, `agency_tier`, `super_admin`,
+  `features` (sorted list of enabled keys)
+- 28 tests in `test_phase1_foundation.py`
+
+**Phase 2 — Metering**
+- `metering.py` — `track_ai_usage` / `track_email_sent` /
+  `track_storage_write` / `track_app_intake` (fire-and-forget via
+  `asyncio.create_task`); `check_ai_limit` / `check_email_limit` /
+  `check_app_intake_limit` (live reads, super-admin bypass)
+- Monthly rollup at 06:00 UTC on day 1 → `agency_usage_summary`
+- Wired into: cna_router AI call, application_router /extract,
+  security_intelligence Claude triage, ghl_import_router tag mapping,
+  resend_client.send_email (accepts `agency_id` kwarg)
+- 15 tests in `test_phase2_metering.py`
+
+**Phase 3 — Stripe billing**
+- `stripe_service.py` — webhook signature verification, idempotent
+  event dispatch, state machine (trialing → active → past_due →
+  suspended → active)
+- `billing_router.py` — `/api/billing/webhook` (public, HMAC),
+  `/create-checkout`, `/portal`, `/subscription`, `/upcoming`
+- Grace-period sweep — daily cron at 07:00 UTC: past_due > 7 days →
+  suspended, day-3 warning email
+- 5 templated billing emails (failed / grace warning / received /
+  suspended / trial ending)
+- **Mock mode when `STRIPE_SECRET_KEY` is unset** — checkout +
+  portal endpoints 503 with a clear message; webhook still 400s on
+  bad signatures
+- Feature gates on AI endpoints: `cna` (form), `ai_client_intelligence`
+  (AI on top), `ai_application_intake` (/extract), `ghl_import`
+  (/map-tags). GHW super_admin bypasses all gates.
+- 19 tests in `test_phase3_billing.py`
+
+**Phase 4 — Per-agency email domains**
+- `resend_domains.py` — never-raise Resend API wrapper
+  (add / get / verify / delete)
+- `email_domain_router.py` — owner-only setup + DNS records returned
+  to the agency for their registrar; /verify polls Resend
+- `resend_client.send_email` — `_resolve_from_address(agency_id)`
+  picks the agency's `from_name <from_email>` when verified,
+  falls back to GHW platform default otherwise
+- 23 tests in `test_phase4_email_domains.py`
+
+**Phase 5 — Super Admin Panel**
+- `super_admin_router.py` — 7 endpoints under `/api/super-admin/*`:
+  agencies list / get / patch + agency usage, users list / patch,
+  system overview. Every endpoint `require_super_admin()` gated,
+  every PATCH audit-logged. Self-modification refused.
+- `SuperAdmin.jsx` — 4 tabs (Agencies / Users / Usage / System).
+  Server-authoritative access gate via `/super-admin/system` ping
+  on mount; non-super-admins bounced to /today. Tier patch supports
+  `apply_tier_defaults=true` to rebuild features+limits from
+  TIER_DEFAULTS.
+- 31 tests in `test_phase5_super_admin.py`
+
+**Phase 6 — Owner Settings**
+- `agency_settings_router.py` — 5 endpoints under `/api/agency/*`:
+  GET/PATCH /settings (name edit, owner/admin only — tier/billing
+  are super-admin-only), GET /usage (live aggregate w/ progress-bar
+  limits), GET/PATCH /users (seat list + deactivate teammates,
+  owner/admin only, cross-agency surfaces as 404 not 403)
+- `OwnerSettings.jsx` at `/settings/agency` — 4 tabs (Agency / Seats /
+  Usage / Billing). Reuses existing `InviteAgentModal` + Phase 3
+  `/api/billing/portal`. Stripe mock-mode banner on Billing tab.
+- 19 tests in `test_phase6_owner_settings.py`
+
+### Tier structure
+| Tier        | Price       | Seats        | Notes                                |
+|-------------|-------------|--------------|--------------------------------------|
+| Beta        | $297 / mo   | 3            | Every feature ON for early-access    |
+| Foundation  | $297 / mo   | 5            | CRM + leads + SOA + audit log        |
+| Growth      | $497 / mo   | 15           | + booking, app intake AI, GHL import |
+| Domination  | $997 / mo   | Unlimited    | + CNA, AI client intelligence, AEP   |
+
+- **Tests: 441 passing** (mongomock-motor + TestClient).
 
 ## Known Drift to Fix
 - agent_name is empty for existing users — needs backfill migration
@@ -146,30 +248,45 @@ ANTHROPIC_API_KEY, RESEND_API_KEY, PHI_FIELD_KEY
   (1000 lookups/day). Enriches the AI security loop's IP intel with
   crowdsourced abuse reports. Without it, ipapi.co only.
 
+**Added during Phase 3 multi-tenant billing:**
+- `STRIPE_SECRET_KEY` — Stripe API secret. Test mode key
+  (`sk_test_...`) on staging, live key (`sk_live_...`) on prod.
+  Never logged, never echoed in responses. When unset, the user-
+  facing billing endpoints 503 with a clear message; the webhook
+  endpoint still 400s on bad signatures.
+- `STRIPE_WEBHOOK_SECRET` — `whsec_...` value from the Stripe
+  webhook endpoint config. Required to verify inbound webhook
+  signatures. Without it the webhook hard-refuses (400).
+- `STRIPE_PRICE_BETA` / `STRIPE_PRICE_FOUNDATION` /
+  `STRIPE_PRICE_GROWTH` / `STRIPE_PRICE_DOMINATION` — Stripe price
+  IDs (`price_...`) for each tier's monthly subscription. Used by
+  `/api/billing/create-checkout` to start a Checkout Session.
+- `SUPER_ADMIN_EMAILS` — comma-separated list of platform admin
+  emails (Tim/Matt/Chase). These users bypass every feature flag
+  and billing gate even if their agency row doesn't carry
+  `super_admin=True`.
+
 ## Env Vars Required (Vercel)
 REACT_APP_BACKEND_URL
 
-## Commission Module — Phase 2 (Next Build)
-New collections to add alongside existing ComTrack system:
-- production_records (Plecto tracker data — seed from CSV)
-- carrier_rates (commission schedule — hardcoded seed)
-New endpoints to add:
-- GET /api/commission/audit
-- GET /api/commission/audit/summary
-- POST /api/commission/audit/mark-resolved/{record_id}
-- POST /api/commission/chat (Anthropic AI)
-- GET /api/leaderboard (update with real data)
-Import scripts:
-- scripts/import_production.py
-- scripts/import_rates.py
-
 ## Rules
-- Never break existing 18 passing tests
-- All new endpoints: auth required, rate limited, audit logged
-- Agent never sees another agent's data (IDOR)
-- ANTHROPIC_API_KEY in Render env vars only — never in code
-- Python 3.11.9 compatible syntax only (no match statements, no 3.12+ features)
-- One commit per task
+- Never break the test suite — current floor is **441 passing**.
+- All new endpoints: auth required, rate limited, audit logged.
+- Agent never sees another agent's data (IDOR).
+- ANTHROPIC_API_KEY / STRIPE_SECRET_KEY / RESEND_API_KEY in Render
+  env vars only — never in code, never echoed in responses.
+- Python 3.11.9 compatible syntax only (no match statements, no
+  3.12+ features).
+- One commit per task.
+- **Update this file in every phase commit with current test count
+  and phase status** — the doc drift over Phases 1-6 cost us cycles
+  on the next-session ramp-up; do not repeat.
+- Multi-tenant scoping: every router that reads leads / appointments /
+  audit_logs / SOA records MUST filter on `agency_id`. Pull the
+  agency_id from `get_agency()` (request context) or `get_agency_id()`
+  (static GHW fallback for schedulers).
+- Feature flag enforcement is opt-in per endpoint via
+  `Depends(require_feature("key"))`. Super admins always bypass.
 
 ## Agent Isolation Patterns
 
@@ -245,6 +362,33 @@ work, assigning them to the first admin user. Safe to re-run
 (idempotent on records that already have `agent_id`). Already
 executed in prod — **6,666 records stamped**.
 
+## Multi-Tenant Scoping Patterns (Phase 1+)
+
+### `get_agency()` — `deps.py`
+FastAPI dependency that resolves the caller's agency record. Cached
+on `request.state.agency`. Falls back to GHW (`ghw_001`) when the
+caller has no `agency_id` stamp (legacy auth path).
+
+### `get_agency_id()` — `deps.py`
+Static helper returning the env-driven default (`ghw_001`). Used by
+schedulers and batch jobs that have no request context. Every
+scheduler query in `automations.py` filters on this.
+
+### `require_feature(key)` — `deps.py`
+FastAPI dep factory. 403 unless `agency.features[key]` is True.
+Super admins bypass. Returns the agency dict on success.
+
+### `require_super_admin()` — `deps.py`
+403 unless `agency.super_admin=True` or user email is in
+`SUPER_ADMIN_EMAILS` env.
+
+### `require_billing_active()` — `deps.py`
+402 (Payment Required) when `billing_status in {suspended,
+cancelled}`. Trialing/active/past_due still allow writes.
+Super admins bypass.
+
+### `check_seat_available()` — `deps.py`
+402 when `seats_active >= seats_max`. `seats_max=-1` means unlimited.
 
 ## Built May 2026
 
@@ -330,6 +474,8 @@ Plus event-driven: `run_new_lead_notification` (called from
 leads_router create), `run_soa_signed_notification`. All flag-first
 idempotent — same record cannot fire twice.
 
+All scheduler queries now filter on `agency_id` (Phase 1+ scoping).
+
 ### Tags system
 `Lead.tags: List[str]` on every lead. Agency tag library in
 `db.tags` (per-agency, seeded with 21 Medicare tags on first boot).
@@ -388,6 +534,9 @@ history. All admin/owner-only. Token never returned in any response.
 Never raises — `ANTHROPIC_API_KEY` unset (test env) returns safe
 defaults but still persists the event row.
 
+Security events bill to the GHW super_admin agency (platform cost,
+not tenant-attributable).
+
 Frontend: `AISecurityPanel` lives inside the Ops Console below the
 compliance section. Kill-switch toggle, last-analysis card with
 RUN NOW button, expandable events feed, banned-IPs table with Unban
@@ -416,7 +565,7 @@ their own Private Integration Token in Settings → GoHighLevel.
   missing-email %, missing-DOB %, duplicate estimate.
 - `POST /map-tags` — Claude AI mapping (`claude-sonnet-4-6`) against
   23 portal tags. Returns full keyset (null for unmatched). Safe
-  fallback when no API key.
+  fallback when no API key. Gated on `ghl_import` feature flag.
 - `POST /start` — creates `import_jobs` row + fires
   `BackgroundTasks`. 409 if a job already running for this agent.
 - `GET /jobs` — last 10 per agent.
@@ -463,17 +612,26 @@ was broken. Changed to `cross-origin`.
 - `pymongo==4.5.0` → **`4.6.3`**
 - `PyJWT>=2.10.1` → **`PyJWT==2.12.0`** (explicit pin)
 - `cryptography>=42.0.8` → **`cryptography==46.0.6`** (explicit pin)
-- All 285 tests still pass on the new stack.
+- `stripe>=15.0.0,<16` (added Phase 3)
+- All 441 tests pass on the new stack.
 
 
 ## Pending
 
-### Blocking merge to main
-- [ ] **Test GHL import with a real Private Integration Token**
-      — staging deploy, paste token in Settings, run a full import
-      against a real GHL sub-account. Look at job completion email,
-      Clients list, dedup behavior. This is the last gate before
-      merging staging → main.
+### Blocking merge of multi-tenant work (Phases 1-6) to main
+- [ ] **End-to-end Stripe smoke test on staging** — checkout
+      session against a real Stripe test customer, walk through
+      payment-failed → grace → suspended → recover. Needs
+      `STRIPE_SECRET_KEY` + price IDs set on staging Render.
+- [ ] **Provision a real second agency on staging** — verify cross-
+      tenant isolation end-to-end (lead create, CNA, dashboards)
+      against a non-GHW tenant.
+- [ ] **Resend domain registration smoke test** — register a real
+      domain via the Settings → Email Domain flow, verify DNS,
+      send a per-agency outbound to confirm FROM resolution.
+- [ ] **GHL import with a real Private Integration Token** —
+      pre-existing pending item; still blocking the original
+      single-tenant merge too.
 
 ### Infra (Tim / Matt to action)
 - [ ] **AWS env vars on Render** for the AI Application Intake
@@ -488,6 +646,12 @@ was broken. Changed to `cross-origin`.
       after setup. Currently shown as "Migration Pending" on Ops
       Console.
 - [ ] **Sentry BAA** — Matt to approve billing.
+- [ ] **Set Phase 3 Stripe env vars on Render** — `STRIPE_SECRET_KEY`,
+      `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_*` (4 tiers). Until
+      then billing endpoints stay in mock mode (503).
+- [ ] **Set `SUPER_ADMIN_EMAILS` env var on Render** —
+      Tim/Matt/Chase emails comma-separated, so they bypass feature
+      gates even when their agency row doesn't carry super_admin.
 
 ### Follow-up work (non-blocking)
 - GHL import resume-on-restart (currently dies if Render restarts
@@ -497,3 +661,13 @@ was broken. Changed to `cross-origin`.
 - Two-tier account lockout (currently 5-in-15-min → 15-min lock;
   spec also wanted a 10-failure → 24-hour tier).
 - `agent_name` legacy-row backfill (still listed under "Known Drift").
+- Per-tenant security_intelligence — currently bills to GHW; split
+  by tenant once we surface per-agency security findings.
+- Thread `agency_id` through remaining `send_email` callsites
+  (Phase 2 wired the daily-brief; birthday-window / enrolled-welcome /
+  stale-lead / post-appointment / new-lead still untenanted).
+- Invite seat-cap enforcement on backend — frontend already disables
+  the button at cap; backend `check_seat_available()` isn't yet
+  wired on `/auth/invite`.
+- Pending-invite roster on Owner Settings → Seats tab — currently
+  shows accepted users only.

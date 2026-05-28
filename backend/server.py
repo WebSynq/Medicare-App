@@ -63,11 +63,20 @@ from security_router import router as security_router  # noqa: E402
 from ghl_import_router import router as ghl_import_router  # noqa: E402
 from cna_router import router as cna_router  # noqa: E402
 from brief_router import router as brief_router  # noqa: E402
+from billing_router import router as billing_router  # noqa: E402
+from email_domain_router import router as email_domain_router  # noqa: E402
+from super_admin_router import router as super_admin_router  # noqa: E402
+from agency_settings_router import router as agency_settings_router  # noqa: E402
 import email_templates  # noqa: E402,F401 — ensure clean import
 from automations import start_automation_scheduler  # noqa: E402
 from feedback_router import router as feedback_router  # noqa: E402
 from calendar_router import router as calendar_router, ics_router as calendar_ics_router  # noqa: E402
-from seed import seed_admin, backfill_agent_identity  # noqa: E402
+from seed import (  # noqa: E402
+    seed_admin,
+    backfill_agent_identity,
+    seed_ghw_agency,
+    backfill_agency_id_on_users,
+)
 
 
 logging.basicConfig(level=logging.INFO,
@@ -197,6 +206,10 @@ app.include_router(security_router, prefix="/api")
 app.include_router(ghl_import_router, prefix="/api")
 app.include_router(cna_router, prefix="/api")
 app.include_router(brief_router, prefix="/api")
+app.include_router(billing_router, prefix="/api")
+app.include_router(email_domain_router, prefix="/api")
+app.include_router(super_admin_router, prefix="/api")
+app.include_router(agency_settings_router, prefix="/api")
 # feedback_router declares its own /api/feedback prefix — no prefix here.
 app.include_router(feedback_router)
 # calendar_router declares /api/calendar; ics_router declares /api/appointments
@@ -362,6 +375,11 @@ _CSRF_EXEMPT_PATHS = {
     # browser. Authenticity is enforced via HMAC-SHA256 signature against
     # GHL_WEBHOOK_SECRET inside the route, so CSRF doesn't apply.
     "/api/ghl/webhook",
+    # Stripe billing webhook — server-to-server POST from stripe.com.
+    # Signature verified by stripe.Webhook.construct_event against
+    # STRIPE_WEBHOOK_SECRET inside the route. No browser session
+    # involved, so a CSRF cookie is impossible.
+    "/api/billing/webhook",
     # GHL manual sync — admin-triggered POST that pulls contacts via the
     # GHL API. JWT-authenticated via require_roles("admin"); the Settings
     # button uses the same axios instance that *would* attach CSRF, but
@@ -880,6 +898,73 @@ _PROD_INDEXES = [
     # AI scoring index on leads — sorted descending so the Clients list
     # can paginate top scores without an in-memory sort.
     ("leads", [("agent_id", 1), ("ai_score", -1)], {"background": True}),
+
+    # ── Multi-tenant foundation (Phase 1) ─────────────────────────────
+    # agencies — one row per tenant. agency_id is the canonical key
+    # used everywhere downstream; slug is the URL-safe handle. Both
+    # unique. owner_email indexed for the lookup performed on
+    # password-reset / invite flows.
+    ("agencies", "agency_id", {"background": True, "unique": True}),
+    ("agencies", "slug", {"background": True, "unique": True}),
+    ("agencies", "owner_email", {"background": True}),
+    # tier + billing_status indexed together so the super admin panel's
+    # "All agencies, filter by tier" view stays index-served as we
+    # onboard more tenants.
+    ("agencies", [("tier", 1), ("billing_status", 1)],
+     {"background": True}),
+
+    # usage_events — append-only metering. High write volume. event_id
+    # unique enforces the idempotency-key contract (same call retried
+    # twice = one row). The compound (agency_id, billing_period) index
+    # is what the monthly rollup aggregator pages over.
+    ("usage_events", "event_id", {"background": True, "unique": True}),
+    ("usage_events",
+     [("agency_id", 1), ("billing_period", 1)],
+     {"background": True}),
+    ("usage_events",
+     [("agency_id", 1), ("timestamp", -1)],
+     {"background": True}),
+
+    # agency_usage_summary — one row per (agency, billing_period).
+    # Unique compound prevents the rollup job from racing itself on
+    # repeated invocations.
+    ("agency_usage_summary",
+     [("agency_id", 1), ("billing_period", 1)],
+     {"background": True, "unique": True}),
+
+    # invitations — token_hash is the redemption key. TTL on
+    # expires_at evicts unredeemed invites a day after they expire so
+    # the collection stays bounded.
+    ("invitations", "token_hash", {"background": True, "unique": True}),
+    ("invitations", "agency_id", {"background": True}),
+    ("invitations", "invited_email", {"background": True}),
+
+    # users.agency_id — scoping key for every per-tenant query the
+    # routers will pick up in Phase 2+. Indexed now so the lookup is
+    # ready before the first cross-tenant request lands.
+    ("users", "agency_id", {"background": True}),
+
+    # ── Multi-tenant billing (Phase 3) ────────────────────────────────
+    # stripe_events — webhook idempotency log. Unique on event_id so
+    # Stripe's at-least-once delivery collapses to one handler call
+    # via record_event_processed's insert-or-fail check.
+    ("stripe_events", "event_id", {"background": True, "unique": True}),
+    ("stripe_events", "processed_at", {"background": True}),
+
+    # agency lookups by Stripe ids — webhook handlers need fast
+    # find_one() to resolve event.customer / event.subscription back
+    # to the agency row. Sparse because most agencies start without
+    # a stripe_customer_id.
+    ("agencies", "stripe_customer_id",
+     {"background": True, "sparse": True}),
+    ("agencies", "stripe_subscription_id",
+     {"background": True, "sparse": True}),
+
+    # Grace-period sweep targets — billing_status + grace_period_ends_at
+    # cover the past_due agencies the sweep needs to process. Sparse
+    # on grace_period_ends_at because healthy agencies don't have one.
+    ("agencies", "grace_period_ends_at",
+     {"background": True, "sparse": True}),
 ]
 
 
@@ -911,6 +996,25 @@ async def on_startup():
     db = get_db()
     await db.users.create_index("email", unique=True)
     await db.leads.create_index("created_at")
+    # ── Production-readiness compound indexes ─────────────────────────
+    # Cover the per-tenant query shapes that every Phase-1 scope filter
+    # produces: (agency_id, agent_id) for leads-by-agent lookups,
+    # (agency_id, status) for funnel + dashboard rollups,
+    # (agency_id, agent_id) + (agency_id, appointment_date) for the
+    # appointment scheduler scans, and (agency_id, timestamp desc) for
+    # the audit-log export endpoint's newest-first pagination.
+    # Idempotent — re-declaring an existing index is a no-op.
+    await db.leads.create_index([("agency_id", 1), ("agent_id", 1)])
+    await db.leads.create_index([("agency_id", 1), ("status", 1)])
+    await db.appointments.create_index(
+        [("agency_id", 1), ("agent_id", 1)],
+    )
+    await db.appointments.create_index(
+        [("agency_id", 1), ("appointment_date", 1)],
+    )
+    await db.audit_logs.create_index(
+        [("agency_id", 1), ("timestamp", -1)],
+    )
     # Tag library — unique per (agency_id, name) so the seeder and the
     # custom-tag route can both rely on the index to dedupe rather than
     # racing each other on a check-then-insert.
@@ -1011,6 +1115,16 @@ async def on_startup():
     # workspace-isolation scoping. Idempotent — no-op once everyone is stamped.
     await backfill_agent_identity(db)
 
+    # Multi-tenant foundation (Phase 1). Creates the GHW agency row +
+    # stamps agency_id="ghw_001" on every existing user. Both idempotent;
+    # safe to run on every boot. Wrapped so a Mongo hiccup during the
+    # tenant seed can't block app startup.
+    try:
+        await seed_ghw_agency(db)
+        await backfill_agency_id_on_users(db)
+    except Exception as e:
+        logger.warning("multi-tenant seed failed: %s", e)
+
     # Seed the pre-built Medicare tag library on first boot of an
     # agency. Idempotent — returns 0 once the library is populated.
     try:
@@ -1063,6 +1177,28 @@ async def on_startup():
     # follow-ups every 15 minutes. Reads + writes leads + appointments
     # (both PHI client) and writes audit rows + automation flags.
     app.state.automation_scheduler = start_automation_scheduler(get_phi_db)
+    # Multi-tenant metering rollup — aggregates usage_events into
+    # agency_usage_summary on the 1st of each month at 06:00 UTC.
+    # Lazy import so a metering-module problem can't block boot.
+    try:
+        from metering import start_rollup_scheduler
+        app.state.metering_rollup_scheduler = start_rollup_scheduler(get_db)
+    except Exception as e:
+        logger.warning("metering: rollup scheduler failed to start: %s", e)
+        app.state.metering_rollup_scheduler = None
+
+    # Multi-tenant billing grace-period sweep — flips past_due
+    # agencies to suspended after their 7-day grace expires. Daily
+    # CronTrigger at 07:00 UTC. Lazy import so a stripe-module
+    # problem can't block boot.
+    try:
+        from stripe_service import start_grace_period_scheduler
+        app.state.stripe_grace_scheduler = (
+            start_grace_period_scheduler(get_db)
+        )
+    except Exception as e:
+        logger.warning("stripe: grace scheduler failed to start: %s", e)
+        app.state.stripe_grace_scheduler = None
 
 
 @app.on_event("shutdown")

@@ -30,6 +30,8 @@ import ClientProfile from "@/pages/ClientProfile";
 import DataImport from "@/pages/DataImport";
 import AgentManagement from "@/pages/AgentManagement";
 import AgencyAdmin from "@/pages/AgencyAdmin";
+import SuperAdmin from "@/pages/SuperAdmin";
+import OwnerSettings from "@/pages/OwnerSettings";
 import BirthdayRule from "@/pages/BirthdayRule";
 import RenewalCalendar from "@/pages/RenewalCalendar";
 import Settings from "@/pages/Settings";
@@ -314,6 +316,33 @@ export default function App() {
           element={
             <Protected roles={["admin", "owner"]}>
               <OpsConsole />
+            </Protected>
+          }
+        />
+        {/* Super Admin console — platform-wide tenant management.
+            Access gate is enforced by the page itself via a server
+            ping (the only authority on super_admin status is the
+            backend agency record + SUPER_ADMIN_EMAILS env). Page
+            redirects to /today on 403. We allow any logged-in user
+            past the Protected guard so the page can take ownership
+            of the access check. */}
+        <Route
+          path="/super-admin"
+          element={
+            <Protected>
+              <SuperAdmin />
+            </Protected>
+          }
+        />
+        {/* Owner Settings — agency self-service (Phase 6). Backend
+            gates write actions to owner/admin; the page itself
+            additionally bounces non-owner roles before render to
+            keep the UI honest. */}
+        <Route
+          path="/settings/agency"
+          element={
+            <Protected roles={["admin", "owner"]}>
+              <OwnerSettings />
             </Protected>
           }
         />
