@@ -613,6 +613,216 @@ async def check_and_record_login_attempt(
     return {"locked": False, "unlock_at": None, "attempts": recent_count}
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# MULTI-TENANT FOUNDATION (Phase 1)
+# ═══════════════════════════════════════════════════════════════════════
+# Five new dependencies layered on top of the existing auth chain:
+#
+#   require_super_admin   → 403 unless caller is a platform admin
+#   get_agency            → fetch agency row (cached on request.state)
+#   require_feature(key)  → 403 unless agency.features[key] is True
+#   require_billing_active → 402 unless billing_status in {trialing, active}
+#   check_seat_available  → 402 unless agency.seats_active < seats_max
+#
+# Caching:
+#   The agency row is looked up at most once per request — cached on
+#   request.state.agency. Repeat calls (e.g. require_feature followed
+#   by require_billing_active) hit the cache.
+#
+# super_admin bypass:
+#   Users on the GHW (super_admin=True) agency, OR users whose email
+#   is listed in SUPER_ADMIN_EMAILS env var, bypass every feature flag
+#   and billing gate. Seat checks STILL apply to keep the seat counter
+#   honest even for platform owners.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _super_admin_emails() -> set:
+    raw = (os.environ.get("SUPER_ADMIN_EMAILS") or "").strip()
+    if not raw:
+        return set()
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+async def get_agency(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+) -> dict:
+    """Resolve the caller's agency record.
+
+    Lookup order:
+      1. request.state.agency (already-fetched on this request)
+      2. db.agencies by current_user.agency_id
+      3. db.agencies by agency_id="ghw_001" (legacy fallback —
+         pre-multi-tenant users with no agency_id stamp)
+      4. 500 if even ghw_001 is missing (means migration never ran).
+
+    Returns the raw dict from Mongo (with _id removed). Routers that
+    need the typed shape can hydrate with ``Agency.model_validate``.
+    """
+    cached = getattr(getattr(request, "state", None), "agency", None)
+    if cached:
+        return cached
+
+    aid = current_user.get("agency_id") or get_agency_id()
+    agency = await db.agencies.find_one({"agency_id": aid}, {"_id": 0})
+    if not agency:
+        # Legacy fallback: every pre-multi-tenant user belongs to GHW.
+        # If even the GHW row is missing, the seed never ran — fail
+        # loud so the operator notices, but with a 500 not a 401 so
+        # we don't blame the user.
+        if aid != get_agency_id():
+            agency = await db.agencies.find_one(
+                {"agency_id": get_agency_id()}, {"_id": 0},
+            )
+        if not agency:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Agency record not found. The multi-tenant seed "
+                    "may not have run. Contact your administrator."
+                ),
+            )
+
+    if hasattr(request, "state"):
+        request.state.agency = agency
+    return agency
+
+
+def _is_super_admin(user: dict, agency: dict) -> bool:
+    """True when this caller bypasses tenant gates."""
+    if bool(agency.get("super_admin")):
+        return True
+    email = (user.get("email") or "").strip().lower()
+    return bool(email) and email in _super_admin_emails()
+
+
+def require_super_admin():
+    """FastAPI dependency factory — 403 unless caller is a platform
+    super admin (GHW agency OR listed in SUPER_ADMIN_EMAILS).
+
+    Returns the agency dict on success so downstream code can read
+    tier/feature info without a second lookup.
+    """
+    async def _checker(
+        request: Request,
+        current_user: dict = Depends(get_current_user),
+        agency: dict = Depends(get_agency),
+    ) -> dict:
+        if not _is_super_admin(current_user, agency):
+            raise HTTPException(
+                status_code=403,
+                detail="Super admin access required.",
+            )
+        return agency
+    return _checker
+
+
+def require_feature(feature_name: str):
+    """FastAPI dependency factory — 403 unless the caller's agency has
+    the named feature enabled.
+
+    Super admins bypass. The error response includes ``feature`` and
+    ``upgrade_url`` so the SPA can render a contextual upsell prompt
+    instead of a generic "Forbidden" toast.
+    """
+    async def _checker(
+        request: Request,
+        current_user: dict = Depends(get_current_user),
+        agency: dict = Depends(get_agency),
+    ) -> dict:
+        if _is_super_admin(current_user, agency):
+            return agency
+        features = agency.get("features") or {}
+        if not features.get(feature_name):
+            front = get_frontend_url()
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "message": (
+                        f"Feature '{feature_name}' is not enabled for "
+                        "your agency."
+                    ),
+                    "feature": feature_name,
+                    "upgrade_url": f"{front}/settings/billing",
+                },
+            )
+        return agency
+    return _checker
+
+
+def require_billing_active():
+    """FastAPI dependency factory — 402 (Payment Required) when the
+    agency's billing_status is suspended/cancelled. Trialing + active
+    + past_due (in grace period) all still allow writes.
+
+    Super admins bypass. Read endpoints should not depend on this —
+    we never block reads on billing state per the "graceful
+    degradation" principle.
+    """
+    async def _checker(
+        request: Request,
+        current_user: dict = Depends(get_current_user),
+        agency: dict = Depends(get_agency),
+    ) -> dict:
+        if _is_super_admin(current_user, agency):
+            return agency
+        status = (agency.get("billing_status") or "").lower()
+        if status in {"suspended", "cancelled"}:
+            front = get_frontend_url()
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "message": (
+                        "Your subscription is "
+                        f"{status}. Restore billing to continue."
+                    ),
+                    "billing_status": status,
+                    "billing_url": f"{front}/settings/billing",
+                },
+            )
+        return agency
+    return _checker
+
+
+def check_seat_available():
+    """FastAPI dependency factory — 402 when the agency is at its seat
+    cap. Used on the invite-agent endpoint. seats_max=-1 means
+    unlimited (Domination tier).
+
+    seats_active is the authoritative counter; rolled forward by the
+    invite + suspend endpoints. The check looks at seats_max (the
+    hard ceiling, which may have been raised via add-on purchase),
+    NOT seats_included (the plan default).
+    """
+    async def _checker(
+        request: Request,
+        current_user: dict = Depends(get_current_user),
+        agency: dict = Depends(get_agency),
+    ) -> dict:
+        seats_max = int(agency.get("seats_max", 0) or 0)
+        if seats_max < 0:
+            return agency  # unlimited
+        seats_active = int(agency.get("seats_active", 0) or 0)
+        if seats_active >= seats_max:
+            front = get_frontend_url()
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "message": (
+                        "Seat limit reached. Upgrade your plan or add "
+                        "seats to invite more agents."
+                    ),
+                    "seats_active": seats_active,
+                    "seats_max": seats_max,
+                    "upgrade_url": f"{front}/settings/billing",
+                },
+            )
+        return agency
+    return _checker
+
+
 def get_frontend_url() -> str:
     """Single source of truth for the frontend URL.
 

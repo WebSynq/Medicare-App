@@ -148,10 +148,20 @@ def _user_public(user: dict) -> UserPublic:
     )
 
 
-def _jwt_claims(user: dict) -> dict:
-    """Build the JWT payload. Agent identity travels in the token for fast
-    downstream lookups, but server code MUST still resolve it from the DB row
-    before trusting it for any high-impact action."""
+async def _jwt_claims(user: dict, db=None) -> dict:
+    """Build the JWT payload.
+
+    Agent identity travels in the token for fast downstream lookups,
+    but server code MUST still resolve it from the DB row before
+    trusting it for any high-impact action.
+
+    Multi-tenant (Phase 1): when ``db`` is provided we also stamp the
+    agency context (agency_id, tier, super_admin, list of enabled
+    feature keys) so the SPA can render the navigation without an
+    extra round-trip on every page load. The token is still NOT the
+    authority — backend deps re-read the agency on every request that
+    cares about features or billing.
+    """
     claims = {
         "sub": user["id"],
         "email": user["email"],
@@ -166,6 +176,35 @@ def _jwt_claims(user: dict) -> dict:
         claims["agent_name"] = user["agent_name"]
     if user.get("agent_npn"):
         claims["agent_npn"] = user["agent_npn"]
+
+    # Multi-tenant claims. Best-effort: an agency lookup failure here
+    # must not block login — the user gets a JWT without agency context
+    # and the backend re-resolves on the next request via deps.get_agency.
+    if db is not None:
+        try:
+            from deps import get_agency_id as _default_agency_id
+            agency_id = user.get("agency_id") or _default_agency_id()
+            claims["agency_id"] = agency_id
+            agency = await db.agencies.find_one(
+                {"agency_id": agency_id}, {"_id": 0},
+            )
+            if agency:
+                claims["agency_tier"] = agency.get("tier")
+                claims["super_admin"] = bool(agency.get("super_admin"))
+                # Compact list of enabled feature keys — much smaller
+                # than the full dict, and the SPA only needs the truthy
+                # set anyway.
+                feats = agency.get("features") or {}
+                claims["features"] = sorted(
+                    k for k, v in feats.items() if v
+                )
+        except Exception:
+            # Logged at debug level — login should never fail because
+            # of a JWT enrichment hiccup.
+            logger.debug(
+                "jwt_claims: agency enrichment skipped for user_id=%s",
+                user.get("id"),
+            )
     return claims
 
 
@@ -423,7 +462,7 @@ async def login(payload: LoginRequest, request: Request, response: Response,
             "expires_at": expires_at.isoformat(),
         }
 
-    token = create_access_token(_jwt_claims(user))
+    token = create_access_token(await _jwt_claims(user, db=db))
     await check_and_record_login_attempt(db, email, success=True)
     await write_audit(db, "login_success", actor_email=user["email"],
                       actor_id=user["id"], request=request,
@@ -604,7 +643,7 @@ async def verify_magic_link(
     # proof of inbox control, equivalent to a fresh password reset.
     await check_and_record_login_attempt(db, user["email"], success=True)
 
-    token = create_access_token(_jwt_claims(user))
+    token = create_access_token(await _jwt_claims(user, db=db))
     _set_session_cookies(response, token)
 
     await db.users.update_one(
@@ -1156,7 +1195,7 @@ async def _issue_session_post_mfa(
         {"id": user["id"]}, {"$set": {"mfa_verified_at": now_iso}},
     )
     fresh = await db.users.find_one({"id": user["id"]}, {"_id": 0}) or user
-    token = create_access_token(_jwt_claims(fresh))
+    token = create_access_token(await _jwt_claims(fresh, db=db))
     _set_session_cookies(response, token)
     await write_audit(
         db, "mfa_challenge_success",
@@ -1319,7 +1358,7 @@ async def refresh_session(
     fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
     if not fresh:
         raise HTTPException(status_code=401, detail="Session expired")
-    token = create_access_token(_jwt_claims(fresh))
+    token = create_access_token(await _jwt_claims(fresh, db=db))
     _set_session_cookies(response, token)
     await write_audit(
         db, "session_refresh",

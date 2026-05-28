@@ -67,7 +67,12 @@ import email_templates  # noqa: E402,F401 — ensure clean import
 from automations import start_automation_scheduler  # noqa: E402
 from feedback_router import router as feedback_router  # noqa: E402
 from calendar_router import router as calendar_router, ics_router as calendar_ics_router  # noqa: E402
-from seed import seed_admin, backfill_agent_identity  # noqa: E402
+from seed import (  # noqa: E402
+    seed_admin,
+    backfill_agent_identity,
+    seed_ghw_agency,
+    backfill_agency_id_on_users,
+)
 
 
 logging.basicConfig(level=logging.INFO,
@@ -880,6 +885,51 @@ _PROD_INDEXES = [
     # AI scoring index on leads — sorted descending so the Clients list
     # can paginate top scores without an in-memory sort.
     ("leads", [("agent_id", 1), ("ai_score", -1)], {"background": True}),
+
+    # ── Multi-tenant foundation (Phase 1) ─────────────────────────────
+    # agencies — one row per tenant. agency_id is the canonical key
+    # used everywhere downstream; slug is the URL-safe handle. Both
+    # unique. owner_email indexed for the lookup performed on
+    # password-reset / invite flows.
+    ("agencies", "agency_id", {"background": True, "unique": True}),
+    ("agencies", "slug", {"background": True, "unique": True}),
+    ("agencies", "owner_email", {"background": True}),
+    # tier + billing_status indexed together so the super admin panel's
+    # "All agencies, filter by tier" view stays index-served as we
+    # onboard more tenants.
+    ("agencies", [("tier", 1), ("billing_status", 1)],
+     {"background": True}),
+
+    # usage_events — append-only metering. High write volume. event_id
+    # unique enforces the idempotency-key contract (same call retried
+    # twice = one row). The compound (agency_id, billing_period) index
+    # is what the monthly rollup aggregator pages over.
+    ("usage_events", "event_id", {"background": True, "unique": True}),
+    ("usage_events",
+     [("agency_id", 1), ("billing_period", 1)],
+     {"background": True}),
+    ("usage_events",
+     [("agency_id", 1), ("timestamp", -1)],
+     {"background": True}),
+
+    # agency_usage_summary — one row per (agency, billing_period).
+    # Unique compound prevents the rollup job from racing itself on
+    # repeated invocations.
+    ("agency_usage_summary",
+     [("agency_id", 1), ("billing_period", 1)],
+     {"background": True, "unique": True}),
+
+    # invitations — token_hash is the redemption key. TTL on
+    # expires_at evicts unredeemed invites a day after they expire so
+    # the collection stays bounded.
+    ("invitations", "token_hash", {"background": True, "unique": True}),
+    ("invitations", "agency_id", {"background": True}),
+    ("invitations", "invited_email", {"background": True}),
+
+    # users.agency_id — scoping key for every per-tenant query the
+    # routers will pick up in Phase 2+. Indexed now so the lookup is
+    # ready before the first cross-tenant request lands.
+    ("users", "agency_id", {"background": True}),
 ]
 
 
@@ -1010,6 +1060,16 @@ async def on_startup():
     # Stamp agent_id / agent_name on any pre-existing user rows that pre-date
     # workspace-isolation scoping. Idempotent — no-op once everyone is stamped.
     await backfill_agent_identity(db)
+
+    # Multi-tenant foundation (Phase 1). Creates the GHW agency row +
+    # stamps agency_id="ghw_001" on every existing user. Both idempotent;
+    # safe to run on every boot. Wrapped so a Mongo hiccup during the
+    # tenant seed can't block app startup.
+    try:
+        await seed_ghw_agency(db)
+        await backfill_agency_id_on_users(db)
+    except Exception as e:
+        logger.warning("multi-tenant seed failed: %s", e)
 
     # Seed the pre-built Medicare tag library on first boot of an
     # agency. Idempotent — returns 0 once the library is populated.
