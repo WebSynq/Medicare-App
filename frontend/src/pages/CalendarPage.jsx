@@ -646,7 +646,7 @@ export default function CalendarPage() {
     } finally {
       setLoading(false);
     }
-  }, [win.start, win.end, selectedAgent]);
+  }, [win.start, win.end]);
 
   useEffect(() => {
     load();
