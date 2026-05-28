@@ -63,6 +63,7 @@ from security_router import router as security_router  # noqa: E402
 from ghl_import_router import router as ghl_import_router  # noqa: E402
 from cna_router import router as cna_router  # noqa: E402
 from brief_router import router as brief_router  # noqa: E402
+from billing_router import router as billing_router  # noqa: E402
 import email_templates  # noqa: E402,F401 — ensure clean import
 from automations import start_automation_scheduler  # noqa: E402
 from feedback_router import router as feedback_router  # noqa: E402
@@ -202,6 +203,7 @@ app.include_router(security_router, prefix="/api")
 app.include_router(ghl_import_router, prefix="/api")
 app.include_router(cna_router, prefix="/api")
 app.include_router(brief_router, prefix="/api")
+app.include_router(billing_router, prefix="/api")
 # feedback_router declares its own /api/feedback prefix — no prefix here.
 app.include_router(feedback_router)
 # calendar_router declares /api/calendar; ics_router declares /api/appointments
@@ -367,6 +369,11 @@ _CSRF_EXEMPT_PATHS = {
     # browser. Authenticity is enforced via HMAC-SHA256 signature against
     # GHL_WEBHOOK_SECRET inside the route, so CSRF doesn't apply.
     "/api/ghl/webhook",
+    # Stripe billing webhook — server-to-server POST from stripe.com.
+    # Signature verified by stripe.Webhook.construct_event against
+    # STRIPE_WEBHOOK_SECRET inside the route. No browser session
+    # involved, so a CSRF cookie is impossible.
+    "/api/billing/webhook",
     # GHL manual sync — admin-triggered POST that pulls contacts via the
     # GHL API. JWT-authenticated via require_roles("admin"); the Settings
     # button uses the same axios instance that *would* attach CSRF, but
@@ -930,6 +937,28 @@ _PROD_INDEXES = [
     # routers will pick up in Phase 2+. Indexed now so the lookup is
     # ready before the first cross-tenant request lands.
     ("users", "agency_id", {"background": True}),
+
+    # ── Multi-tenant billing (Phase 3) ────────────────────────────────
+    # stripe_events — webhook idempotency log. Unique on event_id so
+    # Stripe's at-least-once delivery collapses to one handler call
+    # via record_event_processed's insert-or-fail check.
+    ("stripe_events", "event_id", {"background": True, "unique": True}),
+    ("stripe_events", "processed_at", {"background": True}),
+
+    # agency lookups by Stripe ids — webhook handlers need fast
+    # find_one() to resolve event.customer / event.subscription back
+    # to the agency row. Sparse because most agencies start without
+    # a stripe_customer_id.
+    ("agencies", "stripe_customer_id",
+     {"background": True, "sparse": True}),
+    ("agencies", "stripe_subscription_id",
+     {"background": True, "sparse": True}),
+
+    # Grace-period sweep targets — billing_status + grace_period_ends_at
+    # cover the past_due agencies the sweep needs to process. Sparse
+    # on grace_period_ends_at because healthy agencies don't have one.
+    ("agencies", "grace_period_ends_at",
+     {"background": True, "sparse": True}),
 ]
 
 
@@ -1132,6 +1161,19 @@ async def on_startup():
     except Exception as e:
         logger.warning("metering: rollup scheduler failed to start: %s", e)
         app.state.metering_rollup_scheduler = None
+
+    # Multi-tenant billing grace-period sweep — flips past_due
+    # agencies to suspended after their 7-day grace expires. Daily
+    # CronTrigger at 07:00 UTC. Lazy import so a stripe-module
+    # problem can't block boot.
+    try:
+        from stripe_service import start_grace_period_scheduler
+        app.state.stripe_grace_scheduler = (
+            start_grace_period_scheduler(get_db)
+        )
+    except Exception as e:
+        logger.warning("stripe: grace scheduler failed to start: %s", e)
+        app.state.stripe_grace_scheduler = None
 
 
 @app.on_event("shutdown")

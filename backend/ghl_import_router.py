@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 
 from deps import (
     get_agency_id, get_current_user, get_db, get_phi_db,
-    get_effective_agent, write_audit,
+    get_effective_agent, require_feature, write_audit,
 )
 from encryption import safe_lead_set
 from models import normalize_state_field
@@ -657,6 +657,7 @@ class MapTagsRequest(BaseModel):
 async def map_tags(
     body: MapTagsRequest,
     effective: dict = Depends(get_effective_agent),
+    _feat: dict = Depends(require_feature("ghl_import")),
 ):
     tags = [t for t in (body.tags or []) if isinstance(t, str) and t.strip()]
     if not tags:

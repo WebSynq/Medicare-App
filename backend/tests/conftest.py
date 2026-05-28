@@ -44,6 +44,13 @@ os.environ.setdefault("JWT_IDLE_TIMEOUT_MINUTES", "30")
 # helper. Tests don't actually send mail (RESEND_API_KEY is unset)
 # but the helper still runs the env-read path.
 os.environ.setdefault("ADMIN_EMAIL", "admin-alerts@example.com")
+# Phase 3 — multi-tenant billing. Webhook tests construct + verify
+# signatures against this secret. STRIPE_SECRET_KEY left unset so
+# the user-facing checkout/portal endpoints 503 by design in tests
+# (we mock the SDK module when exercising them).
+os.environ.setdefault(
+    "STRIPE_WEBHOOK_SECRET", "whsec_test_phase3_signing_secret_padding_xx",
+)
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:

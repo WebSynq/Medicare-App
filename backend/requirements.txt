@@ -33,3 +33,8 @@ google-api-python-client>=2.0.0
 icalendar>=5.0.0
 
 pyotp
+# Multi-tenant billing (Phase 3) — webhook signature verification +
+# customer / subscription / invoice management. 15.2.0 is the latest
+# stable as of 2026-05; pin major-version-floor so security patches
+# flow without surprise API breakage.
+stripe>=15.0.0,<16

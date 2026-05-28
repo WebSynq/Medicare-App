@@ -146,6 +146,24 @@ ANTHROPIC_API_KEY, RESEND_API_KEY, PHI_FIELD_KEY
   (1000 lookups/day). Enriches the AI security loop's IP intel with
   crowdsourced abuse reports. Without it, ipapi.co only.
 
+**Added during Phase 3 multi-tenant billing:**
+- `STRIPE_SECRET_KEY` — Stripe API secret. Test mode key
+  (`sk_test_...`) on staging, live key (`sk_live_...`) on prod.
+  Never logged, never echoed in responses. When unset, the user-
+  facing billing endpoints 503 with a clear message; the webhook
+  endpoint still 400s on bad signatures.
+- `STRIPE_WEBHOOK_SECRET` — `whsec_...` value from the Stripe
+  webhook endpoint config. Required to verify inbound webhook
+  signatures. Without it the webhook hard-refuses (400).
+- `STRIPE_PRICE_BETA` / `STRIPE_PRICE_FOUNDATION` /
+  `STRIPE_PRICE_GROWTH` / `STRIPE_PRICE_DOMINATION` — Stripe price
+  IDs (`price_...`) for each tier's monthly subscription. Used by
+  `/api/billing/create-checkout` to start a Checkout Session.
+- `SUPER_ADMIN_EMAILS` — comma-separated list of platform admin
+  emails (Tim/Matt/Chase). These users bypass every feature flag
+  and billing gate even if their agency row doesn't carry
+  `super_admin=True`.
+
 ## Env Vars Required (Vercel)
 REACT_APP_BACKEND_URL
 

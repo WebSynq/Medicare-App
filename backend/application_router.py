@@ -11,7 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from deps import get_db, get_phi_db, get_effective_agent, agent_filter
+from deps import (
+    agent_filter,
+    get_db,
+    get_effective_agent,
+    get_phi_db,
+    require_feature,
+)
 from encryption import safe_lead_set, safe_lead_load
 from auth_router import get_current_user
 from ghl_client import GHLClient
@@ -584,6 +590,7 @@ async def extract_application(
     file: UploadFile = File(...),
     product_type: Optional[str] = Form(None),
     current_user: dict = Depends(get_current_user),
+    _feat: dict = Depends(require_feature("ai_application_intake")),
 ):
     """Extract insurance application fields from a PDF.
 

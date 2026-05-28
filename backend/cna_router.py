@@ -42,6 +42,7 @@ from deps import (
     get_current_user,
     get_effective_agent,
     get_phi_db,
+    require_feature,
     write_audit,
 )
 from encryption import safe_lead_load
@@ -523,10 +524,15 @@ async def get_cna(
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
+    _feat: dict = Depends(require_feature("cna")),
 ):
     """Return the CNA for this lead, or a blank pre-filled template
     when none exists yet. The blank template is identifiable by the
-    absence of ``completed_at``."""
+    absence of ``completed_at``.
+
+    Feature-gated on ``cna`` — Domination tier only. GHW + any agency
+    with super_admin=True bypass via deps.require_feature.
+    """
     lead = await _resolve_lead_or_403(
         db, lead_id, current_user, current_user,
     )
@@ -549,11 +555,18 @@ async def upsert_cna(
     db: AsyncIOMotorDatabase = Depends(get_phi_db),
     effective: dict = Depends(get_effective_agent),
     current_user: dict = Depends(get_current_user),
+    _feat: dict = Depends(require_feature("cna")),
 ):
     """Create or update the CNA. Returns the persisted row. When
     ``run_ai=true`` is passed we synchronously call Claude before
     returning so the SPA gets the freshest recommendation in one
-    round-trip (used by the "Save & Generate AI Analysis" button)."""
+    round-trip (used by the "Save & Generate AI Analysis" button).
+
+    Feature-gated on ``cna`` (form access). The ``run_ai`` branch is
+    additionally gated on ``ai_client_intelligence`` inside the body
+    — agencies that have the CNA but not the AI add-on can still
+    fill out the assessment manually.
+    """
     # Entry-point trace. If this line shows up in Render logs but the
     # _resolve_lead_or_403 logs don't, the request actually reached
     # the body — useful to rule out get_effective_agent as the 403
@@ -620,6 +633,26 @@ async def upsert_cna(
 
     ai_payload: Optional[Dict[str, Any]] = None
     if run_ai:
+        # In-body gate on the AI sub-feature. Done here (not as a Depends)
+        # because the AI is opt-in via the run_ai flag — the save itself
+        # only needs `cna`. Super admins bypass via the agency lookup
+        # already cached on request.state.
+        from deps import get_agency as _ga, get_frontend_url as _fu
+        _agency_for_ai = await _ga(request, current_user, db)
+        if not (_agency_for_ai.get("super_admin")
+                 or (_agency_for_ai.get("features") or {})
+                    .get("ai_client_intelligence")):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "message": (
+                        "AI Client Intelligence is not enabled for "
+                        "your agency. The CNA was saved without AI."
+                    ),
+                    "feature": "ai_client_intelligence",
+                    "upgrade_url": f"{_fu()}/settings/billing",
+                },
+            )
         try:
             ai_payload = await generate_ai_recommendation(
                 lead, doc,
@@ -696,9 +729,13 @@ async def trigger_ai(
     db: AsyncIOMotorDatabase = Depends(get_phi_db),
     effective: dict = Depends(get_effective_agent),
     current_user: dict = Depends(get_current_user),
+    _feat: dict = Depends(require_feature("ai_client_intelligence")),
 ):
     """Force a fresh AI analysis against the stored CNA. 404 when no
-    CNA exists yet — the SPA must save one before asking for AI."""
+    CNA exists yet — the SPA must save one before asking for AI.
+
+    Feature-gated on ``ai_client_intelligence``.
+    """
     logger.info(
         "cna.trigger_ai ENTER lead_id=%s x_agent_id=%r current_user_id=%s "
         "current_user_role=%r effective_id=%s effective_role=%r "
@@ -769,10 +806,14 @@ async def get_ai(
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
+    _feat: dict = Depends(require_feature("ai_client_intelligence")),
 ):
     """Return just the cached AI recommendation. Used by the Overview
     panel after a save+analyse round-trip; the SPA polls this to know
-    whether the recommendation is ready."""
+    whether the recommendation is ready.
+
+    Feature-gated on ``ai_client_intelligence``.
+    """
     await _resolve_lead_or_403(
         db, lead_id, current_user, current_user,
     )
