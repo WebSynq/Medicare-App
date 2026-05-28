@@ -64,6 +64,7 @@ from ghl_import_router import router as ghl_import_router  # noqa: E402
 from cna_router import router as cna_router  # noqa: E402
 from brief_router import router as brief_router  # noqa: E402
 from billing_router import router as billing_router  # noqa: E402
+from email_domain_router import router as email_domain_router  # noqa: E402
 import email_templates  # noqa: E402,F401 — ensure clean import
 from automations import start_automation_scheduler  # noqa: E402
 from feedback_router import router as feedback_router  # noqa: E402
@@ -204,6 +205,7 @@ app.include_router(ghl_import_router, prefix="/api")
 app.include_router(cna_router, prefix="/api")
 app.include_router(brief_router, prefix="/api")
 app.include_router(billing_router, prefix="/api")
+app.include_router(email_domain_router, prefix="/api")
 # feedback_router declares its own /api/feedback prefix — no prefix here.
 app.include_router(feedback_router)
 # calendar_router declares /api/calendar; ics_router declares /api/appointments

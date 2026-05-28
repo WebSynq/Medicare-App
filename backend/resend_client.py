@@ -28,6 +28,50 @@ FROM_ADDRESS = "GHW Agent Portal <noreply@ghwcrm.com>"
 _RESEND_URL = "https://api.resend.com/emails"
 
 
+async def _resolve_from_address(
+    agency_id: Optional[str],
+) -> str:
+    """Per-agency FROM resolver (Phase 4).
+
+    Returns the agency's own ``from_name <from_email>`` when the
+    agency has a verified email_domain. Falls back to the GHW default
+    when:
+      - agency_id is None (untenanted send — automation alerts, etc.)
+      - agency row missing
+      - agency hasn't set up a domain yet
+      - agency set up a domain but it's not verified yet (so we never
+        send from an unverified sender — Resend would block it)
+
+    Lookup is best-effort: any Mongo / import error returns the
+    fallback rather than raising, so a database hiccup can't turn a
+    successful send into a failure.
+    """
+    if not agency_id:
+        return FROM_ADDRESS
+    try:
+        from deps import get_db
+        agency = await get_db().agencies.find_one(
+            {"agency_id": agency_id},
+            {"_id": 0, "email_domain_verified": 1,
+             "from_email": 1, "from_name": 1},
+        )
+    except Exception as e:                                    # noqa: BLE001
+        logger.debug("resend: from-resolve failed agency=%s err=%s",
+                      agency_id, e)
+        return FROM_ADDRESS
+    if not agency:
+        return FROM_ADDRESS
+    if not agency.get("email_domain_verified"):
+        return FROM_ADDRESS
+    addr = agency.get("from_email")
+    name = agency.get("from_name")
+    if not addr:
+        return FROM_ADDRESS
+    if name:
+        return f"{name} <{addr}>"
+    return addr
+
+
 async def send_email(
     to: str,
     subject: str,
@@ -61,8 +105,9 @@ async def send_email(
         logger.warning("resend: empty recipient — skipping (%s)", subject[:80])
         return False
 
+    from_addr = await _resolve_from_address(agency_id)
     payload: dict = {
-        "from": FROM_ADDRESS,
+        "from": from_addr,
         "to": [to],
         "subject": subject,
         "html": html,
