@@ -594,16 +594,24 @@ async def list_appointments(
     end_date: Optional[str] = Query(None, description="YYYY-MM-DD (inclusive)"),
     status: Optional[AppointmentStatus] = Query(None),
     lead_id: Optional[str] = Query(None, max_length=128),
+    agent_id: Optional[str] = Query(None, max_length=128),
     limit: int = Query(200, ge=1, le=1000),
     db: AsyncIOMotorDatabase = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
     """List the caller's appointments. Optional date / start_date / end_date
-    / status / lead_id filters narrow the result for the same scope; they
-    cannot widen it. `date` (exact-day) takes precedence over the range
-    pair when both are supplied — kept that way so the existing single-day
-    callers (TodayPage, audit links) continue to work unchanged."""
-    query: Dict[str, Any] = dict(agent_filter(current_user))
+    / status / lead_id / agent_id filters narrow the result for the same
+    scope; they cannot widen it. `date` (exact-day) takes precedence over
+    the range pair when both are supplied — kept that way so the existing
+    single-day callers (TodayPage, audit links) continue to work unchanged.
+
+    ``agent_id`` is the explicit-narrow channel that the Calendar /
+    Appointments pages use to default admin/owner views to "just my
+    own". For non-privileged callers ``agent_filter`` silently drops
+    the override, so an agent can't widen scope by forging the param."""
+    query: Dict[str, Any] = dict(
+        agent_filter(current_user, override_agent_id=agent_id),
+    )
     if date:
         # Validate so a malformed query param doesn't blow up the cursor.
         try:

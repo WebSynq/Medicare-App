@@ -51,7 +51,8 @@ import {
 import ScrollableCard from "@/components/ScrollableCard";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import NewAppointmentSheet from "@/components/NewAppointmentSheet";
-import { api } from "@/lib/api";
+import { api, auth } from "@/lib/api";
+import { useAgent } from "@/context/AgentContext";
 
 function fmtMoney(v) {
   if (v == null || Number.isNaN(v)) return "$0";
@@ -183,6 +184,11 @@ export default function AppointmentsList() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const prefillLeadId = searchParams.get("lead_id");
+  const { selectedAgent } = useAgent();
+  // Default the appointments list to the logged-in user's own appointments
+  // — for admin/owner as well as agents. Without this, full-scope roles
+  // see the whole agency's appointments whenever no agent is impersonated.
+  const currentUserId = auth.getUser()?.id || null;
 
   // Auto-open the booking sheet when the page is navigated to with
   // ?lead_id=X (e.g. from the Pipeline "Book Appointment" CTA). Strip
@@ -208,6 +214,12 @@ export default function AppointmentsList() {
       if (rangeFilter === "today") {
         params.date = format(new Date(), "yyyy-MM-dd");
       }
+      // No impersonation target → narrow to the logged-in user's own
+      // appointments. With a target, X-Agent-ID handles impersonation on
+      // the axios interceptor.
+      if (!selectedAgent && currentUserId) {
+        params.agent_id = currentUserId;
+      }
       const res = await api.get("/appointments", { params });
       let rows = res.data?.appointments || [];
       if (rangeFilter !== "all" && rangeFilter !== "today") {
@@ -228,7 +240,7 @@ export default function AppointmentsList() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilter, rangeFilter]);
+  }, [statusFilter, rangeFilter, selectedAgent, currentUserId]);
 
   // Revenue stats. Re-fetches whenever the range filter changes so the
   // bar always reflects the period the user is looking at, and also on

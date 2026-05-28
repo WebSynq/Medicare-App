@@ -51,7 +51,7 @@ import {
 } from "@/components/ui/sheet";
 import ImpersonationBanner from "@/components/ImpersonationBanner";
 import NewAppointmentSheet from "@/components/NewAppointmentSheet";
-import { api } from "@/lib/api";
+import { api, auth } from "@/lib/api";
 import { useAgent } from "@/context/AgentContext";
 
 // react-big-calendar's CSS — page-local import so it only loads here.
@@ -612,6 +612,11 @@ function RightSidebar({ appointments, onPickAppointment }) {
 export default function CalendarPage() {
   const isMobile = useIsMobile();
   const { selectedAgent } = useAgent();
+  // Default the calendar to the logged-in user's own appointments — for
+  // admin/owner/etc as well as agents. Without this, agent_filter returns
+  // {} for full-scope roles and the calendar shows the whole agency's
+  // book whenever no agent is impersonated.
+  const currentUserId = auth.getUser()?.id || null;
   const [view, setView] = useState(() =>
     typeof window !== "undefined" && window.innerWidth < 768
       ? Views.AGENDA
@@ -638,6 +643,12 @@ export default function CalendarPage() {
         end_date: format(win.end, "yyyy-MM-dd"),
         limit: 1000,
       };
+      // No impersonation target → narrow to the logged-in user's own
+      // appointments. With a target, the X-Agent-ID header picks up
+      // impersonation on the axios interceptor.
+      if (!selectedAgent && currentUserId) {
+        params.agent_id = currentUserId;
+      }
       const res = await api.get("/appointments", { params });
       setAppointments(res.data?.appointments || []);
     } catch (err) {
@@ -646,11 +657,11 @@ export default function CalendarPage() {
     } finally {
       setLoading(false);
     }
-  }, [win.start, win.end]);
+  }, [win.start, win.end, selectedAgent, currentUserId]);
 
   useEffect(() => {
     load();
-  }, [load, selectedAgent]);
+  }, [load]);
 
   // Build rbc events. Only appointments — birthday + renewal alerts
   // intentionally NOT pulled (those are action queues, not events).
