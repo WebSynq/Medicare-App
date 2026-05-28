@@ -130,7 +130,7 @@ _MAGIC_LINK_TTL_MINUTES = 15
 _MAGIC_LINK_PER_EMAIL_HOURLY_CAP = 5
 
 
-def _user_public(user: dict) -> UserPublic:
+def _user_public(user: dict, super_admin: bool = False) -> UserPublic:
     return UserPublic(
         id=user["id"],
         email=user["email"],
@@ -145,7 +145,43 @@ def _user_public(user: dict) -> UserPublic:
         agent_name=user.get("agent_name"),
         agent_npn=user.get("agent_npn"),
         created_at=user.get("created_at", datetime.now(timezone.utc).isoformat()),
+        super_admin=bool(super_admin),
     )
+
+
+async def _resolve_super_admin(user: dict, db) -> bool:
+    """Compute the super_admin flag for the SPA's user payload.
+
+    True when EITHER:
+      - The user's agency carries super_admin=True (GHW platform team).
+      - The user's email is in the SUPER_ADMIN_EMAILS env (Tim/Matt/Chase
+        bypass, mirrors deps._is_super_admin).
+
+    Best-effort — any lookup failure returns False rather than raising,
+    so an agencies-collection hiccup can't break login. The same
+    super_admin claim also rides in the JWT; this helper is purely the
+    SPA convenience path so the sidebar can render without decoding
+    the cookie.
+    """
+    try:
+        import os as _os_sa
+        emails_env = (_os_sa.environ.get("SUPER_ADMIN_EMAILS") or "").strip()
+        if emails_env:
+            allowlist = {e.strip().lower()
+                          for e in emails_env.split(",") if e.strip()}
+            email = (user.get("email") or "").strip().lower()
+            if email and email in allowlist:
+                return True
+        from deps import get_agency_id
+        agency_id = user.get("agency_id") or get_agency_id()
+        agency = await db.agencies.find_one(
+            {"agency_id": agency_id},
+            {"_id": 0, "super_admin": 1},
+        )
+        return bool((agency or {}).get("super_admin"))
+    except Exception as _e:                                    # noqa: BLE001
+        logger.debug("_resolve_super_admin: lookup failed: %s", _e)
+        return False
 
 
 async def _jwt_claims(user: dict, db=None) -> dict:
@@ -347,7 +383,8 @@ async def register(
         "[notification] Agent registered via invite: %s (%s) — agency=%s.",
         user_doc["full_name"], email, user_doc["agency_name"],
     )
-    return _user_public(user_doc)
+    sa = await _resolve_super_admin(user_doc, db)
+    return _user_public(user_doc, super_admin=sa)
 
 
 @router.post("/login")
@@ -468,7 +505,9 @@ async def login(payload: LoginRequest, request: Request, response: Response,
                       actor_id=user["id"], request=request,
                       metadata={"method": "password"})
     _set_session_cookies(response, token)
-    return LoginResponse(access_token=token, user=_user_public(user))
+    sa = await _resolve_super_admin(user, db)
+    return LoginResponse(access_token=token,
+                          user=_user_public(user, super_admin=sa))
 
 
 # ── Magic link (Option A) ──────────────────────────────────────────────────
@@ -657,7 +696,9 @@ async def verify_magic_link(
                       actor_id=user["id"], request=request,
                       metadata={"method": "magic_link"})
 
-    return LoginResponse(access_token=token, user=_user_public(user))
+    sa = await _resolve_super_admin(user, db)
+    return LoginResponse(access_token=token,
+                          user=_user_public(user, super_admin=sa))
 
 
 @router.post("/logout")
@@ -676,8 +717,12 @@ async def logout(request: Request, response: Response,
 
 
 @router.get("/me", response_model=UserPublic)
-async def me(current_user=Depends(get_current_user)):
-    return _user_public(current_user)
+async def me(
+    current_user=Depends(get_current_user),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    sa = await _resolve_super_admin(current_user, db)
+    return _user_public(current_user, super_admin=sa)
 
 
 @router.get("/me/parent")
@@ -1208,10 +1253,11 @@ async def _issue_session_post_mfa(
         actor_email=fresh["email"], actor_id=fresh["id"],
         request=request, metadata={"method": f"password+{method}"},
     )
+    sa = await _resolve_super_admin(fresh, db)
     return {
         "access_token": token,
         "token_type": "bearer",
-        "user": _user_public(fresh).model_dump(),
+        "user": _user_public(fresh, super_admin=sa).model_dump(),
     }
 
 

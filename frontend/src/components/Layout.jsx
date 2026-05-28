@@ -666,6 +666,19 @@ function SidebarContent({ user, role, onNavigate, onSignOut, collapsed, onToggle
           <NavItem to="/reports/lead-sources" icon={PieIcon} label="Lead Sources" onClick={onNavigate} testId="nav-lead-sources" collapsed={c} />
         </div>
 
+        {/* Platform — visible only to GHW super admins (agency.super_admin
+            === true OR email in SUPER_ADMIN_EMAILS env). A regular admin
+            on a tenant agency must NEVER see this link; the backend
+            gate on /api/super-admin/* enforces the same rule. */}
+        {user?.super_admin === true && (
+          <>
+            <SectionLabel collapsed={c}>Platform</SectionLabel>
+            <div className="space-y-0.5">
+              <NavItem to="/super-admin" icon={Shield} label="Super Admin" onClick={onNavigate} testId="nav-super-admin" collapsed={c} />
+            </div>
+          </>
+        )}
+
         {isAdminOrCompliance && (
           <>
             <SectionLabel collapsed={c}>Admin</SectionLabel>
@@ -1082,6 +1095,23 @@ function MobileMoreDrawer({
               testId="mobile-more-lead-sources"
             />
           </div>
+
+          {/* Platform — same super_admin gate as the desktop sidebar.
+              A regular admin must NEVER see this entry. */}
+          {user?.super_admin === true && (
+            <>
+              <SectionLabel>Platform</SectionLabel>
+              <div className="space-y-0.5">
+                <NavItem
+                  to="/super-admin"
+                  icon={Shield}
+                  label="Super Admin"
+                  onClick={onClose}
+                  testId="mobile-more-super-admin"
+                />
+              </div>
+            </>
+          )}
 
           {isAdminOrCompliance && (
             <>

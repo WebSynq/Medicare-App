@@ -166,6 +166,12 @@ class UserCreate(UserBase):
 class UserPublic(UserBase):
     id: str
     created_at: str
+    # Phase 1 multi-tenant flag — True when the user's agency has
+    # super_admin=True (the GHW platform team) OR the user's email is
+    # listed in the SUPER_ADMIN_EMAILS env var. Stored on the user
+    # object in SPA localStorage so the sidebar can render the
+    # /super-admin nav item without an extra round-trip.
+    super_admin: bool = False
 
 
 class UserInDB(UserBase):
