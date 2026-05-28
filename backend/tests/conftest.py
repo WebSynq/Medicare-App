@@ -101,7 +101,8 @@ for module_name in ("server", "auth_router", "leads_router",
                      "search_router", "notifications_router",
                      "agency_dashboard_router", "booking_router",
                      "billing_router", "email_domain_router",
-                     "super_admin_router", "agency_settings_router"):
+                     "super_admin_router", "agency_settings_router",
+                     "clients_router"):
     try:
         mod = sys.modules.get(module_name) or __import__(module_name)
         if hasattr(mod, "limiter"):

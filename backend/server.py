@@ -996,6 +996,25 @@ async def on_startup():
     db = get_db()
     await db.users.create_index("email", unique=True)
     await db.leads.create_index("created_at")
+    # ── Production-readiness compound indexes ─────────────────────────
+    # Cover the per-tenant query shapes that every Phase-1 scope filter
+    # produces: (agency_id, agent_id) for leads-by-agent lookups,
+    # (agency_id, status) for funnel + dashboard rollups,
+    # (agency_id, agent_id) + (agency_id, appointment_date) for the
+    # appointment scheduler scans, and (agency_id, timestamp desc) for
+    # the audit-log export endpoint's newest-first pagination.
+    # Idempotent — re-declaring an existing index is a no-op.
+    await db.leads.create_index([("agency_id", 1), ("agent_id", 1)])
+    await db.leads.create_index([("agency_id", 1), ("status", 1)])
+    await db.appointments.create_index(
+        [("agency_id", 1), ("agent_id", 1)],
+    )
+    await db.appointments.create_index(
+        [("agency_id", 1), ("appointment_date", 1)],
+    )
+    await db.audit_logs.create_index(
+        [("agency_id", 1), ("timestamp", -1)],
+    )
     # Tag library — unique per (agency_id, name) so the seeder and the
     # custom-tag route can both rely on the index to dedupe rather than
     # racing each other on a check-then-insert.
