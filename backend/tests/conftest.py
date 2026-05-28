@@ -49,7 +49,8 @@ os.environ.setdefault("ADMIN_EMAIL", "admin-alerts@example.com")
 # the user-facing checkout/portal endpoints 503 by design in tests
 # (we mock the SDK module when exercising them).
 os.environ.setdefault(
-    "STRIPE_WEBHOOK_SECRET", "whsec_test_phase3_signing_secret_padding_xx",
+    "STRIPE_WEBHOOK_SECRET",
+    os.environ.get("STRIPE_WEBHOOK_SECRET_TEST", "whsec_test_phase3_signing_secret_padding_xx"),
 )
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
