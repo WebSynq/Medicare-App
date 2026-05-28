@@ -927,6 +927,8 @@ async def run_daily_agent_brief(db) -> int:
                 to=agent["email"],
                 subject=f"Your Medicare Priority List — {brief['date']}",
                 html=html,
+                agency_id=agent.get("agency_id"),
+                agent_id=agent.get("id"),
             )
             await _audit(
                 db, "automation_daily_brief_sent" if ok

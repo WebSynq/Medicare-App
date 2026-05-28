@@ -554,6 +554,24 @@ async def _call_claude(stats: Dict[str, Any]) -> Dict[str, Any]:
             }],
             messages=[{"role": "user", "content": user_msg}],
         )
+        # Metering — fire-and-forget. Security analysis is a platform-
+        # owned cost (runs every 15 min regardless of tenant activity)
+        # so it bills to the GHW agency. Phase 4 may split it per-
+        # tenant if we ever surface per-agency security findings.
+        try:
+            from metering import track_ai_usage
+            from deps import get_agency_id
+            usage = getattr(response, "usage", None)
+            track_ai_usage(
+                agency_id=get_agency_id(),
+                agent_id=None,
+                event_type="security_analysis",
+                tokens_in=int(getattr(usage, "input_tokens", 0) or 0),
+                tokens_out=int(getattr(usage, "output_tokens", 0) or 0),
+                model=_AI_MODEL,
+            )
+        except Exception as _e:                                # noqa: BLE001
+            logger.debug("security_intelligence: metering hook failed: %s", _e)
         # response.content is a list of content blocks; concatenate any
         # text blocks (we asked for JSON, but some clients echo the
         # structure).

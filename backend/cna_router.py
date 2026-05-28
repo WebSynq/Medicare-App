@@ -424,10 +424,22 @@ def _sanitise_recommendation(parsed: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-async def generate_ai_recommendation(lead: dict, cna: dict) -> Dict[str, Any]:
+async def generate_ai_recommendation(
+    lead: dict,
+    cna: dict,
+    *,
+    agency_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Ask Claude to turn the lead + CNA into a structured recommendation.
 
     Returns the safe default dict on any failure path — never raises.
+
+    ``agency_id`` / ``agent_id`` are optional metering context. When
+    provided + the Claude call actually fires, we emit a
+    ``cna_analysis`` usage event (fire-and-forget). Safe-default
+    paths (no API key, parse failure, exception) intentionally skip
+    metering — we only charge for calls that actually hit Anthropic.
     """
     api_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
     if not api_key:
@@ -473,6 +485,21 @@ async def generate_ai_recommendation(lead: dict, cna: dict) -> Dict[str, Any]:
             }],
             messages=[{"role": "user", "content": user_msg}],
         )
+        # Metering — fire-and-forget. Wrapped in its own try so a
+        # metering bug can never propagate up to the CNA caller.
+        try:
+            from metering import track_ai_usage
+            usage = getattr(response, "usage", None)
+            track_ai_usage(
+                agency_id=agency_id,
+                agent_id=agent_id,
+                event_type="cna_analysis",
+                tokens_in=int(getattr(usage, "input_tokens", 0) or 0),
+                tokens_out=int(getattr(usage, "output_tokens", 0) or 0),
+                model=_AI_MODEL,
+            )
+        except Exception as _e:                                # noqa: BLE001
+            logger.debug("cna: metering hook failed: %s", _e)
         text = "".join(getattr(b, "text", "") for b in (response.content or []))
         text = (text or "").strip()
         if text.startswith("```"):
@@ -594,7 +621,11 @@ async def upsert_cna(
     ai_payload: Optional[Dict[str, Any]] = None
     if run_ai:
         try:
-            ai_payload = await generate_ai_recommendation(lead, doc)
+            ai_payload = await generate_ai_recommendation(
+                lead, doc,
+                agency_id=effective.get("agency_id"),
+                agent_id=effective.get("id"),
+            )
             doc["ai_recommendation"] = ai_payload
             doc["ai_generated_at"] = now_iso
         except Exception as e:                                # noqa: BLE001
@@ -685,7 +716,11 @@ async def trigger_ai(
     if not cna:
         raise HTTPException(404, "CNA not found — save the assessment first.")
 
-    ai_payload = await generate_ai_recommendation(lead, cna)
+    ai_payload = await generate_ai_recommendation(
+        lead, cna,
+        agency_id=effective.get("agency_id"),
+        agent_id=effective.get("id"),
+    )
     now_iso = datetime.now(timezone.utc).isoformat()
     try:
         await db.cna_assessments.update_one(

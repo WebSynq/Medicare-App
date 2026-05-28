@@ -1123,6 +1123,15 @@ async def on_startup():
     # follow-ups every 15 minutes. Reads + writes leads + appointments
     # (both PHI client) and writes audit rows + automation flags.
     app.state.automation_scheduler = start_automation_scheduler(get_phi_db)
+    # Multi-tenant metering rollup — aggregates usage_events into
+    # agency_usage_summary on the 1st of each month at 06:00 UTC.
+    # Lazy import so a metering-module problem can't block boot.
+    try:
+        from metering import start_rollup_scheduler
+        app.state.metering_rollup_scheduler = start_rollup_scheduler(get_db)
+    except Exception as e:
+        logger.warning("metering: rollup scheduler failed to start: %s", e)
+        app.state.metering_rollup_scheduler = None
 
 
 @app.on_event("shutdown")

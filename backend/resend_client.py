@@ -33,12 +33,22 @@ async def send_email(
     subject: str,
     html: str,
     reply_to: Optional[str] = None,
+    *,
+    agency_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ) -> bool:
     """Send an email via Resend. Returns True on success.
 
     Never raises — the caller always gets a boolean. A missing
     RESEND_API_KEY returns False with a warning so the rest of the
     pipeline (audit log, retry scheduling) can record the skip.
+
+    Metering (Phase 2): when ``agency_id`` is supplied and the send
+    succeeds, we emit an ``email_sent`` usage event (fire-and-forget).
+    Callers that don't have agency_id handy (legacy paths, automations
+    that resolve from a lead) can either pass it or omit it — omission
+    means the email isn't billed to any tenant, which is fine for
+    platform-owned notifications (e.g. account lockout alerts).
     """
     api_key = _api_key()
     if not api_key:
@@ -74,6 +84,21 @@ async def send_email(
                 logger.info(
                     "resend: sent to %s (%s)", to, subject[:80],
                 )
+                # Metering — only when the send actually succeeded
+                # AND the caller passed an agency. Wrapped so a
+                # metering bug can never demote a successful send to
+                # a False return.
+                if agency_id:
+                    try:
+                        from metering import track_email_sent
+                        track_email_sent(
+                            agency_id=agency_id,
+                            agent_id=agent_id,
+                            count=1,
+                            metadata={"subject_prefix": subject[:60]},
+                        )
+                    except Exception as _e:                    # noqa: BLE001
+                        logger.debug("resend: metering hook failed: %s", _e)
                 return True
             # Resend echoes the recipient on certain errors — truncate the
             # response so a long error blob doesn't flood the log.

@@ -405,9 +405,19 @@ PORTAL_TAGS = [
 ]
 
 
-async def ai_map_tags(ghl_tags: List[str]) -> Dict[str, Optional[str]]:
+async def ai_map_tags(
+    ghl_tags: List[str],
+    *,
+    agency_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+) -> Dict[str, Optional[str]]:
     """Best-effort tag mapping via Claude. Returns empty dict on any
-    failure — caller falls back to manual mapping."""
+    failure — caller falls back to manual mapping.
+
+    Metering: when ``agency_id`` is supplied and the Claude call
+    actually fires, we emit a ``tag_mapping`` usage event. Safe-default
+    paths (no API key, parse failure) skip metering.
+    """
     if not ghl_tags:
         return {}
     api_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
@@ -434,6 +444,21 @@ async def ai_map_tags(ghl_tags: List[str]) -> Dict[str, Optional[str]]:
                      "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user}],
         )
+        # Metering — fire-and-forget.
+        try:
+            from metering import track_ai_usage
+            usage = getattr(resp, "usage", None)
+            track_ai_usage(
+                agency_id=agency_id,
+                agent_id=agent_id,
+                event_type="tag_mapping",
+                tokens_in=int(getattr(usage, "input_tokens", 0) or 0),
+                tokens_out=int(getattr(usage, "output_tokens", 0) or 0),
+                model="claude-sonnet-4-6",
+                metadata={"tag_count": len(ghl_tags)},
+            )
+        except Exception as _e:                                # noqa: BLE001
+            logger.debug("ghl_import: metering hook failed: %s", _e)
         text = "".join(getattr(b, "text", "") for b in (resp.content or []))
         text = text.strip()
         if text.startswith("```"):
@@ -636,7 +661,11 @@ async def map_tags(
     tags = [t for t in (body.tags or []) if isinstance(t, str) and t.strip()]
     if not tags:
         return {"mapping": {}}
-    mapping = await ai_map_tags(tags[:200])  # cap prompt size
+    mapping = await ai_map_tags(
+        tags[:200],   # cap prompt size
+        agency_id=effective.get("agency_id"),
+        agent_id=effective.get("id"),
+    )
     # Ensure every input tag has an entry (null for unmatched).
     for t in tags:
         mapping.setdefault(t, None)

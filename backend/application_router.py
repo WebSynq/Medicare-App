@@ -670,6 +670,19 @@ async def extract_application(
     except Exception as e:
         logger.warning("Main-schema extraction failed (non-fatal): %s", e)
 
+    # Metering — fire-and-forget. One app_intake event per successful
+    # extraction; per-call pricing (no token tracking needed because
+    # OVERAGE_RATES.app_intake_each is a flat per-extraction cost).
+    try:
+        from metering import track_app_intake
+        track_app_intake(
+            agency_id=current_user.get("agency_id"),
+            agent_id=current_user.get("id"),
+            metadata={"product_type": product_type, "auto_detected": auto},
+        )
+    except Exception as _e:                                    # noqa: BLE001
+        logger.debug("application/extract: metering hook failed: %s", _e)
+
     return {"product_type": product_type, "product_label": PRODUCT_LABELS[product_type],
             "extracted": extracted, "field_count": field_count,
             "fields_available": list(FIELD_MAPS[product_type].keys()),
