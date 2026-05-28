@@ -79,15 +79,22 @@ async def get_client_policies(
     """
     scope = agent_filter(current_user)
 
-    # Try the URL segment as a portal lead id first. If it matches a
+    # Try the URL segment as a portal lead id first. Scope the lead
+    # lookup so a non-admin caller cannot reach across to another
+    # agent's lead just by knowing its id (IDOR). If it matches a
     # lead row, also union in the contact id stored on that lead so
     # pre-Phase-2 policies (with only ghl_contact_id stamped) surface.
-    lead = safe_lead_load(await db.leads.find_one({"id": contact_id}, {"_id": 0, "id": 1, "ghl_contact_id": 1}))
+    lead = safe_lead_load(await db.leads.find_one(
+        {"id": contact_id, **scope},
+        {"_id": 0, "id": 1, "ghl_contact_id": 1},
+    ))
     if lead:
         or_terms = [{"lead_id": lead["id"]}]
         if lead.get("ghl_contact_id"):
             or_terms.append({"ghl_contact_id": lead["ghl_contact_id"]})
-        match: dict = {"$or": or_terms, **scope}
+        # Spread `scope` FIRST so caller-supplied $or doesn't clobber
+        # the agency/agent stamp; then add our $or last.
+        match: dict = {**scope, "$or": or_terms}
     else:
         # Treat the URL segment as a GHL contact id (legacy path).
         match = {"ghl_contact_id": contact_id, **scope}
@@ -119,10 +126,11 @@ async def get_client_summary(
     response small — the policies list endpoint is the right place to pull
     full extracted data for a single record.
     """
+    scope = agent_filter(current_user)
     client = await db["clients"].find_one(
-        {"ghl_contact_id": contact_id}, {"_id": 0}
+        {"ghl_contact_id": contact_id, **scope}, {"_id": 0},
     )
-    query = {"ghl_contact_id": contact_id, **agent_filter(current_user)}
+    query = {"ghl_contact_id": contact_id, **scope}
     cursor = (
         db["policies"]
         .find(query, {"_id": 0, "all_fields": 0})

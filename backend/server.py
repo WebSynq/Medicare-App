@@ -1093,9 +1093,23 @@ async def on_startup():
     # Daily ComTrack sync run log
     await db.commission_sync_runs.create_index("completed_at")
 
-    # Application-submission persistence (Phase 3) — one row per GHL contact
-    # in `clients`, one row per submitted application in `policies`.
-    await db.clients.create_index("ghl_contact_id", unique=True)
+    # Application-submission persistence (Phase 3) — one row per
+    # (agent, agency, GHL contact) tuple in `clients` after the
+    # 2026-05 row-level-scope tightening (two agents may each own
+    # their own clients row for the same GHL contact). Compound
+    # unique replaces the old single-field unique on ghl_contact_id;
+    # the old index is dropped first to avoid a duplicate-write spike
+    # during deploy.
+    try:
+        await db.clients.drop_index("ghl_contact_id_1")
+    except Exception:
+        # First boot on a fresh DB or after a manual drop — fine.
+        pass
+    await db.clients.create_index(
+        [("ghl_contact_id", 1), ("agent_id", 1), ("agency_id", 1)],
+        unique=True,
+        name="ghl_contact_id_agent_agency",
+    )
     await db.policies.create_index("ghl_contact_id")
     await db.policies.create_index("submitted_at")
     await db.policies.create_index([("ghl_contact_id", 1), ("product_type", 1)])

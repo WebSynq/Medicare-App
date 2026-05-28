@@ -204,7 +204,7 @@ async def earnings(
     gap = round(expected_total - received_total, 2)
     return {
         "period": period,
-        "scope": "agency" if not scope else "agent",
+        "scope": "agency" if "agent_id" not in scope else "agent",
         "expected": round(expected_total, 2),
         "received": round(received_total, 2),
         "gap": gap,
