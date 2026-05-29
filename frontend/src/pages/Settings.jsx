@@ -2095,6 +2095,11 @@ export default function Settings() {
             <TabsTrigger value="booking" data-testid="tab-booking">
               Booking Page
             </TabsTrigger>
+            {isAdmin && (
+              <TabsTrigger value="calendars" data-testid="tab-calendars">
+                Calendars
+              </TabsTrigger>
+            )}
             {canSeeAudit && (
               <TabsTrigger value="audit" data-testid="tab-audit">
                 Audit Log
@@ -2129,6 +2134,11 @@ export default function Settings() {
           <TabsContent value="booking" className="mt-4">
             <BookingTab me={me} refresh={applyPatched} />
           </TabsContent>
+          {isAdmin && (
+            <TabsContent value="calendars" className="mt-4">
+              <CalendarsTab />
+            </TabsContent>
+          )}
           <TabsContent value="audit" className="mt-4">
             {canSeeAudit && <AuditLogTab me={me} />}
           </TabsContent>
@@ -2597,6 +2607,61 @@ function BookingTab({ me, refresh }) {
 
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
+  // Feature C — sub-phase C2. On mount, look for an Individual
+  // calendar owned by the caller. When present, saves PATCH the
+  // calendar row instead of profile/booking-settings — the calendar
+  // becomes the authoritative source for slug, hours, duration.
+  // When absent (pre-migration user), we keep the legacy save path
+  // and surface a banner so the user knows a migration is pending.
+  const [calendarId, setCalendarId] = useState(null);
+  const [calendarLoading, setCalendarLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadOwnCalendar() {
+      if (!me?.id) {
+        setCalendarLoading(false);
+        return;
+      }
+      try {
+        const { data } = await api.get("/calendars?type=individual");
+        if (cancelled) return;
+        const owned = (data?.calendars || []).find(
+          (c) => c.owner_id === me.id && c.is_active !== false,
+        );
+        setCalendarId(owned?.id || null);
+        if (owned?.booking_settings) {
+          // Translate calendar shape → form shape for any keys that
+          // differ. Both sides share working_hours / meeting_types.
+          setForm((f) => ({
+            ...f,
+            appointment_duration:
+              owned.booking_settings.duration_minutes
+              ?? f.appointment_duration,
+            buffer_minutes:
+              owned.booking_settings.buffer_minutes ?? f.buffer_minutes,
+            advance_notice_hours:
+              owned.booking_settings.advance_notice_hours
+              ?? f.advance_notice_hours,
+            max_per_day:
+              owned.booking_settings.max_bookings_per_day ?? f.max_per_day,
+            working_hours:
+              owned.booking_settings.working_hours || f.working_hours,
+            meeting_types:
+              owned.booking_settings.meeting_types || f.meeting_types,
+            slug: owned.slug || f.slug,
+          }));
+        }
+      } catch {
+        // 401/403/etc — silent fallback to legacy save path.
+        if (!cancelled) setCalendarId(null);
+      } finally {
+        if (!cancelled) setCalendarLoading(false);
+      }
+    }
+    loadOwnCalendar();
+    return () => { cancelled = true; };
+  }, [me?.id]);
 
   useEffect(() => {
     setForm(initial);
@@ -2628,27 +2693,55 @@ function BookingTab({ me, refresh }) {
   async function save() {
     setSaving(true);
     try {
-      const payload = {
-        is_enabled: !!form.is_enabled,
-        bio: form.bio || "",
-        meeting_types: form.meeting_types || ["phone"],
-        phone_number: form.phone_number || "",
-        video_link: form.video_link || "",
-        appointment_duration: parseInt(form.appointment_duration, 10) || 30,
-        buffer_minutes: parseInt(form.buffer_minutes, 10) || 0,
-        max_per_day: parseInt(form.max_per_day, 10) || 10,
-        advance_notice_hours: parseInt(form.advance_notice_hours, 10) || 24,
-        booking_window_days: parseInt(form.booking_window_days, 10) || 60,
-        working_hours: form.working_hours,
-      };
-      const { data } = await api.patch(
-        "/profile/booking-settings", payload,
-      );
-      if (refresh) refresh(data);
-      if (data?.booking_settings) {
-        setForm((f) => ({ ...f, ...data.booking_settings }));
+      if (calendarId) {
+        // C2 path — PATCH the agent's Individual calendar. Field
+        // names use the calendar shape (duration_minutes,
+        // max_bookings_per_day); the C2 router silently drops
+        // anything outside the agent allow-list.
+        const calendarPayload = {
+          booking_settings: {
+            duration_minutes:
+              parseInt(form.appointment_duration, 10) || 30,
+            buffer_minutes: parseInt(form.buffer_minutes, 10) || 0,
+            advance_notice_hours:
+              parseInt(form.advance_notice_hours, 10) || 24,
+            max_bookings_per_day:
+              parseInt(form.max_per_day, 10) || 10,
+            working_hours: form.working_hours,
+            meeting_types: form.meeting_types || ["phone"],
+            timezone: "America/Chicago",
+          },
+        };
+        await api.patch(`/calendars/${calendarId}`, calendarPayload);
+        toast.success("Booking page saved");
+      } else {
+        // Legacy fallback — kept verbatim so pre-migration users and
+        // tenants that haven't run migrate_calendars yet still save.
+        const payload = {
+          is_enabled: !!form.is_enabled,
+          bio: form.bio || "",
+          meeting_types: form.meeting_types || ["phone"],
+          phone_number: form.phone_number || "",
+          video_link: form.video_link || "",
+          appointment_duration:
+            parseInt(form.appointment_duration, 10) || 30,
+          buffer_minutes: parseInt(form.buffer_minutes, 10) || 0,
+          max_per_day: parseInt(form.max_per_day, 10) || 10,
+          advance_notice_hours:
+            parseInt(form.advance_notice_hours, 10) || 24,
+          booking_window_days:
+            parseInt(form.booking_window_days, 10) || 60,
+          working_hours: form.working_hours,
+        };
+        const { data } = await api.patch(
+          "/profile/booking-settings", payload,
+        );
+        if (refresh) refresh(data);
+        if (data?.booking_settings) {
+          setForm((f) => ({ ...f, ...data.booking_settings }));
+        }
+        toast.success("Booking page saved");
       }
-      toast.success("Booking page saved");
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Save failed");
     } finally {
@@ -2672,6 +2765,17 @@ function BookingTab({ me, refresh }) {
 
   return (
     <div className="space-y-4" data-testid="booking-tab">
+      {!calendarLoading && !calendarId && (
+        <div
+          className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900"
+          data-testid="calendar-migration-pending"
+        >
+          <strong>Calendar migration pending.</strong> Your booking page
+          still saves against the legacy per-user profile. Once your
+          tenant runs the calendar migration, this tab will move to the
+          new Calendars system automatically — no action needed.
+        </div>
+      )}
       <Card>
         <CardContent className="p-5 space-y-4">
           <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -3539,5 +3643,365 @@ function ReportLink({ jobId }) {
     <Button size="sm" variant="outline" onClick={download} disabled={busy}>
       {busy ? "…" : "Report"}
     </Button>
+  );
+}
+
+
+// ── Calendars tab (admin only — Feature C sub-phase C2) ──────────────────
+// Hidden from the agent role entirely (gated at TabsTrigger level). Lists
+// every calendar in the agency with type / color / source_label / active
+// state, plus a "New Calendar" button that opens a minimal create modal.
+// Full polish (modal stepper, weight sliders, hex color picker) lands in
+// C5 — this version covers the core CRUD surface the spec mandates.
+
+const _CALENDAR_TYPE_LABEL = {
+  individual: "Individual",
+  round_robin: "Round Robin",
+  group: "Group",
+};
+
+const _CALENDAR_COLOR_PRESETS = [
+  "#6366f1", "#10b981", "#f59e0b", "#ef4444",
+];
+
+const _SOURCE_LABELS = ["manual", "autobook", "va", "ae"];
+
+function CalendarsTab() {
+  const [calendars, setCalendars] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get("/calendars");
+      setCalendars(data?.calendars || []);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't load calendars");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  async function deactivate(cal) {
+    if (!window.confirm(
+      `Deactivate "${cal.name}"? Upcoming appointments will block this.`
+    )) return;
+    try {
+      await api.delete(`/calendars/${cal.id}`);
+      toast.success("Calendar deactivated");
+      await load();
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      if (detail && typeof detail === "object" && detail.blocking_appointments) {
+        toast.error(
+          `Cannot deactivate — ${detail.blocking_appointments} upcoming appointment(s) reference this calendar.`
+        );
+      } else {
+        toast.error(typeof detail === "string" ? detail : "Deactivate failed");
+      }
+    }
+  }
+
+  return (
+    <div className="space-y-4" data-testid="calendars-tab">
+      <Card>
+        <CardContent className="p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-sm font-semibold">Agency Calendars</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Manage Individual and Round Robin calendars. Slugs are
+                globally unique across all tenants.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => setShowCreate(true)}
+              data-testid="calendars-new-btn"
+            >
+              New Calendar
+            </Button>
+          </div>
+
+          {loading ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : calendars.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No calendars yet. Click <strong>New Calendar</strong> to
+              create the first one.
+            </p>
+          ) : (
+            <div className="space-y-2" data-testid="calendars-list">
+              {calendars.map((cal) => (
+                <div
+                  key={cal.id}
+                  className="flex items-center gap-3 p-3 border rounded-md"
+                  data-testid={`calendar-row-${cal.slug}`}
+                >
+                  <span
+                    aria-hidden
+                    className="inline-block w-4 h-4 rounded-full flex-shrink-0"
+                    style={{ background: cal.color || "#6366f1" }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium text-sm truncate">{cal.name}</div>
+                    <div className="text-xs text-muted-foreground truncate">
+                      /book/{cal.slug}
+                    </div>
+                  </div>
+                  <Badge variant="outline" className="text-[10px]">
+                    {_CALENDAR_TYPE_LABEL[cal.type] || cal.type}
+                  </Badge>
+                  <Badge variant="outline" className="text-[10px]">
+                    {cal.source_label}
+                  </Badge>
+                  {!cal.is_active && (
+                    <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                      inactive
+                    </Badge>
+                  )}
+                  {cal.is_active !== false && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => deactivate(cal)}
+                      data-testid={`calendar-deactivate-${cal.slug}`}
+                    >
+                      Deactivate
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {showCreate && (
+        <NewCalendarModal
+          existingSlugs={calendars.map((c) => c.slug)}
+          onClose={() => setShowCreate(false)}
+          onCreated={async () => {
+            setShowCreate(false);
+            await load();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+
+function NewCalendarModal({ existingSlugs, onClose, onCreated }) {
+  // Minimal create modal — type / name / slug / source_label / color.
+  // Round Robin member multiselect kept simple (comma-separated agent
+  // emails resolved to ids server-side later; for C2 we just collect
+  // ids supplied as a comma list). C5 will replace with a proper
+  // multiselect against the agent roster.
+  const [form, setForm] = useState({
+    type: "individual",
+    name: "",
+    slug: "",
+    source_label: "manual",
+    color: "#6366f1",
+    owner_id: "",
+    member_ids: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [slugWarning, setSlugWarning] = useState("");
+
+  function set(k, v) {
+    setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  function checkSlugCollision(slug) {
+    const clean = (slug || "").trim().toLowerCase();
+    if (!clean) {
+      setSlugWarning("");
+      return;
+    }
+    if (!/^[a-z0-9-]+$/.test(clean) || clean.length < 3 || clean.length > 60) {
+      setSlugWarning("Use 3-60 lowercase letters, numbers, and dashes only.");
+      return;
+    }
+    if ((existingSlugs || []).includes(clean)) {
+      setSlugWarning(`"${clean}" is already taken. Pick another.`);
+      return;
+    }
+    setSlugWarning("");
+  }
+
+  async function submit() {
+    if (slugWarning) {
+      toast.error(slugWarning);
+      return;
+    }
+    const payload = {
+      name: form.name.trim(),
+      type: form.type,
+      slug: form.slug.trim().toLowerCase(),
+      source_label: form.source_label,
+      color: form.color,
+    };
+    if (form.type === "individual") {
+      payload.owner_id = form.owner_id.trim();
+    } else {
+      payload.member_ids = form.member_ids
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }
+    setSaving(true);
+    try {
+      await api.post("/calendars", payload);
+      toast.success("Calendar created");
+      onCreated();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Create failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-lg shadow-xl max-w-lg w-full p-5 space-y-4"
+        onClick={(e) => e.stopPropagation()}
+        data-testid="new-calendar-modal"
+      >
+        <h3 className="text-sm font-semibold">New Calendar</h3>
+
+        <div>
+          <label className="text-xs text-muted-foreground">Type</label>
+          <div className="flex gap-2 mt-1">
+            <Button
+              size="sm"
+              variant={form.type === "individual" ? "default" : "outline"}
+              onClick={() => set("type", "individual")}
+            >
+              Individual
+            </Button>
+            <Button
+              size="sm"
+              variant={form.type === "round_robin" ? "default" : "outline"}
+              onClick={() => set("type", "round_robin")}
+            >
+              Round Robin
+            </Button>
+            <Button size="sm" variant="outline" disabled>
+              Group (coming soon)
+            </Button>
+          </div>
+        </div>
+
+        <div>
+          <label className="text-xs text-muted-foreground">Name</label>
+          <input
+            type="text"
+            value={form.name}
+            onChange={(e) => set("name", e.target.value)}
+            className="w-full text-sm rounded-md border border-border px-2 py-1.5 mt-1"
+            placeholder="e.g. Autobook Team"
+          />
+        </div>
+
+        <div>
+          <label className="text-xs text-muted-foreground">
+            Slug (URL — globally unique)
+          </label>
+          <input
+            type="text"
+            value={form.slug}
+            onChange={(e) => set("slug", e.target.value)}
+            onBlur={(e) => checkSlugCollision(e.target.value)}
+            className="w-full text-sm rounded-md border border-border px-2 py-1.5 mt-1"
+            placeholder="autobook-team"
+          />
+          {slugWarning && (
+            <p className="text-xs text-red-600 mt-1">{slugWarning}</p>
+          )}
+        </div>
+
+        <div>
+          <label className="text-xs text-muted-foreground">Source label</label>
+          <select
+            value={form.source_label}
+            onChange={(e) => set("source_label", e.target.value)}
+            className="w-full text-sm rounded-md border border-border px-2 py-1.5 mt-1"
+          >
+            {_SOURCE_LABELS.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="text-xs text-muted-foreground">Color</label>
+          <div className="flex items-center gap-2 mt-1">
+            {_CALENDAR_COLOR_PRESETS.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => set("color", c)}
+                className={`w-7 h-7 rounded-full border-2 ${form.color === c ? "border-black" : "border-transparent"}`}
+                style={{ background: c }}
+                aria-label={`Color ${c}`}
+              />
+            ))}
+            <input
+              type="text"
+              value={form.color}
+              onChange={(e) => set("color", e.target.value)}
+              className="w-24 text-xs rounded-md border border-border px-2 py-1"
+              placeholder="#000000"
+            />
+          </div>
+        </div>
+
+        {form.type === "individual" ? (
+          <div>
+            <label className="text-xs text-muted-foreground">
+              Owner ID (agent uuid)
+            </label>
+            <input
+              type="text"
+              value={form.owner_id}
+              onChange={(e) => set("owner_id", e.target.value)}
+              className="w-full text-sm rounded-md border border-border px-2 py-1.5 mt-1 font-mono"
+              placeholder="uuid"
+            />
+          </div>
+        ) : (
+          <div>
+            <label className="text-xs text-muted-foreground">
+              Member IDs (comma-separated uuids)
+            </label>
+            <input
+              type="text"
+              value={form.member_ids}
+              onChange={(e) => set("member_ids", e.target.value)}
+              className="w-full text-sm rounded-md border border-border px-2 py-1.5 mt-1 font-mono"
+              placeholder="uuid1, uuid2"
+            />
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <Button size="sm" variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button size="sm" onClick={submit} disabled={saving}>
+            {saving ? "Saving…" : "Create"}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
