@@ -1111,6 +1111,21 @@ async def on_startup():
         name="ghl_contact_id_agent_agency",
     )
     await db.policies.create_index("ghl_contact_id")
+
+    # Calendar system (Feature C — sub-phase C1). Slug is globally
+    # unique across all tenants per design Q1; the migration script
+    # de-duplicates by appending "-N" to losers. agency_id non-unique
+    # for fast tenant queries; owner_id sparse so individual-only
+    # lookups don't pay the cost of indexing the empty owner_id on
+    # round-robin / group rows.
+    try:
+        await db.calendars.create_index("slug", unique=True, name="slug_unique")
+    except Exception:
+        pass
+    await db.calendars.create_index("agency_id", name="agency_id_idx")
+    await db.calendars.create_index(
+        "owner_id", sparse=True, name="owner_id_sparse",
+    )
     await db.policies.create_index("submitted_at")
     await db.policies.create_index([("ghl_contact_id", 1), ("product_type", 1)])
 

@@ -592,6 +592,100 @@ class Tag(BaseModel):
     created_at: str = Field(default_factory=utcnow_iso)
 
 
+# ----- Calendar System (Feature C — sub-phase C1) -----
+# Promoted from users.booking_settings to a first-class collection so
+# one agent can own multiple calendars (personal + team round-robin)
+# and round-robin calendars can have no single owner. Public booking
+# URLs (/book/:slug) resolve through this collection first, then fall
+# back to users.booking_settings for unmigrated agents.
+CalendarType = Literal["individual", "round_robin", "group"]
+CalendarSourceLabel = Literal["autobook", "va", "ae", "manual"]
+
+
+# Default hex colors by calendar type. Used by the management UI to
+# render type-coded badges; round_robin gets emerald to match its
+# "team" semantic, individual gets indigo (the existing agent accent),
+# group gets amber.
+_CALENDAR_COLOR_BY_TYPE = {
+    "individual": "#6366f1",
+    "round_robin": "#10b981",
+    "group": "#f59e0b",
+}
+
+
+def _default_calendar_booking_settings() -> dict:
+    """Mirror the existing BookingSettings default shape so migration
+    from users.booking_settings is a verbatim copy and an agent
+    creating a fresh calendar gets the same defaults their per-user
+    booking page used to provide.
+    """
+    return {
+        "duration_minutes": 30,
+        "buffer_minutes": 15,
+        "advance_notice_hours": 24,
+        "max_bookings_per_day": 10,
+        "working_hours": {
+            "monday":    {"enabled": True,  "start": "09:00", "end": "17:00"},
+            "tuesday":   {"enabled": True,  "start": "09:00", "end": "17:00"},
+            "wednesday": {"enabled": True,  "start": "09:00", "end": "17:00"},
+            "thursday":  {"enabled": True,  "start": "09:00", "end": "17:00"},
+            "friday":    {"enabled": True,  "start": "09:00", "end": "17:00"},
+            "saturday":  {"enabled": False, "start": "09:00", "end": "12:00"},
+            "sunday":    {"enabled": False, "start": "09:00", "end": "12:00"},
+        },
+        "meeting_types": ["phone", "video"],
+        "timezone": "America/Chicago",
+    }
+
+
+class CalendarDistribution(BaseModel):
+    """Round-robin assignment ledger. Lives inside Calendar.distribution.
+    ``weights`` are 1-5 per member (default 1). ``assignment_counts`` +
+    ``last_assigned_at`` are bumped by the C3 distribution engine and
+    drive the deficit-weighted pick decided in design Q2.
+    """
+    weights: dict = Field(default_factory=dict)               # {user_id: int (1-5)}
+    assignment_counts: dict = Field(default_factory=dict)      # {user_id: int}
+    last_assigned_at: dict = Field(default_factory=dict)       # {user_id: ISO datetime}
+
+
+class Calendar(BaseModel):
+    """First-class calendar record. One per booking surface — could be an
+    agent's individual page, a team round-robin, or a group/class
+    schedule. Slug is globally unique across all tenants (design Q1).
+    """
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    agency_id: str
+    name: str = Field(..., min_length=1, max_length=120)
+    type: CalendarType
+    slug: str = Field(..., min_length=3, max_length=60,
+                      pattern=r"^[a-z0-9-]+$")
+    color: str = Field(default="#6366f1", min_length=4, max_length=9)
+    source_label: CalendarSourceLabel = "manual"
+
+    # Individual-only ownership pointer. Required by the migration +
+    # the C2 individual-calendar API. round_robin and group leave this
+    # null and use ``member_ids`` instead.
+    owner_id: Optional[str] = None
+
+    # round_robin + group membership. Always a list; individual
+    # calendars get an empty list (the migration leaves it [] and the
+    # invariant "individual has owner_id, others have member_ids" is
+    # enforced at the route layer).
+    member_ids: List[str] = Field(default_factory=list)
+
+    # Only populated for round_robin. None on individual/group.
+    distribution: Optional[CalendarDistribution] = None
+
+    booking_settings: dict = Field(
+        default_factory=_default_calendar_booking_settings,
+    )
+
+    is_active: bool = True
+    created_at: str = Field(default_factory=utcnow_iso)
+    updated_at: str = Field(default_factory=utcnow_iso)
+
+
 # ----- Audit Log -----
 class AuditEvent(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))

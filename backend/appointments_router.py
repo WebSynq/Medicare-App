@@ -68,6 +68,12 @@ AppointmentStatus = Literal["scheduled", "completed", "cancelled", "no_show"]
 # and automation differentiation can hang off a single enum check.
 AppointmentOutcome = Literal["showed", "no_show", "sold", "not_sold"]
 
+# Feature C — calendar system. booking_type mirrors the
+# CalendarSourceLabel enum in models.py exactly: at booking time the
+# value is stamped from the resolving calendar's source_label so the
+# frontend calendar view (C4) can color-code by the booking source.
+BookingType = Literal["autobook", "va", "ae", "manual"]
+
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 
@@ -129,6 +135,12 @@ class AppointmentCreate(BaseModel):
     meeting_type: Optional[Literal["phone", "video"]] = None
     booking_reason: Optional[str] = Field(None, max_length=200)
     client_email: Optional[str] = Field(None, max_length=320)
+    # Feature C — calendar attribution. Both optional on the create
+    # path because the internal agent-facing POST may run with no
+    # calendar context (walk-in flows). Public /api/book and the
+    # round-robin engine stamp them at booking time.
+    calendar_id: Optional[str] = Field(None, max_length=128)
+    booking_type: BookingType = "manual"
 
     @field_validator("appointment_date")
     @classmethod
@@ -548,6 +560,10 @@ async def create_appointment(
         "meeting_type": body.meeting_type,
         "booking_reason": body.booking_reason,
         "client_email": body.client_email,
+        # Feature C — calendar attribution. Defaults to "manual" when
+        # the agent creates the row directly (no calendar context).
+        "calendar_id": body.calendar_id,
+        "booking_type": body.booking_type,
         "booked_by_client": False,
         # Automation send-flags. Stamped at create so the automation
         # scheduler can update them atomically without an upsert.
