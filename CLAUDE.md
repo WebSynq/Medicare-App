@@ -625,6 +625,35 @@ was broken. Changed to `cross-origin`.
 - `stripe>=15.0.0,<16` (added Phase 3)
 - All 441 tests pass on the new stack.
 
+### Infrastructure (May 2026)
+`render.yaml` at the repo root codifies the production service
+shape: name (`ghw-medicare-backend`), plan (`standard`), region
+(`oregon`), runtime (`python`), health-check path (`/api/health`),
+graceful shutdown delay (120s), and auto-deploy trigger (`commit`).
+Env vars, build/start commands, and rootDir stay in the Render
+dashboard so secrets never live in repo and rotating a key doesn't
+require a code edit.
+
+### Memory hardening (May 2026)
+Two-file pass to bound RSS growth on the long-lived 15-min
+scheduler tick:
+- `backend/security_intelligence.py` — `import gc`, hard caps on
+  the prompt inputs before the Claude call (failed-logins `[:50]`,
+  audit anomalies `[:20]`, ip_enrichments `[:10]`) plus a payload-
+  size log line; the Anthropic `client.messages.create` call lives
+  in a nested try/finally that does `del response; gc.collect()`;
+  after the Mongo persist, `del stats, event_doc, ai` +
+  `gc.collect()` before the return.
+- `backend/automations.py` — every scheduler-tick cursor replaced
+  with `.to_list(length=N)` (leads 500, appointments 200, users
+  100, other 200) and each consume-loop ends with `del docs;
+  gc.collect()`. Event-driven `run_new_lead_notification` +
+  `run_soa_signed_notification` deliberately untouched. No
+  behavior changes — filter logic, flag-first idempotency, email
+  sends, GHL sync all byte-identical.
+- Test count remains 441 (no new tests added in this pass —
+  pure memory-management hardening).
+
 
 ## Pending
 
