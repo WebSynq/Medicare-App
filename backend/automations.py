@@ -17,6 +17,7 @@ Idempotency: every email-sending path writes a flag (`*_sent` /
 sent. If the email fails, the flag stays set — we accept missed
 emails over duplicate emails (the audit log captures the failure).
 """
+import gc
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -95,15 +96,18 @@ async def run_birthday_window_automation(db) -> int:
     # Multi-tenant scoping — every scheduler job filters by agency_id
     # so a future cross-tenant deploy doesn't leak nudges across
     # agencies. ghw_001 today; per-tenant scheduling lands later.
-    cursor = db.leads.find({
+    # Memory hardening (2026-05): hard cap on cursor → list so a
+    # single tick can't load an unbounded slice of the leads
+    # collection into RSS.
+    docs = await db.leads.find({
         "agency_id": get_agency_id(),
         "state": "IL",
         "email": {"$nin": [None, ""]},
         "birthday_email_sent": {"$ne": True},
         "status": {"$nin": ["lost", "do_not_contact"]},
-    }, {"_id": 0})
+    }, {"_id": 0}).to_list(length=500)
 
-    async for raw in cursor:
+    for raw in docs:
         lead = safe_lead_load(raw)
         dob = lead.get("date_of_birth")
         if not dob or not isinstance(dob, str):
@@ -165,6 +169,8 @@ async def run_birthday_window_automation(db) -> int:
             target_type="lead",
             target_id=lead["id"],
         )
+    del docs
+    gc.collect()
     return sent
 
 
@@ -175,14 +181,14 @@ async def run_enrolled_welcome_automation(db) -> int:
     from resend_client import send_email
 
     sent = 0
-    cursor = db.leads.find({
+    docs = await db.leads.find({
         "agency_id": get_agency_id(),
         "status": "enrolled",
         "email": {"$nin": [None, ""]},
         "enrolled_welcome_sent": {"$ne": True},
-    }, {"_id": 0})
+    }, {"_id": 0}).to_list(length=500)
 
-    async for raw in cursor:
+    for raw in docs:
         lead = safe_lead_load(raw)
         agent = await _agent_for(db, lead.get("agent_id"))
         if not agent:
@@ -223,6 +229,8 @@ async def run_enrolled_welcome_automation(db) -> int:
             actor_id=agent.get("id"),
             target_type="lead", target_id=lead["id"],
         )
+    del docs
+    gc.collect()
     return sent
 
 
@@ -302,15 +310,15 @@ async def run_stale_lead_alerts(db) -> int:
     cutoff_iso = cutoff.isoformat()
 
     sent = 0
-    cursor = db.leads.find({
+    docs = await db.leads.find({
         "agency_id": get_agency_id(),
         "stale_alert_sent": {"$ne": True},
         "updated_at": {"$lte": cutoff_iso},
         "status": {"$nin": list(_STALE_CLOSED_STATUSES)},
         "agent_id": {"$nin": [None, ""]},
-    }, {"_id": 0})
+    }, {"_id": 0}).to_list(length=500)
 
-    async for raw in cursor:
+    for raw in docs:
         lead = safe_lead_load(raw)
         agent = await _agent_for(db, lead.get("agent_id"))
         if not agent or not agent.get("email"):
@@ -359,6 +367,8 @@ async def run_stale_lead_alerts(db) -> int:
             actor_id=agent.get("id"),
             target_type="lead", target_id=lead["id"],
         )
+    del docs
+    gc.collect()
     return sent
 
 
@@ -448,16 +458,16 @@ async def run_appointment_reminders(db) -> int:
     # Look at any future appointment in the next ~50 hours.
     upcoming_cutoff = now + timedelta(hours=50)
 
-    cursor = db.appointments.find({
+    docs = await db.appointments.find({
         "agency_id": get_agency_id(),
         "status": "scheduled",
         "appointment_date": {
             "$gte": now.date().isoformat(),
             "$lte": upcoming_cutoff.date().isoformat(),
         },
-    }, {"_id": 0})
+    }, {"_id": 0}).to_list(length=200)
 
-    async for appt in cursor:
+    for appt in docs:
         dt = _appt_datetime(appt)
         if not dt:
             continue
@@ -476,6 +486,8 @@ async def run_appointment_reminders(db) -> int:
         elif 0.5 <= delta_hours <= 1.5 and not appt.get("reminder_1hr_sent"):
             if await _send_reminder(db, appt, 1, "reminder_1hr_sent"):
                 sent += 1
+    del docs
+    gc.collect()
     return sent
 
 
@@ -495,7 +507,7 @@ async def run_post_appointment_followup(db) -> int:
     cutoff_start = now - timedelta(hours=25)
     cutoff_end = now - timedelta(hours=24)
 
-    cursor = db.appointments.find({
+    docs = await db.appointments.find({
         "agency_id": get_agency_id(),
         "followup_sent": {"$ne": True},
         "client_email": {"$nin": [None, ""]},
@@ -503,9 +515,9 @@ async def run_post_appointment_followup(db) -> int:
             "$gte": cutoff_start.date().isoformat(),
             "$lte": cutoff_end.date().isoformat(),
         },
-    }, {"_id": 0})
+    }, {"_id": 0}).to_list(length=200)
 
-    async for appt in cursor:
+    for appt in docs:
         dt = _appt_datetime(appt)
         if not dt:
             continue
@@ -558,6 +570,8 @@ async def run_post_appointment_followup(db) -> int:
             actor_id=agent.get("id"),
             target_type="appointment", target_id=appt["appointment_id"],
         )
+    del docs
+    gc.collect()
     return sent
 
 
@@ -799,19 +813,19 @@ def compute_lead_urgency(lead: dict, today=None) -> dict:
 
 
 async def _agent_lead_cursor(db, agent_id: str):
-    """Iterate over an agent's open leads (status not closed).
+    """Open leads for an agent (status not closed). Returns a list,
+    NOT a cursor — capped at 500 to bound RSS per tick.
 
-    agency_id filter is belt-and-suspenders here — agent_id already
-    isolates to one user, who only belongs to one tenant. But once
-    we cut over to true multi-tenant scheduling the explicit filter
-    will let the planner use the compound (agency_id, agent_id)
-    index added in server.on_startup.
+    Name kept for callsite continuity. agency_id filter is belt-and-
+    suspenders since agent_id already isolates to one user; the
+    explicit filter lets the planner use the compound (agency_id,
+    agent_id) index once we cut over to true multi-tenant scheduling.
     """
-    return db.leads.find({
+    return await db.leads.find({
         "agency_id": get_agency_id(),
         "agent_id": agent_id,
         "status": {"$nin": list(_BRIEF_SKIP_STATUSES)},
-    }, {"_id": 0})
+    }, {"_id": 0}).to_list(length=500)
 
 
 async def _completed_cna_lead_ids(db, agent_id: str) -> set:
@@ -819,14 +833,16 @@ async def _completed_cna_lead_ids(db, agent_id: str) -> set:
     the "+10 CNA completed" bonus without an N+1 lookup per lead."""
     out = set()
     try:
-        cursor = db.cna_assessments.find(
+        docs = await db.cna_assessments.find(
             {"agent_id": agent_id, "completed_at": {"$exists": True}},
             {"_id": 0, "lead_id": 1},
-        )
-        async for row in cursor:
+        ).to_list(length=200)
+        for row in docs:
             lid = row.get("lead_id")
             if lid:
                 out.add(lid)
+        del docs
+        gc.collect()
     except Exception as e:                                    # noqa: BLE001
         logger.warning("brief: cna lookup failed: %s", e)
     return out
@@ -848,9 +864,9 @@ async def build_brief_for_agent(
     cna_lead_ids = await _completed_cna_lead_ids(db, agent["id"])
 
     scored: list = []
-    cursor = await _agent_lead_cursor(db, agent["id"])
+    docs = await _agent_lead_cursor(db, agent["id"])
     now_iso = datetime.now(timezone.utc).isoformat()
-    async for raw in cursor:
+    for raw in docs:
         lead = safe_lead_load(raw)
         lead["_cna_completed"] = lead.get("id") in cna_lead_ids
         verdict = compute_lead_urgency(lead, today=today)
@@ -888,6 +904,8 @@ async def build_brief_for_agent(
     top = scored[:_TOP_N]
     total_urgent = sum(1 for r in scored if r["urgency_level"] == "urgent")
     total_priority = sum(1 for r in scored if r["score"] >= 50)
+    del docs
+    gc.collect()
 
     brief = {
         "agent_id": agent["id"],
@@ -919,13 +937,13 @@ async def run_daily_agent_brief(db) -> int:
 
     portal_url = _frontend_url()
     generated = 0
-    cursor = db.users.find({
+    docs = await db.users.find({
         "is_active": True,
         "status": "active",
         "role": {"$in": ["agent", "admin", "owner"]},
-    }, {"_id": 0})
+    }, {"_id": 0}).to_list(length=100)
 
-    async for agent in cursor:
+    for agent in docs:
         try:
             brief = await build_brief_for_agent(db, agent, persist=True)
         except Exception as e:                                # noqa: BLE001
@@ -968,6 +986,8 @@ async def run_daily_agent_brief(db) -> int:
         except Exception as e:                                # noqa: BLE001
             logger.warning("brief: email failed for %s: %s",
                             agent.get("email"), e)
+    del docs
+    gc.collect()
     return generated
 
 
