@@ -190,6 +190,8 @@ export default function TodayPage() {
   const stale = data?.stale_leads || [];
   const appts = data?.todays_appointments || [];
   const mtdCommission = Number(data?.mtd_commission) || 0;
+  const newLeadsToday = Number(data?.new_leads_today) || 0;
+  const appsSubmittedToday = Number(data?.apps_submitted_today) || 0;
 
   const mtdCommissionLabel = new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -236,6 +238,41 @@ export default function TodayPage() {
               </span>
             )}
           </div>
+        </div>
+
+        {/* Daily KPI cards — Feature B. Sit between the summary pills
+            (action-bucket counts) and the call-list grid below. Numbers
+            scope to the caller via /today/actions's agent_filter. */}
+        <div
+          className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4"
+          data-testid="today-kpi-cards"
+        >
+          <Card className="border-l-4" style={{ borderLeftColor: "#2563eb" }}>
+            <CardContent className="p-4">
+              <p className="text-xs uppercase tracking-widest text-muted-foreground">
+                New Leads Today
+              </p>
+              <p
+                className="text-3xl font-bold tabular-nums mt-1"
+                data-testid="kpi-new-leads-today"
+              >
+                {newLeadsToday}
+              </p>
+            </CardContent>
+          </Card>
+          <Card className="border-l-4" style={{ borderLeftColor: "#16a34a" }}>
+            <CardContent className="p-4">
+              <p className="text-xs uppercase tracking-widest text-muted-foreground">
+                Apps Submitted Today
+              </p>
+              <p
+                className="text-3xl font-bold tabular-nums mt-1"
+                data-testid="kpi-apps-submitted-today"
+              >
+                {appsSubmittedToday}
+              </p>
+            </CardContent>
+          </Card>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

@@ -248,6 +248,43 @@ async def _mtd_commission(db, scope: dict, today: date) -> float:
     return round(total, 2)
 
 
+async def _new_leads_today(db, scope: dict, today: date) -> int:
+    """Count leads created on ``today`` (UTC). Uses the same UTC anchor
+    as the rest of the Today page so the KPI matches the section cards
+    below it.
+    """
+    start_iso = today.isoformat()
+    next_iso = (today + timedelta(days=1)).isoformat()
+    try:
+        return await db.leads.count_documents({
+            **scope,
+            "created_at": {"$gte": start_iso, "$lt": next_iso},
+        })
+    except Exception as e:                                     # noqa: BLE001
+        logger.warning("today: new_leads_today query failed: %s", e)
+        return 0
+
+
+async def _apps_submitted_today(db, scope: dict, today: date) -> int:
+    """Count `policies` rows whose ``submitted_at`` lands on ``today``.
+
+    Apps are stored in the policies collection (one row per submitted
+    application). agent_filter scopes the read so an agent counts only
+    their own submissions, while admin / owner / compliance get the
+    agency-wide tally.
+    """
+    start_iso = today.isoformat()
+    next_iso = (today + timedelta(days=1)).isoformat()
+    try:
+        return await db.policies.count_documents({
+            **scope,
+            "submitted_at": {"$gte": start_iso, "$lt": next_iso},
+        })
+    except Exception as e:                                     # noqa: BLE001
+        logger.warning("today: apps_submitted_today query failed: %s", e)
+        return 0
+
+
 async def _todays_appointments(db, scope: dict, today: date) -> List[Dict[str, Any]]:
     """Appointments on ``today``. Returns [] before Task 2 creates the
     collection — mongomock + Atlas both auto-create on first insert."""
@@ -297,6 +334,8 @@ async def today_actions(
     stale = await _stale_leads(db, scope, now_dt)
     appts = await _todays_appointments(db, scope, today)
     mtd_commission = await _mtd_commission(db, scope, today)
+    new_leads_today = await _new_leads_today(db, scope, today)
+    apps_submitted_today = await _apps_submitted_today(db, scope, today)
 
     summary = {
         "urgent_count": len(urgent),
@@ -310,7 +349,12 @@ async def today_actions(
         actor_email=current_user.get("email"),
         actor_id=current_user.get("id"),
         request=request,
-        metadata={**summary, "mtd_commission": mtd_commission},
+        metadata={
+            **summary,
+            "mtd_commission": mtd_commission,
+            "new_leads_today": new_leads_today,
+            "apps_submitted_today": apps_submitted_today,
+        },
     )
 
     return {
@@ -321,4 +365,6 @@ async def today_actions(
         "stale_leads": stale,
         "todays_appointments": appts,
         "mtd_commission": mtd_commission,
+        "new_leads_today": new_leads_today,
+        "apps_submitted_today": apps_submitted_today,
     }
