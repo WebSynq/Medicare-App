@@ -1054,12 +1054,23 @@ def start_automation_scheduler(get_db_fn):
         except Exception as e:                                # noqa: BLE001
             logger.exception("automation daily_brief failed: %s", e)
 
+    # Startup-pile hardening (2026-05): delay the first run so a
+    # restart doesn't ignite every scheduler simultaneously the moment
+    # the worker comes back. +5 min for automations; dashboard_agg
+    # picks +8 so the two 15-min schedules don't collide on every
+    # quarter-hour boundary. coalesce=True collapses any misfire
+    # backlog into a single run on recovery — better one delayed
+    # tick than 10 catch-up ticks burning Anthropic calls.
     scheduler.add_job(
         _tick,
-        trigger=IntervalTrigger(minutes=15),
+        trigger=IntervalTrigger(
+            minutes=15,
+            start_date=datetime.now(timezone.utc) + timedelta(minutes=5),
+        ),
         id="automations_tick",
         max_instances=1,
-        next_run_time=datetime.now(timezone.utc),
+        coalesce=True,
+        misfire_grace_time=60,
         replace_existing=True,
     )
     # 12:00 UTC = 7:00 AM Central (standard time). MVP runs at a single
