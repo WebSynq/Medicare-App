@@ -24,8 +24,8 @@ Every write audits with the `calendar_created` / `calendar_updated`
 reconstruct who changed what.
 """
 import logging
-from datetime import date, datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime, time as dtime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -410,6 +410,378 @@ async def patch_calendar(
     if privileged:
         return _public(fresh)
     return _strip_distribution_internals(fresh)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Round-robin distribution engine (Feature C — sub-phase C3)
+# ═══════════════════════════════════════════════════════════════════════
+# Deficit-weighted selection: each member has a target share (weight /
+# total_weight); the engine picks the available member whose actual
+# share (count / total_count) is furthest below their target. Ties
+# break to the oldest last_assigned_at, then to the lowest index in
+# member_ids — the same order regardless of which member dict the
+# caller hands in first, so the pick is deterministic given the input.
+
+_WEEKDAY_KEYS = (
+    "monday", "tuesday", "wednesday", "thursday", "friday",
+    "saturday", "sunday",
+)
+
+
+def _parse_iso_date(s: str) -> Optional[date]:
+    try:
+        y, m, d = (int(p) for p in s.split("-"))
+        return date(y, m, d)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _parse_hhmm(s: str) -> Optional[dtime]:
+    try:
+        hh, mm = (int(p) for p in s.split(":"))
+        return dtime(hh, mm)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _is_member_available(
+    user_bs: dict, weekday_key: str, slot_time: Optional[dtime],
+) -> bool:
+    """A member is available for a slot when their working_hours has
+    that weekday enabled AND the slot's HH:MM falls in the start/end
+    window. A user with no working_hours dict for the weekday falls
+    back to "available" — the calendar's working_hours already
+    constrained the candidate slot.
+    """
+    wh = (user_bs or {}).get("working_hours") or {}
+    day = wh.get(weekday_key)
+    if not isinstance(day, dict):
+        return True
+    if not day.get("enabled", True):
+        return False
+    if slot_time is None:
+        return True
+    start = _parse_hhmm(day.get("start") or "00:00") or dtime(0, 0)
+    end = _parse_hhmm(day.get("end") or "23:59") or dtime(23, 59)
+    return start <= slot_time <= end
+
+
+def _compute_deficit(
+    weight: int, count: int, total_weight: int, total_count: int,
+) -> float:
+    """expected_share - actual_share. total_count is floored to 1 at
+    the call site so first-booking deficits collapse to expected_share.
+    """
+    expected = weight / total_weight if total_weight else 0.0
+    actual = count / total_count if total_count else 0.0
+    return expected - actual
+
+
+def _select_round_robin_member(
+    members: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Inputs: list of member dicts with keys
+       ``id, weight, count, last_assigned_at, index, available``.
+
+    Returns the chosen member dict (with a ``deficit`` field added) or
+    None when no member is available.
+
+    Sort key: (-deficit, last_assigned_at-sentinel, index). The
+    sentinel maps None → "" so untouched members sort before any
+    member already assigned — first booking goes to the lowest-index
+    available member when weights are equal.
+    """
+    available = [m for m in members if m["available"]]
+    if not available:
+        return None
+    total_weight = sum(m["weight"] for m in available) or 1
+    total_count = max(1, sum(m["count"] for m in available))
+    for m in available:
+        m["deficit"] = _compute_deficit(
+            m["weight"], m["count"], total_weight, total_count,
+        )
+    available.sort(key=lambda m: (
+        -m["deficit"],
+        m["last_assigned_at"] or "",
+        m["index"],
+    ))
+    return available[0]
+
+
+async def _build_member_view(
+    db: AsyncIOMotorDatabase, calendar: Dict[str, Any],
+    slot_dt: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    """Hydrate ``calendar.member_ids`` into a list of member dicts
+    suitable for ``_select_round_robin_member``. Pulls per-member
+    weight + assignment_count + last_assigned_at out of the
+    distribution ledger and computes ``available`` against the slot
+    datetime when provided (None → "available now" which uses the
+    current UTC wall-clock).
+    """
+    dist = calendar.get("distribution") or {}
+    weights = dist.get("weights") or {}
+    counts = dist.get("assignment_counts") or {}
+    last = dist.get("last_assigned_at") or {}
+
+    member_ids = calendar.get("member_ids") or []
+    if not member_ids:
+        return []
+
+    users = {
+        u["id"]: u
+        async for u in db.users.find(
+            {"id": {"$in": member_ids}},
+            {"_id": 0, "id": 1, "full_name": 1, "agent_name": 1,
+             "email": 1, "is_active": 1, "booking_settings": 1},
+        )
+    }
+
+    if slot_dt is None:
+        slot_dt = datetime.now(timezone.utc)
+    weekday_key = _WEEKDAY_KEYS[slot_dt.weekday()]
+    slot_time = dtime(slot_dt.hour, slot_dt.minute)
+
+    out = []
+    for idx, uid in enumerate(member_ids):
+        u = users.get(uid)
+        if not u or not u.get("is_active", True):
+            available = False
+        else:
+            available = _is_member_available(
+                u.get("booking_settings") or {}, weekday_key, slot_time,
+            )
+        out.append({
+            "id": uid,
+            "full_name": (u or {}).get("full_name")
+                or (u or {}).get("agent_name") or "",
+            "weight": int(weights.get(uid, 1) or 1),
+            "count": int(counts.get(uid, 0) or 0),
+            "last_assigned_at": last.get(uid),
+            "index": idx,
+            "available": available,
+            "_user": u,
+        })
+    return out
+
+
+async def pick_and_record_round_robin(
+    db: AsyncIOMotorDatabase, calendar: Dict[str, Any],
+    slot_dt: Optional[datetime] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Pick a member for the requested slot and atomically bump their
+    ledger entry.
+
+    Returns ``(selected_member_dict, fresh_calendar_doc)``. When no
+    member is available the tuple is ``(None, calendar)`` — caller
+    raises 409. The increment uses Mongo's $inc + $set so two
+    concurrent calls each bump the same counter without one
+    clobbering the other; the picker still has the classic read /
+    compute / write race for very-high-concurrency selection — for
+    the booking workload's actual concurrency (single-digit RPS per
+    slug) the race window is too small to matter, and the C5 admin
+    UI can manually correct any visible drift via /distribution/reset.
+    """
+    members = await _build_member_view(db, calendar, slot_dt)
+    chosen = _select_round_robin_member(members)
+    if not chosen:
+        return None, calendar
+    uid = chosen["id"]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    updated = await db.calendars.find_one_and_update(
+        {"id": calendar["id"]},
+        {
+            "$inc": {f"distribution.assignment_counts.{uid}": 1},
+            "$set": {
+                f"distribution.last_assigned_at.{uid}": now_iso,
+                "updated_at": now_iso,
+            },
+        },
+        return_document=True,
+    )
+    return chosen, (updated or calendar)
+
+
+# ── Distribution endpoints ───────────────────────────────────────────────
+
+
+class DistributionPatchBody(BaseModel):
+    """Body: partial weights. ``weights[user_id] = int 1-5``. Each
+    supplied id is validated as a current member; unsupplied members
+    are untouched on the row.
+    """
+    weights: Dict[str, int] = Field(..., min_length=1)
+
+    @field_validator("weights")
+    @classmethod
+    def _v_weights(cls, v: Dict[str, int]) -> Dict[str, int]:
+        for uid, w in v.items():
+            if not isinstance(w, int) or not (1 <= w <= 5):
+                raise ValueError(
+                    f"weight for {uid!r} must be an integer 1-5",
+                )
+        return v
+
+
+@router.get("/{calendar_id}/distribution")
+async def get_distribution(
+    calendar_id: str,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    agency: dict = Depends(get_agency),
+):
+    """Per-member breakdown for a round_robin calendar.
+
+    Each row carries the live deficit + an ``is_available_now`` flag
+    computed against the current UTC wall clock. 404 when the
+    calendar isn't round_robin so the UI surfaces an honest error
+    instead of an empty distribution panel.
+    """
+    if not _is_privileged(current_user):
+        raise HTTPException(
+            status_code=403, detail="Only owners/admins can read distribution.",
+        )
+    cal = await _fetch_or_404(db, calendar_id, agency["agency_id"])
+    if cal.get("type") != "round_robin":
+        raise HTTPException(
+            status_code=404,
+            detail="Distribution is only defined for round_robin calendars.",
+        )
+    members = await _build_member_view(db, cal)
+    # Compute deficits across ALL members (not just available ones) so
+    # the UI can show the actual share-vs-target gap for every member.
+    total_weight = sum(m["weight"] for m in members) or 1
+    total_count = max(1, sum(m["count"] for m in members))
+    out = []
+    for m in members:
+        out.append({
+            "user_id": m["id"],
+            "full_name": m["full_name"],
+            "weight": m["weight"],
+            "assignment_count": m["count"],
+            "last_assigned_at": m["last_assigned_at"],
+            "deficit": round(
+                _compute_deficit(
+                    m["weight"], m["count"], total_weight, total_count,
+                ),
+                6,
+            ),
+            "is_available_now": m["available"],
+        })
+    return {
+        "calendar_id": cal["id"],
+        "type": cal["type"],
+        "members": out,
+        "totals": {
+            "total_weight": total_weight,
+            "total_assignments": sum(m["count"] for m in members),
+            "available_now": sum(1 for m in members if m["available"]),
+        },
+    }
+
+
+@router.patch("/{calendar_id}/distribution")
+async def patch_distribution(
+    calendar_id: str,
+    request: Request,
+    body: DistributionPatchBody = Body(...),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    agency: dict = Depends(get_agency),
+):
+    """Partial weight update. Validates each user_id is a current
+    member; rejects with 400 when any id is unknown so a typo can't
+    create an orphan ledger entry that the engine then trips over.
+    """
+    if not _is_privileged(current_user):
+        raise HTTPException(
+            status_code=403, detail="Only owners/admins can patch distribution.",
+        )
+    cal = await _fetch_or_404(db, calendar_id, agency["agency_id"])
+    if cal.get("type") != "round_robin":
+        raise HTTPException(
+            status_code=404,
+            detail="Distribution is only defined for round_robin calendars.",
+        )
+    member_ids = set(cal.get("member_ids") or [])
+    unknown = [uid for uid in body.weights if uid not in member_ids]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"user_id(s) {unknown!r} are not members of this calendar.",
+        )
+
+    set_payload = {
+        f"distribution.weights.{uid}": int(w)
+        for uid, w in body.weights.items()
+    }
+    set_payload["updated_at"] = _now_iso()
+    await db.calendars.update_one(
+        {"id": calendar_id, "agency_id": agency["agency_id"]},
+        {"$set": set_payload},
+    )
+
+    await write_audit(
+        db, "calendar_distribution_updated",
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
+        target_type="calendar",
+        target_id=calendar_id,
+        request=request,
+        metadata={"updated_weights": body.weights},
+    )
+
+    fresh = await db.calendars.find_one(
+        {"id": calendar_id}, {"_id": 0},
+    )
+    return _public(fresh)
+
+
+@router.post("/{calendar_id}/distribution/reset")
+async def reset_distribution(
+    calendar_id: str,
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    agency: dict = Depends(get_agency),
+):
+    """Zero every assignment_count and clear last_assigned_at. Weights
+    untouched (manually-set shares persist across seasons).
+    """
+    if not _is_privileged(current_user):
+        raise HTTPException(
+            status_code=403, detail="Only owners/admins can reset distribution.",
+        )
+    cal = await _fetch_or_404(db, calendar_id, agency["agency_id"])
+    if cal.get("type") != "round_robin":
+        raise HTTPException(
+            status_code=404,
+            detail="Distribution is only defined for round_robin calendars.",
+        )
+    member_ids = cal.get("member_ids") or []
+    zeroed_counts = {uid: 0 for uid in member_ids}
+    await db.calendars.update_one(
+        {"id": calendar_id, "agency_id": agency["agency_id"]},
+        {"$set": {
+            "distribution.assignment_counts": zeroed_counts,
+            "distribution.last_assigned_at": {},
+            "updated_at": _now_iso(),
+        }},
+    )
+    await write_audit(
+        db, "calendar_distribution_reset",
+        actor_email=current_user.get("email"),
+        actor_id=current_user.get("id"),
+        target_type="calendar",
+        target_id=calendar_id,
+        request=request,
+        metadata={"members": len(member_ids)},
+    )
+    fresh = await db.calendars.find_one(
+        {"id": calendar_id}, {"_id": 0},
+    )
+    return _public(fresh)
 
 
 @router.delete("/{calendar_id}")

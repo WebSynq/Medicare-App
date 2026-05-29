@@ -240,10 +240,32 @@ async def _agent_by_slug(db, slug: str) -> Optional[Dict[str, Any]]:
     """
     cal = await _calendar_by_slug(db, slug)
     if cal:
-        # C1 wires Individual end-to-end. round_robin + group resolve
-        # here too so cross-tenant + index tests pass, but the actual
-        # member-pick happens in C3 — for C1 they fall through to a
-        # 404 since there's no owner_id to render a profile against.
+        # C3 — round-robin support. /info, /token, /slots use a
+        # calendar-proxy "virtual user" that exposes the calendar's
+        # display name + booking_settings without committing to a
+        # specific agent. POST /book/{slug} swaps the proxy for a
+        # real agent via the distribution engine before persistence.
+        if cal.get("type") == "round_robin":
+            cal_bs = cal.get("booking_settings") or {}
+            proxy_bs = {
+                **cal_bs,
+                "slug": cal.get("slug"),
+                "is_enabled": True,
+            }
+            if "duration_minutes" in cal_bs:
+                proxy_bs["appointment_duration"] = cal_bs["duration_minutes"]
+            if "max_bookings_per_day" in cal_bs:
+                proxy_bs["max_per_day"] = cal_bs["max_bookings_per_day"]
+            return {
+                "id": cal["id"],
+                "full_name": cal.get("name") or "GHW Team",
+                "agent_name": cal.get("name") or "GHW Team",
+                "email": "",
+                "is_active": True,
+                "booking_settings": proxy_bs,
+                "_calendar": cal,
+                "_is_calendar_proxy": True,
+            }
         if cal.get("type") == "individual" and cal.get("owner_id"):
             user = await db.users.find_one(
                 {
@@ -560,8 +582,23 @@ async def booking_slots(
     except HTTPException:
         return {"date": date, "slots": [], "reason": "Working hours misconfigured"}
 
+    # Existing-appointment query — for round_robin we filter by
+    # calendar_id since user["id"] is the calendar proxy id. For
+    # individual + the legacy user path, agent_id remains the right
+    # key. C3 keeps slot-conflict semantics conservative (one
+    # appointment per slot blocks the slot for the whole calendar);
+    # C5 polish can relax this once the booking_router has per-
+    # member slot occupancy.
+    if user.get("_is_calendar_proxy"):
+        appt_query = {
+            "calendar_id": user["id"], "appointment_date": date,
+        }
+    else:
+        appt_query = {
+            "agent_id": user["id"], "appointment_date": date,
+        }
     cursor = phi_db.appointments.find(
-        {"agent_id": user["id"], "appointment_date": date},
+        appt_query,
         {"_id": 0, "appointment_time": 1, "duration_minutes": 1, "status": 1},
     )
     appts = [a async for a in cursor]
@@ -736,6 +773,45 @@ async def create_booking(
         calendar_id = None
         booking_type = "manual"
         agency_id = user.get("agency_id") or get_agency_id()
+
+    # Feature C — sub-phase C3. Round-robin calendars resolve the
+    # actual agent at POST time via the deficit-weighted distribution
+    # engine. The engine atomically increments the picked member's
+    # assignment_count + last_assigned_at on the calendar doc.
+    if calendar and calendar.get("type") == "round_robin":
+        from calendars_router import pick_and_record_round_robin
+        try:
+            hh, mm = (int(p) for p in body.time.split(":"))
+            y, mo, d = (int(p) for p in body.date.split("-"))
+            slot_dt = datetime(y, mo, d, hh, mm, tzinfo=timezone.utc)
+        except (ValueError, AttributeError):
+            slot_dt = datetime.now(timezone.utc)
+
+        chosen, _updated_cal = await pick_and_record_round_robin(
+            db, calendar, slot_dt,
+        )
+        if not chosen:
+            await _record_and_maybe_block(
+                db, ip, slug, "validation_error",
+                metadata={"reason": "round_robin_no_available_member"},
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "No agents available for this time slot. "
+                    "Please pick another."
+                ),
+            )
+        # Swap the calendar proxy "user" for the selected member so
+        # the appointment doc + email fan-out carry the right
+        # agent identity end-to-end.
+        chosen_user = chosen.get("_user") or {}
+        user = {
+            **chosen_user,
+            "_calendar": calendar,
+            "_is_calendar_proxy": False,
+            "booking_settings": user.get("booking_settings") or {},
+        }
 
     doc = {
         "appointment_id": appointment_id,
