@@ -80,6 +80,31 @@ const TYPE_COLOR = {
   other: "#616161",                // gray
 };
 
+// Feature C — sub-phase C4. react-big-calendar events render colored
+// by the appointment's BOOKING SOURCE (booking_type), not by the
+// consultation type. The mapping is locked to the source_label
+// enum stamped onto every appointment at booking time (the
+// public-facing calendar carries source_label=autobook, VA-flow
+// calendars carry va, account-executive calendars carry ae,
+// everything else falls through to manual).
+const BOOKING_TYPE_COLOR = {
+  autobook: "#16a34a",  // emerald-600
+  va:       "#9333ea",  // purple-600
+  ae:       "#ea580c",  // orange-600
+  manual:   "#6b7280",  // gray-500
+};
+
+const BOOKING_TYPE_LABEL = {
+  autobook: "Autobook",
+  va:       "VA",
+  ae:       "AE",
+  manual:   "Manual",
+};
+
+function _bookingColor(a) {
+  return BOOKING_TYPE_COLOR[a?.booking_type] || BOOKING_TYPE_COLOR.manual;
+}
+
 const TYPE_LABEL = {
   initial_consultation: "Initial Consultation",
   plan_review: "Plan Review",
@@ -344,7 +369,7 @@ function AppointmentDetailSheet({ open, onOpenChange, appointment, onChanged }) 
         </SheetHeader>
 
         <div className="space-y-4 text-sm">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Badge
               className="rounded-full border-0 text-white text-[11px]"
               style={{ background: color }}
@@ -353,6 +378,17 @@ function AppointmentDetailSheet({ open, onOpenChange, appointment, onChanged }) 
             </Badge>
             <Badge variant="outline" className="rounded-full text-[11px] capitalize">
               {STATUS_LABEL[appointment.status] || appointment.status}
+            </Badge>
+            {/* C4 — booking source pill. Same color the calendar grid
+                uses for this row so the link between "the orange
+                event I clicked" and "AE source" is visually wired. */}
+            <Badge
+              className="rounded-full border-0 text-white text-[11px]"
+              style={{ background: _bookingColor(appointment) }}
+              data-testid="appointment-detail-source"
+            >
+              {BOOKING_TYPE_LABEL[appointment.booking_type]
+                || BOOKING_TYPE_LABEL.manual}
             </Badge>
           </div>
 
@@ -672,7 +708,11 @@ export default function CalendarPage() {
       if (!start) continue;
       const end = new Date(start);
       end.setMinutes(end.getMinutes() + (a.duration_minutes || 30));
-      const color = TYPE_COLOR[a.type] || TYPE_COLOR.other;
+      // C4 — render color by booking_type (source) per spec.
+      // Consultation type still drives sidebar swatches + labels;
+      // calendar-grid event color now signals WHERE the booking
+      // came from (autobook / va / ae / manual).
+      const color = _bookingColor(a);
       out.push({
         id: a.appointment_id,
         title: `${a.client_name} · ${formatTime12h(start)}`,
@@ -731,6 +771,33 @@ export default function CalendarPage() {
         <div className="cal-layout">
           <Card className="cal-main">
             <CardContent className="p-3 sm:p-4">
+              {/* C4 — booking-source color legend. Tells the agent
+                  what each calendar-event color means without
+                  hiding the legend behind a tooltip. */}
+              <div
+                className="flex flex-wrap items-center gap-3 mb-3 text-xs"
+                data-testid="calendar-booking-type-legend"
+              >
+                <span className="text-muted-foreground uppercase tracking-widest">
+                  Source
+                </span>
+                {Object.keys(BOOKING_TYPE_COLOR).map((k) => (
+                  <span
+                    key={k}
+                    className="inline-flex items-center gap-1.5"
+                    data-testid={`legend-${k}`}
+                  >
+                    <span
+                      aria-hidden
+                      className="inline-block w-2.5 h-2.5 rounded-full"
+                      style={{ background: BOOKING_TYPE_COLOR[k] }}
+                    />
+                    <span className="text-foreground/80">
+                      {BOOKING_TYPE_LABEL[k]}
+                    </span>
+                  </span>
+                ))}
+              </div>
               <BigCalendar
                 localizer={localizer}
                 events={events}
