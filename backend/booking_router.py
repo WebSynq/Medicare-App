@@ -182,12 +182,30 @@ def _parse_time(value: str) -> dtime:
     return dtime(int(hh), int(mm))
 
 
-async def _agent_by_slug(db, slug: str) -> Optional[Dict[str, Any]]:
-    """Return the active agent owning ``slug`` or None.
+async def _calendar_by_slug(db, slug: str) -> Optional[Dict[str, Any]]:
+    """Look up an active calendar by slug. Feature C — sub-phase C1.
 
-    Caller decides whether to 404 — we don't raise here so the abuse
-    logger can record `slug_invalid` / `agent_disabled` distinctly
-    while always returning a generic 404 to the public.
+    Slugs are globally unique across all tenants (design Q1) so a
+    naked slug match is safe. Returns None when no calendar carries
+    this slug — caller falls through to ``_user_by_slug``.
+
+    For C1 only ``type="individual"`` is wired end-to-end; round_robin
+    and group entries get the same lookup path here so the fallback
+    chain test passes, but the C3 distribution engine + C2 admin UI
+    are what actually exercise them. is_active=False also drops out
+    here so a disabled calendar 404s without surfacing a misleading
+    "agent disabled" attempt log.
+    """
+    return await db.calendars.find_one(
+        {"slug": slug, "is_active": True},
+        {"_id": 0},
+    )
+
+
+async def _user_by_slug(db, slug: str) -> Optional[Dict[str, Any]]:
+    """Original per-agent slug lookup. Kept verbatim so the fallback
+    path stays byte-identical to the pre-C1 behaviour for unmigrated
+    tenants.
     """
     return await db.users.find_one(
         {
@@ -198,6 +216,92 @@ async def _agent_by_slug(db, slug: str) -> Optional[Dict[str, Any]]:
         },
         {"_id": 0},
     )
+
+
+async def _agent_by_slug(db, slug: str) -> Optional[Dict[str, Any]]:
+    """Resolve ``slug`` to a user-shaped dict via the C1 fallback chain.
+
+    Step 1 — try the ``calendars`` collection. For individual calendars
+             we hydrate the owner user and merge the calendar's
+             ``booking_settings`` over the user's so /info /slots /POST
+             use the calendar's hours/duration/etc.
+    Step 2 — fall back to the original users.booking_settings lookup
+             so single-agent tenants who haven't been migrated yet
+             keep working.
+    Step 3 — None (caller 404s).
+
+    Returns the same shape both branches: a user-like dict with at
+    least ``id``, ``email``, ``full_name``, ``booking_settings``. The
+    calendar branch additionally stuffs ``_calendar`` onto the dict
+    so the write path can stamp ``calendar_id`` + ``booking_type``
+    without a second DB hit. Caller decides whether to 404; we don't
+    raise so the abuse logger can distinguish slug_invalid /
+    agent_disabled.
+    """
+    cal = await _calendar_by_slug(db, slug)
+    if cal:
+        # C3 — round-robin support. /info, /token, /slots use a
+        # calendar-proxy "virtual user" that exposes the calendar's
+        # display name + booking_settings without committing to a
+        # specific agent. POST /book/{slug} swaps the proxy for a
+        # real agent via the distribution engine before persistence.
+        if cal.get("type") == "round_robin":
+            cal_bs = cal.get("booking_settings") or {}
+            proxy_bs = {
+                **cal_bs,
+                "slug": cal.get("slug"),
+                "is_enabled": True,
+            }
+            if "duration_minutes" in cal_bs:
+                proxy_bs["appointment_duration"] = cal_bs["duration_minutes"]
+            if "max_bookings_per_day" in cal_bs:
+                proxy_bs["max_per_day"] = cal_bs["max_bookings_per_day"]
+            return {
+                "id": cal["id"],
+                "full_name": cal.get("name") or "GHW Team",
+                "agent_name": cal.get("name") or "GHW Team",
+                "email": "",
+                "is_active": True,
+                "booking_settings": proxy_bs,
+                "_calendar": cal,
+                "_is_calendar_proxy": True,
+            }
+        if cal.get("type") == "individual" and cal.get("owner_id"):
+            user = await db.users.find_one(
+                {
+                    "id": cal["owner_id"],
+                    "is_active": True,
+                    "status": "active",
+                },
+                {"_id": 0},
+            )
+            if not user:
+                return None
+            # Merge calendar's booking_settings over user's so the
+            # calendar is the authoritative source post-migration.
+            cal_bs = cal.get("booking_settings") or {}
+            merged_bs = {
+                **(user.get("booking_settings") or {}),
+                **cal_bs,
+                # Slug + is_enabled always come from the calendar
+                # branch so downstream checks resolve consistently.
+                "slug": cal.get("slug"),
+                "is_enabled": True,
+            }
+            # The Calendar schema uses ``duration_minutes`` while the
+            # pre-C1 BookingSettings shape used ``appointment_duration``.
+            # Alias one onto the other so both _public_profile and
+            # booking_slots find the value they read for.
+            if "duration_minutes" in cal_bs:
+                merged_bs["appointment_duration"] = cal_bs["duration_minutes"]
+            if "max_bookings_per_day" in cal_bs:
+                merged_bs["max_per_day"] = cal_bs["max_bookings_per_day"]
+            user = {**user, "booking_settings": merged_bs, "_calendar": cal}
+            return user
+        # Non-individual calendar found but C1 can't render it yet —
+        # fall through to user-table fallback rather than 404 so a
+        # later C3 deploy can pick up where this branch stops.
+    return await _user_by_slug(db, slug)
 
 
 def _first_name(full_name: Optional[str]) -> str:
@@ -478,8 +582,23 @@ async def booking_slots(
     except HTTPException:
         return {"date": date, "slots": [], "reason": "Working hours misconfigured"}
 
+    # Existing-appointment query — for round_robin we filter by
+    # calendar_id since user["id"] is the calendar proxy id. For
+    # individual + the legacy user path, agent_id remains the right
+    # key. C3 keeps slot-conflict semantics conservative (one
+    # appointment per slot blocks the slot for the whole calendar);
+    # C5 polish can relax this once the booking_router has per-
+    # member slot occupancy.
+    if user.get("_is_calendar_proxy"):
+        appt_query = {
+            "calendar_id": user["id"], "appointment_date": date,
+        }
+    else:
+        appt_query = {
+            "agent_id": user["id"], "appointment_date": date,
+        }
     cursor = phi_db.appointments.find(
-        {"agent_id": user["id"], "appointment_date": date},
+        appt_query,
         {"_id": 0, "appointment_time": 1, "duration_minutes": 1, "status": 1},
     )
     appts = [a async for a in cursor]
@@ -632,9 +751,67 @@ async def create_booking(
     clean_email = (str(body.client_email).strip().lower()
                    if body.client_email else None)
 
-    duration = int(bs.get("appointment_duration") or 30)
+    duration = int(
+        bs.get("appointment_duration")
+        or bs.get("duration_minutes")  # Calendar shape uses duration_minutes
+        or 30
+    )
     now_iso = datetime.now(timezone.utc).isoformat()
     appointment_id = str(uuid.uuid4())
+
+    # Feature C — calendar attribution. When the slug resolved through
+    # the calendars collection, stamp the calendar_id and inherit
+    # booking_type from the calendar's source_label. agency_id is
+    # taken from the calendar's tenant (NOT the env default) so a
+    # cross-tenant booking lands on the correct agency's books.
+    calendar = user.get("_calendar")
+    if calendar:
+        calendar_id = calendar.get("id")
+        booking_type = calendar.get("source_label") or "manual"
+        agency_id = calendar.get("agency_id") or get_agency_id()
+    else:
+        calendar_id = None
+        booking_type = "manual"
+        agency_id = user.get("agency_id") or get_agency_id()
+
+    # Feature C — sub-phase C3. Round-robin calendars resolve the
+    # actual agent at POST time via the deficit-weighted distribution
+    # engine. The engine atomically increments the picked member's
+    # assignment_count + last_assigned_at on the calendar doc.
+    if calendar and calendar.get("type") == "round_robin":
+        from calendars_router import pick_and_record_round_robin
+        try:
+            hh, mm = (int(p) for p in body.time.split(":"))
+            y, mo, d = (int(p) for p in body.date.split("-"))
+            slot_dt = datetime(y, mo, d, hh, mm, tzinfo=timezone.utc)
+        except (ValueError, AttributeError):
+            slot_dt = datetime.now(timezone.utc)
+
+        chosen, _updated_cal = await pick_and_record_round_robin(
+            db, calendar, slot_dt,
+        )
+        if not chosen:
+            await _record_and_maybe_block(
+                db, ip, slug, "validation_error",
+                metadata={"reason": "round_robin_no_available_member"},
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "No agents available for this time slot. "
+                    "Please pick another."
+                ),
+            )
+        # Swap the calendar proxy "user" for the selected member so
+        # the appointment doc + email fan-out carry the right
+        # agent identity end-to-end.
+        chosen_user = chosen.get("_user") or {}
+        user = {
+            **chosen_user,
+            "_calendar": calendar,
+            "_is_calendar_proxy": False,
+            "booking_settings": user.get("booking_settings") or {},
+        }
 
     doc = {
         "appointment_id": appointment_id,
@@ -655,12 +832,14 @@ async def create_booking(
         "estimated_commission": None,
         "meeting_type": body.meeting_type,
         "booking_reason": body.booking_reason,
+        "calendar_id": calendar_id,
+        "booking_type": booking_type,
         "booked_by_client": True,
         "reminder_48hr_sent": False,
         "reminder_24hr_sent": False,
         "reminder_1hr_sent": False,
         "followup_sent": False,
-        "agency_id": get_agency_id(),
+        "agency_id": agency_id,
         "created_at": now_iso,
         "updated_at": now_iso,
     }

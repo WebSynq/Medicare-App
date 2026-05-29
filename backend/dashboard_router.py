@@ -775,7 +775,12 @@ async def dashboard_stats(
 
         return {
             "period": period,
-            "scope": "agent" if scope else "agency",
+            # "agent" when scope pins to a specific agent_id; "agency"
+            # when only the agency_id key is present (admin/owner view).
+            # Pre-2026-05 the empty-dict admin scope tripped this via
+            # truthiness; agent_filter now always carries agency_id so
+            # we look for the agent_id key explicitly.
+            "scope": "agent" if "agent_id" in scope else "agency",
             "impersonating": impersonating,
             "impersonated_agent": effective.get("full_name") if impersonating else None,
             "daily_quote": quote,

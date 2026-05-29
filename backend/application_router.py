@@ -13,6 +13,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from deps import (
     agent_filter,
+    get_agency_id,
     get_db,
     get_effective_agent,
     get_phi_db,
@@ -1011,18 +1012,29 @@ async def _find_or_create_lead_for_submission(
     email = (plucked.get("email") or "").lower().strip() or None
     phone = (plucked.get("phone") or "").strip() or None
 
+    # Scope every lookup to the effective agent. Strict row-level
+    # scoping per 2026-05 spec: an agent submitting an application
+    # must not "find" and modify another agent's lead via shared
+    # email/phone/GHL id. If no match in scope, a new lead is created
+    # below (intentional: each agent owns their own CRM row).
+    scope = agent_filter(effective)
+
     # 1) Find by GHL contact id
     existing = None
     if payload.contact_id:
         existing = safe_lead_load(await db.leads.find_one(
-            {"ghl_contact_id": payload.contact_id}, {"_id": 0},
+            {"ghl_contact_id": payload.contact_id, **scope}, {"_id": 0},
         ))
     # 2) Email
     if not existing and email:
-        existing = safe_lead_load(await db.leads.find_one({"email": email}, {"_id": 0}))
+        existing = safe_lead_load(await db.leads.find_one(
+            {"email": email, **scope}, {"_id": 0},
+        ))
     # 3) Phone
     if not existing and phone:
-        existing = safe_lead_load(await db.leads.find_one({"phone": phone}, {"_id": 0}))
+        existing = safe_lead_load(await db.leads.find_one(
+            {"phone": phone, **scope}, {"_id": 0},
+        ))
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -1253,8 +1265,21 @@ async def submit_application(
     now_iso = datetime.now(timezone.utc).isoformat()
     first_name, last_name = _split_name(payload.contact_name)
     try:
+        # Strict row-level scoping (2026-05): the `clients` doc is
+        # keyed per-(agent, agency, ghl_contact_id) so two agents can
+        # both maintain their own client record for the same GHL
+        # contact without one reading the other's row. agent_id and
+        # agency_id are stamped at insert time and locked thereafter
+        # via $setOnInsert.
+        effective_agency_id = (
+            effective.get("agency_id") or get_agency_id()
+        )
         await db["clients"].update_one(
-            {"ghl_contact_id": payload.contact_id},
+            {
+                "ghl_contact_id": payload.contact_id,
+                "agent_id": effective["id"],
+                "agency_id": effective_agency_id,
+            },
             {
                 "$set": {
                     "ghl_contact_id": payload.contact_id,
@@ -1266,6 +1291,8 @@ async def submit_application(
                 "$setOnInsert": {
                     "created_at": now_iso,
                     "created_by": current_user.get("email", ""),
+                    "agent_id": effective["id"],
+                    "agency_id": effective_agency_id,
                 },
             },
             upsert=True,
@@ -1555,8 +1582,13 @@ async def _import_ghl_contact_to_portal(
     if not ghl_id:
         return None
     try:
+        # Strict row-level scoping: only consider an existing lead a
+        # match if it's already in the effective agent's book. Another
+        # agent in the same agency owning a lead for this GHL contact
+        # does NOT block this agent from creating their own.
+        scope = agent_filter(effective)
         existing = safe_lead_load(await db.leads.find_one(
-            {"ghl_contact_id": ghl_id}, {"_id": 0, "id": 1},
+            {"ghl_contact_id": ghl_id, **scope}, {"_id": 0, "id": 1},
         ))
         if existing:
             return existing["id"]

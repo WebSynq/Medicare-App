@@ -61,6 +61,19 @@ AppointmentType = Literal[
 
 AppointmentStatus = Literal["scheduled", "completed", "cancelled", "no_show"]
 
+# Feature A — appointment outcome buttons. Four discrete states only;
+# the existing `outcome` field on the model used to be a free-text
+# string. The four-state enum + dedicated endpoint replaces the PATCH
+# path for these specific values so the audit trail, no-show email,
+# and automation differentiation can hang off a single enum check.
+AppointmentOutcome = Literal["showed", "no_show", "sold", "not_sold"]
+
+# Feature C — calendar system. booking_type mirrors the
+# CalendarSourceLabel enum in models.py exactly: at booking time the
+# value is stamped from the resolving calendar's source_label so the
+# frontend calendar view (C4) can color-code by the booking source.
+BookingType = Literal["autobook", "va", "ae", "manual"]
+
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 
@@ -122,6 +135,12 @@ class AppointmentCreate(BaseModel):
     meeting_type: Optional[Literal["phone", "video"]] = None
     booking_reason: Optional[str] = Field(None, max_length=200)
     client_email: Optional[str] = Field(None, max_length=320)
+    # Feature C — calendar attribution. Both optional on the create
+    # path because the internal agent-facing POST may run with no
+    # calendar context (walk-in flows). Public /api/book and the
+    # round-robin engine stamp them at booking time.
+    calendar_id: Optional[str] = Field(None, max_length=128)
+    booking_type: BookingType = "manual"
 
     @field_validator("appointment_date")
     @classmethod
@@ -541,6 +560,10 @@ async def create_appointment(
         "meeting_type": body.meeting_type,
         "booking_reason": body.booking_reason,
         "client_email": body.client_email,
+        # Feature C — calendar attribution. Defaults to "manual" when
+        # the agent creates the row directly (no calendar context).
+        "calendar_id": body.calendar_id,
+        "booking_type": body.booking_type,
         "booked_by_client": False,
         # Automation send-flags. Stamped at create so the automation
         # scheduler can update them atomically without an upsert.
@@ -805,6 +828,136 @@ async def get_appointment(
     """Single appointment with IDOR firewall."""
     doc = await _fetch_or_idor(db, appointment_id, current_user)
     return _public(doc)
+
+
+class AppointmentOutcomePayload(BaseModel):
+    """POST body for the outcome-button endpoint. Strict 4-value enum;
+    422 on anything else so a malformed UI state can't smuggle a
+    free-text outcome through the dedicated path."""
+    outcome: AppointmentOutcome
+
+
+@router.post("/{appointment_id}/outcome")
+@limiter.limit("60/hour")
+async def set_appointment_outcome(
+    appointment_id: str,
+    request: Request,
+    background: BackgroundTasks,
+    body: AppointmentOutcomePayload = Body(...),
+    db: AsyncIOMotorDatabase = Depends(get_phi_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """Stamp the outcome of an appointment via the ClientProfile
+    outcome buttons (Showed / No Show / Sold / Not Sold).
+
+    Side effects per outcome:
+      - ``no_show`` — fires a reschedule email to ``client_email``
+        with the agent's first name + booking link (best-effort, never
+        raises).
+      - ``sold`` / ``showed`` / ``not_sold`` — outcome stamp only;
+        the SPA handles navigation to /applications for sold.
+
+    Always audits ``appointment_outcome_set`` regardless of side-
+    effect success. Non-admin agents who don't own the appointment
+    get 403 (not 404) via the standard ``_fetch_or_idor`` pattern.
+    """
+    appt = await _fetch_or_idor(db, appointment_id, current_user)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    updates = {
+        "outcome": body.outcome,
+        "outcome_set_at": now_iso,
+        "outcome_set_by": current_user["id"],
+        "updated_at": now_iso,
+        # Flip status to completed/no_show so calendar views + revenue
+        # roll-ups read the right bucket without a second write.
+        "status": (
+            "no_show" if body.outcome == "no_show" else "completed"
+        ),
+    }
+    await db.appointments.update_one(
+        {"appointment_id": appointment_id}, {"$set": updates}
+    )
+
+    await write_audit(
+        db,
+        "appointment_outcome_set",
+        actor_email=current_user.get("email"),
+        actor_id=current_user["id"],
+        target_type="appointment",
+        target_id=appointment_id,
+        request=request,
+        metadata={
+            "outcome": body.outcome,
+            "lead_id": appt.get("lead_id"),
+            "appointment_date": appt.get("appointment_date"),
+        },
+    )
+
+    if body.outcome == "no_show":
+        # Fire-and-forget so a slow/down Resend never blocks the
+        # button-press response. Helper logs + swallows on failure.
+        background.add_task(
+            _send_no_show_reschedule, appointment_id, current_user.get("id"),
+        )
+
+    fresh = await db.appointments.find_one(
+        {"appointment_id": appointment_id}, {"_id": 0}
+    )
+    return _public(fresh)
+
+
+async def _send_no_show_reschedule(
+    appointment_id: str, actor_id: Optional[str]
+) -> None:
+    """Background task — never raises. Loads the appointment + agent,
+    builds the reschedule email, and ships it through resend_client.
+    """
+    from deps import get_phi_db as _get_phi_db, get_frontend_url
+    from email_templates import appointment_no_show_reschedule
+    from resend_client import send_email
+
+    db = _get_phi_db()
+    try:
+        appt = await db.appointments.find_one(
+            {"appointment_id": appointment_id}, {"_id": 0},
+        )
+        if not appt:
+            return
+        client_email = (appt.get("client_email") or "").strip()
+        if not client_email:
+            return
+        agent = await db.users.find_one(
+            {"id": appt.get("agent_id")},
+            {"_id": 0, "full_name": 1, "email": 1, "booking_settings": 1,
+             "agency_id": 1},
+        )
+        if not agent:
+            return
+        agent_full = agent.get("full_name") or "Your agent"
+        agent_first = agent_full.split(" ", 1)[0]
+        slug = (agent.get("booking_settings") or {}).get("slug") or ""
+        booking_url = (
+            f"{get_frontend_url()}/book/{slug}" if slug else ""
+        )
+        html = appointment_no_show_reschedule(
+            client_name=appt.get("client_name") or "there",
+            agent_first_name=agent_first,
+            booking_url=booking_url,
+        )
+        await send_email(
+            to=client_email,
+            subject="We missed you — let's find a new time",
+            html=html,
+            reply_to=agent.get("email"),
+            agency_id=agent.get("agency_id"),
+            agent_id=appt.get("agent_id"),
+        )
+    except Exception as exc:                                    # noqa: BLE001
+        logger.warning(
+            "no_show reschedule email failed for appt %s: %s",
+            appointment_id, exc,
+        )
 
 
 @router.patch("/{appointment_id}")

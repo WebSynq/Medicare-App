@@ -23,6 +23,7 @@ Hard rules
 """
 from __future__ import annotations
 
+import gc
 import ipaddress
 import json
 import logging
@@ -56,6 +57,16 @@ _TOR_HINTS = ("tor", "exit node")
 
 _SECURITY_CONFIG_KEY = "security_config"
 _DEFAULT_ALERT_EMAILS: List[str] = []   # populated from env fallback below
+
+# Startup-pile hardening (2026-05): every deploy/restart used to burn
+# one Anthropic call on the first scheduler tick, before the worker
+# was fully warm. Module-level flag — flipped to True on the first
+# call to ``run_ai_security_analysis`` (which becomes a no-op skip)
+# so the second 15-min tick is the actual first analysis. The flag
+# is process-local and resets to False on every restart by design —
+# that's the whole point. Tests reset the flag in conftest so the
+# /run-analysis endpoint always exercises the real path.
+_first_run_skipped: bool = False
 
 
 # ── Config (system_config singleton) ───────────────────────────────────────
@@ -544,64 +555,75 @@ async def _call_claude(stats: Dict[str, Any]) -> Dict[str, Any]:
 
         from anthropic import AsyncAnthropic
         client = AsyncAnthropic(api_key=api_key)
-        response = await client.messages.create(
-            model=_AI_MODEL,
-            max_tokens=_AI_MAX_TOKENS,
-            system=[{
-                "type": "text",
-                "text": _SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }],
-            messages=[{"role": "user", "content": user_msg}],
-        )
-        # Metering — fire-and-forget. Security analysis is a platform-
-        # owned cost (runs every 15 min regardless of tenant activity)
-        # so it bills to the GHW agency. Phase 4 may split it per-
-        # tenant if we ever surface per-agency security findings.
+        response = None
+        # Memory hardening (2026-05): the Anthropic response object holds
+        # ContentBlock instances + token-usage metadata that keep the
+        # full HTTP body alive in the gc graph. Wrap the call + parse so
+        # ``del response + gc.collect()`` fires deterministically as
+        # soon as the parsed dict is in hand, instead of waiting for
+        # the surrounding caller's frame to unwind on the next cycle.
         try:
-            from metering import track_ai_usage
-            from deps import get_agency_id
-            usage = getattr(response, "usage", None)
-            track_ai_usage(
-                agency_id=get_agency_id(),
-                agent_id=None,
-                event_type="security_analysis",
-                tokens_in=int(getattr(usage, "input_tokens", 0) or 0),
-                tokens_out=int(getattr(usage, "output_tokens", 0) or 0),
+            response = await client.messages.create(
                 model=_AI_MODEL,
+                max_tokens=_AI_MAX_TOKENS,
+                system=[{
+                    "type": "text",
+                    "text": _SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                messages=[{"role": "user", "content": user_msg}],
             )
-        except Exception as _e:                                # noqa: BLE001
-            logger.debug("security_intelligence: metering hook failed: %s", _e)
-        # response.content is a list of content blocks; concatenate any
-        # text blocks (we asked for JSON, but some clients echo the
-        # structure).
-        text = ""
-        for block in (response.content or []):
-            t = getattr(block, "text", None)
-            if t:
-                text += t
-        text = (text or "").strip()
-        # Strip accidental markdown fences just in case.
-        if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?\s*", "", text)
-            text = re.sub(r"\s*```$", "", text)
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            logger.warning("security_intelligence: AI returned non-JSON; raw=%r",
-                            text[:300])
-            return dict(_SAFE_AI_DEFAULT)
-        # Light schema normalization — make sure required keys exist.
-        for k, default in (
-            ("threat_level", "low"),
-            ("summary", ""),
-            ("findings", []),
-            ("auto_ban_ips", []),
-            ("alert_required", False),
-            ("false_positive_risk", "medium"),
-        ):
-            parsed.setdefault(k, default)
-        return parsed
+            # Metering — fire-and-forget. Security analysis is a platform-
+            # owned cost (runs every 15 min regardless of tenant activity)
+            # so it bills to the GHW agency. Phase 4 may split it per-
+            # tenant if we ever surface per-agency security findings.
+            try:
+                from metering import track_ai_usage
+                from deps import get_agency_id
+                usage = getattr(response, "usage", None)
+                track_ai_usage(
+                    agency_id=get_agency_id(),
+                    agent_id=None,
+                    event_type="security_analysis",
+                    tokens_in=int(getattr(usage, "input_tokens", 0) or 0),
+                    tokens_out=int(getattr(usage, "output_tokens", 0) or 0),
+                    model=_AI_MODEL,
+                )
+            except Exception as _e:                            # noqa: BLE001
+                logger.debug("security_intelligence: metering hook failed: %s", _e)
+            # response.content is a list of content blocks; concatenate any
+            # text blocks (we asked for JSON, but some clients echo the
+            # structure).
+            text = ""
+            for block in (response.content or []):
+                t = getattr(block, "text", None)
+                if t:
+                    text += t
+            text = (text or "").strip()
+            # Strip accidental markdown fences just in case.
+            if text.startswith("```"):
+                text = re.sub(r"^```(?:json)?\s*", "", text)
+                text = re.sub(r"\s*```$", "", text)
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                logger.warning("security_intelligence: AI returned non-JSON; raw=%r",
+                                text[:300])
+                return dict(_SAFE_AI_DEFAULT)
+            # Light schema normalization — make sure required keys exist.
+            for k, default in (
+                ("threat_level", "low"),
+                ("summary", ""),
+                ("findings", []),
+                ("auto_ban_ips", []),
+                ("alert_required", False),
+                ("false_positive_risk", "medium"),
+            ):
+                parsed.setdefault(k, default)
+            return parsed
+        finally:
+            del response
+            gc.collect()
     except Exception as e:                                    # noqa: BLE001
         logger.warning("security_intelligence: Claude call failed: %s", e)
         return dict(_SAFE_AI_DEFAULT)
@@ -662,7 +684,19 @@ async def unban_ip(db, ip: str) -> bool:
 
 # ── Main entrypoint ────────────────────────────────────────────────────────
 async def run_ai_security_analysis(db, phi_db=None) -> Dict[str, Any]:
-    """Tick-driven main loop. Never raises. Returns a summary dict."""
+    """Tick-driven main loop. Never raises. Returns a summary dict.
+
+    Startup-pile hardening: the first call after process startup is a
+    no-op skip — see ``_first_run_skipped`` for the rationale. The
+    second tick (15 minutes later, given the post-startup delay also
+    set on the scheduler) is the real first analysis.
+    """
+    global _first_run_skipped
+    if not _first_run_skipped:
+        _first_run_skipped = True
+        logger.info("[security_intel] skipping first run after startup")
+        return
+
     started = time.monotonic()
     if phi_db is None:
         phi_db = db   # caller may pass a single client
@@ -678,6 +712,31 @@ async def run_ai_security_analysis(db, phi_db=None) -> Dict[str, Any]:
     # 3. Impossible travel
     travel = await detect_impossible_travel(db)
     stats["impossible_travel"] = travel
+
+    # 3.5. Memory hardening — cap large input collections before the
+    # Claude call so a noisy 15-min window can't push the prompt body
+    # or the process RSS past sane limits. Caps are applied in-place
+    # on ``stats`` so the persisted ``raw_stats`` matches what we
+    # actually sent to Claude.
+    failed_logins_targets = (stats.get("failed_logins") or {}).get("top_targets") or []
+    if len(failed_logins_targets) > 50:
+        stats["failed_logins"]["top_targets"] = failed_logins_targets[:50]
+    audit_anomaly_events = (
+        (stats.get("audit_anomalies") or {}).get("high_value_events") or []
+    )
+    if len(audit_anomaly_events) > 20:
+        stats["audit_anomalies"]["high_value_events"] = audit_anomaly_events[:20]
+    ip_enrichments = stats.get("ip_enrichments") or {}
+    if len(ip_enrichments) > 10:
+        # Deterministic truncation — keep the first 10 enriched IPs.
+        stats["ip_enrichments"] = dict(list(ip_enrichments.items())[:10])
+
+    logger.info(
+        "[security_intel] payload sizes — logins:%d, anomalies:%d, ips:%d",
+        len((stats.get("failed_logins") or {}).get("top_targets") or []),
+        len((stats.get("audit_anomalies") or {}).get("high_value_events") or []),
+        len(stats.get("ip_enrichments") or {}),
+    )
 
     # 4. AI triage
     ai = await _call_claude(stats)
@@ -741,13 +800,22 @@ async def run_ai_security_analysis(db, phi_db=None) -> Dict[str, Any]:
     except Exception as e:                                    # noqa: BLE001
         logger.warning("security_events insert failed: %s", e)
 
-    return {
+    # Memory hardening — the analysis function builds three large
+    # intermediates (raw stats, the event doc with embedded raw_stats,
+    # the AI response dict). Compute the return summary first, then
+    # drop the intermediates explicitly so the next 15-min tick
+    # starts from a clean heap instead of waiting for the GC to
+    # collect on the surrounding scheduler's next promotion.
+    result = {
         "threat_level": threat_level,
         "findings_count": len(findings),
         "auto_actions": auto_actions,
         "alert_sent": alert_required,
         "duration_ms": duration_ms,
     }
+    del stats, event_doc, ai
+    gc.collect()
+    return result
 
 
 async def _send_security_alert_email(

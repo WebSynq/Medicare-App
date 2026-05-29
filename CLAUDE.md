@@ -224,6 +224,16 @@ agent_name unified across all commission endpoints — /commissions/summary,
 Rule: `agent_name` primary, `full_name` fallback for legacy records only.
 Endpoints fail closed (400) when neither field is set.
 
+## Render deployment
+
+Service name: **`ghw-medicare-backend`** (Oregon, Python). `render.yaml`
+at the repo root codifies the service plan (`standard`), region, runtime,
+health-check path (`/api/health`), graceful shutdown delay (120s), and
+auto-deploy trigger (`commit`). Everything else — env vars, build
+command, start command, root dir — lives in the Render dashboard so
+`render.yaml` stays minimal and rotating a secret never requires a
+repo edit.
+
 ## Env Vars Required (Render)
 
 **Core (already set):**
@@ -614,6 +624,67 @@ was broken. Changed to `cross-origin`.
 - `cryptography>=42.0.8` → **`cryptography==46.0.6`** (explicit pin)
 - `stripe>=15.0.0,<16` (added Phase 3)
 - All 441 tests pass on the new stack.
+
+### Infrastructure (May 2026)
+`render.yaml` at the repo root codifies the production service
+shape: name (`ghw-medicare-backend`), plan (`standard`), region
+(`oregon`), runtime (`python`), health-check path (`/api/health`),
+graceful shutdown delay (120s), and auto-deploy trigger (`commit`).
+Env vars, build/start commands, and rootDir stay in the Render
+dashboard so secrets never live in repo and rotating a key doesn't
+require a code edit.
+
+### Memory hardening (May 2026)
+Two-file pass to bound RSS growth on the long-lived 15-min
+scheduler tick:
+- `backend/security_intelligence.py` — `import gc`, hard caps on
+  the prompt inputs before the Claude call (failed-logins `[:50]`,
+  audit anomalies `[:20]`, ip_enrichments `[:10]`) plus a payload-
+  size log line; the Anthropic `client.messages.create` call lives
+  in a nested try/finally that does `del response; gc.collect()`;
+  after the Mongo persist, `del stats, event_doc, ai` +
+  `gc.collect()` before the return.
+- `backend/automations.py` — every scheduler-tick cursor replaced
+  with `.to_list(length=N)` (leads 500, appointments 200, users
+  100, other 200) and each consume-loop ends with `del docs;
+  gc.collect()`. Event-driven `run_new_lead_notification` +
+  `run_soa_signed_notification` deliberately untouched. No
+  behavior changes — filter logic, flag-first idempotency, email
+  sends, GHL sync all byte-identical.
+- Test count remains 441 (no new tests added in this pass —
+  pure memory-management hardening).
+
+### Scheduler hardening (May 2026)
+Three follow-up fixes targeting boot-time stability:
+
+- **invite_tokens TTL index aligned** — the `_PROD_INDEXES`
+  declarative table and the manual `create_index` call in
+  `on_startup` used to disagree on `expireAfterSeconds=0`,
+  triggering an `IndexOptionsConflict` warning on every boot and
+  potentially leaving production indexes without the TTL. Both
+  paths now declare the same shape. **Action required: run
+  `backend/scripts/fix_invite_tokens_index.py` once on prod before
+  the next deploy** to reconcile any production index that landed
+  without the TTL.
+- **Schedulers staggered + coalesced** — every interval-triggered
+  APScheduler job now carries `coalesce=True` plus a per-job
+  `start_date` offset so the boot pile doesn't ignite at t=0:
+    - `automations._tick` fires at T+5min
+    - `dashboard_agg` fires at T+8min
+    - `notifications generator` fires at T+3min
+  All cron-triggered jobs (daily brief 12:00 UTC, backup 02:00,
+  comtrack 06:00, metering day=1 06:00, stripe 07:00, statements
+  day=1 08:00) already deferred on startup so they were left alone.
+- **`security_intelligence` skips first run after startup** —
+  module-level `_first_run_skipped` flag in
+  `security_intelligence.py` makes the first call to
+  `run_ai_security_analysis` a no-op skip. The second 15-min tick
+  is the actual first analysis, by which point the worker is warm
+  and connection pools have settled. Conftest resets the flag per
+  test so the manual `/api/security/run-analysis` endpoint always
+  exercises the real path under pytest.
+- Test count remains 441 (no new tests added; conftest gained a
+  single guard reset).
 
 
 ## Pending

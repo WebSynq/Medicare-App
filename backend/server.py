@@ -67,6 +67,7 @@ from billing_router import router as billing_router  # noqa: E402
 from email_domain_router import router as email_domain_router  # noqa: E402
 from super_admin_router import router as super_admin_router  # noqa: E402
 from agency_settings_router import router as agency_settings_router  # noqa: E402
+from calendars_router import router as calendars_router  # noqa: E402
 import email_templates  # noqa: E402,F401 — ensure clean import
 from automations import start_automation_scheduler  # noqa: E402
 from feedback_router import router as feedback_router  # noqa: E402
@@ -210,6 +211,7 @@ app.include_router(billing_router, prefix="/api")
 app.include_router(email_domain_router, prefix="/api")
 app.include_router(super_admin_router, prefix="/api")
 app.include_router(agency_settings_router, prefix="/api")
+app.include_router(calendars_router, prefix="/api")
 # feedback_router declares its own /api/feedback prefix — no prefix here.
 app.include_router(feedback_router)
 # calendar_router declares /api/calendar; ics_router declares /api/appointments
@@ -780,7 +782,16 @@ _PROD_INDEXES = [
     ("invite_tokens", "token", {"background": True, "unique": True, "sparse": True}),
     ("invite_tokens", "email", {"background": True}),
     ("invite_tokens", "used", {"background": True}),
-    ("invite_tokens", "expires_at", {"background": True}),
+    # expires_at carries a TTL — must match the explicit create_index
+    # call further down in on_startup (expireAfterSeconds=0) so the
+    # two paths declare the same options. Without the TTL key here
+    # MongoDB raised IndexOptionsConflict on every boot and logged
+    # the warning "Index with name: expires_at_1 already exists with
+    # different options" — a no-op for production but cosmetically
+    # noisy in the boot log. See scripts/fix_invite_tokens_index.py
+    # for the one-shot drop+recreate that aligns existing indexes.
+    ("invite_tokens", "expires_at",
+     {"background": True, "expireAfterSeconds": 0}),
 
     # password_resets
     ("password_resets", "token", {"background": True, "unique": True}),
@@ -1093,10 +1104,39 @@ async def on_startup():
     # Daily ComTrack sync run log
     await db.commission_sync_runs.create_index("completed_at")
 
-    # Application-submission persistence (Phase 3) — one row per GHL contact
-    # in `clients`, one row per submitted application in `policies`.
-    await db.clients.create_index("ghl_contact_id", unique=True)
+    # Application-submission persistence (Phase 3) — one row per
+    # (agent, agency, GHL contact) tuple in `clients` after the
+    # 2026-05 row-level-scope tightening (two agents may each own
+    # their own clients row for the same GHL contact). Compound
+    # unique replaces the old single-field unique on ghl_contact_id;
+    # the old index is dropped first to avoid a duplicate-write spike
+    # during deploy.
+    try:
+        await db.clients.drop_index("ghl_contact_id_1")
+    except Exception:
+        # First boot on a fresh DB or after a manual drop — fine.
+        pass
+    await db.clients.create_index(
+        [("ghl_contact_id", 1), ("agent_id", 1), ("agency_id", 1)],
+        unique=True,
+        name="ghl_contact_id_agent_agency",
+    )
     await db.policies.create_index("ghl_contact_id")
+
+    # Calendar system (Feature C — sub-phase C1). Slug is globally
+    # unique across all tenants per design Q1; the migration script
+    # de-duplicates by appending "-N" to losers. agency_id non-unique
+    # for fast tenant queries; owner_id sparse so individual-only
+    # lookups don't pay the cost of indexing the empty owner_id on
+    # round-robin / group rows.
+    try:
+        await db.calendars.create_index("slug", unique=True, name="slug_unique")
+    except Exception:
+        pass
+    await db.calendars.create_index("agency_id", name="agency_id_idx")
+    await db.calendars.create_index(
+        "owner_id", sparse=True, name="owner_id_sparse",
+    )
     await db.policies.create_index("submitted_at")
     await db.policies.create_index([("ghl_contact_id", 1), ("product_type", 1)])
 

@@ -319,6 +319,41 @@ def post_appointment_followup(
     )
 
 
+# ── 4b. No-show reschedule (Feature A — outcome buttons) ─────────────────
+def appointment_no_show_reschedule(
+    client_name: str,
+    agent_first_name: str,
+    booking_url: str,
+) -> str:
+    """Sent immediately when the agent marks an appointment "no_show"
+    on the ClientProfile outcome buttons.
+
+    Body opens with the agent's first name + a friendly nudge, then
+    drops the booking link as the primary CTA so the client can
+    self-schedule a new time without an email reply round-trip.
+    """
+    first = (client_name or "there").split()[0]
+    body = f"""
+      <p style="margin:0 0 14px 0;">Hi {escape(first)},</p>
+      <p style="margin:0 0 14px 0;">
+        I had us down for a call today and didn't see you — totally
+        understandable, life happens. I'd still love to walk you
+        through your Medicare options when it works for your
+        schedule.
+      </p>
+      <p style="margin:0 0 14px 0;">
+        The fastest way to find a new time is the link below — pick
+        any slot that fits and I'll get a confirmation right away.
+      </p>
+      <p style="margin:16px 0 0 0;">— {escape(agent_first_name)}</p>"""
+    return _shell(
+        preheader="No worries — pick a new time that works for you.",
+        title="We missed you — let's find a new time",
+        body_html=body,
+        cta={"label": "Book a new time", "url": booking_url} if booking_url else None,
+    )
+
+
 # ── 5. Birthday rule window ──────────────────────────────────────────────
 def birthday_window_email(
     client_name: str,

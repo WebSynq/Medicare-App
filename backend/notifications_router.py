@@ -479,12 +479,21 @@ def start_scheduler(get_db_fn):
         except Exception as e:
             logger.exception("notifications: scheduled run failed: %s", e)
 
+    # Startup-pile hardening (2026-05): delay first run by 3 min so
+    # notification generation isn't sharing CPU with automations
+    # (+5 min) or dashboard_agg (+8 min) at the moment the worker
+    # comes back. coalesce=True collapses misfire backlogs into a
+    # single recovery run.
     scheduler.add_job(
         _job,
-        trigger=IntervalTrigger(minutes=60),
+        trigger=IntervalTrigger(
+            minutes=60,
+            start_date=datetime.now(timezone.utc) + timedelta(minutes=3),
+        ),
         id="notifications_generator",
+        coalesce=True,
+        misfire_grace_time=60,
         replace_existing=True,
-        next_run_time=datetime.now(timezone.utc),  # fire once at boot
     )
     scheduler.start()
     logger.info("notifications: scheduler started (every 60 minutes)")

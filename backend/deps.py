@@ -253,17 +253,18 @@ COMPLIANCE_ROLES = (
 )
 
 # Roles that see the full agency's lead/client data, not just their own.
-# admin/compliance are agency leadership; client_success is support staff
-# who needs visibility across every agent's book to help clients;
-# coach mentors agents on performance and pipeline; accounting reconciles
-# commissions across the agency.
+# Tightened 2026-05 to leadership only per row-level-scope spec:
+# coach, accounting, client_success, cyber_security, sales_manager,
+# agent, va, … are self-scoped on lead/client/policy reads.
+# compliance stays in the tuple so HIPAA reviewers can audit every
+# agent's book without per-agent impersonation gymnastics. Role-
+# specific dashboards built on `agency_id` (e.g. compliance_router)
+# keep their existing pattern because they roll their own scope
+# rather than calling agent_filter.
 FULL_AGENCY_SCOPE_ROLES = (
     "admin",
     "owner",
     "compliance",
-    "client_success",
-    "coach",
-    "accounting",
 )
 
 # Roles that may impersonate an individual agent via X-Agent-ID. Wider
@@ -368,30 +369,50 @@ def agent_filter(current_user: dict,
                  override_agent_id: Optional[str] = None) -> dict:
     """Build a Mongo filter that scopes results to one agent's data.
 
+    **Always stamps the caller's ``agency_id``** onto the returned
+    filter so cross-tenant leakage is impossible regardless of role.
+    Falls back to the env-default agency for legacy users whose JWT
+    pre-dates the multi-tenant rollout.
+
+    Role rules layered on top of the agency stamp:
+
     - **Team members** (``parent_agent_id`` set) are scoped to the
       parent agent's id. Checked FIRST so a team member can never
       escape their parent's scope by virtue of their own role.
       ``override_agent_id`` is silently ignored — a team-member VA
       can't widen scope via a forged header.
-    - Admin / compliance roles see everything by default (empty filter). If
-      they pass ``override_agent_id`` (e.g. via the X-Agent-ID impersonation
-      header), the filter narrows to that agent.
-    - Everyone else (agents) is pinned to their own ``agent_id`` — the
-      ``override_agent_id`` argument is silently ignored for non-privileged
-      roles so an attacker can't widen their scope.
+    - **admin / owner** roles (FULL_AGENCY_SCOPE_ROLES) see every
+      record inside their agency. If they pass ``override_agent_id``
+      (e.g. via the X-Agent-ID impersonation header), the filter
+      narrows to that one agent inside the agency.
+    - **Everyone else** (agent, va, compliance, coach, accounting,
+      client_success, sales_manager, cyber_security, …) is pinned to
+      their own ``agent_id``. ``override_agent_id`` is silently
+      ignored so a forged header can't widen scope.
 
     Pair with ``get_effective_agent`` (which does the impersonation check
     centrally) when you want both behaviors driven by the same header.
     """
+    agency_id = current_user.get("agency_id") or get_agency_id()
+    # Migration window: rows pre-dating the agency stamp have
+    # agency_id=null/missing. Match both the stamped rows AND those
+    # legacy rows so the backfill script can run without breaking
+    # existing reads. `{field: None}` in MongoDB matches both null
+    # values and missing fields. Once the backfill script runs in
+    # production every row has a real stamp and the None branch
+    # becomes effectively dead code — but kept here as belt-and-
+    # suspenders so a missed legacy row never silently disappears
+    # from an agent's view.
+    base = {"agency_id": {"$in": [agency_id, None]}}
     parent_id = current_user.get("parent_agent_id")
     if parent_id:
-        return {"agent_id": parent_id}
+        return {**base, "agent_id": parent_id}
     role = current_user.get("role", "agent")
     if role in FULL_AGENCY_SCOPE_ROLES:
         if override_agent_id:
-            return {"agent_id": override_agent_id}
-        return {}
-    return {"agent_id": current_user["id"]}
+            return {**base, "agent_id": override_agent_id}
+        return base
+    return {**base, "agent_id": current_user["id"]}
 
 
 async def get_effective_agent(

@@ -239,6 +239,13 @@ export default function ClientProfile() {
   const [policiesLoading, setPoliciesLoading] = useState(false);
   const [policySummary, setPolicySummary] = useState(null);
 
+  // Feature A — most recent appointment for this lead. Drives the
+  // outcome-buttons card on the Overview tab. We pull the latest row
+  // only (limit=1) because the card is a single-row view; the full
+  // history lives on the dedicated Appointments page.
+  const [recentAppt, setRecentAppt] = useState(null);
+  const [outcomeSaving, setOutcomeSaving] = useState(false);
+
   // SOA records for this lead — drives the SOA tab and the header
   // badge. Each row carries token + public_link (built server-side).
   const [soaRecords, setSoaRecords] = useState([]);
@@ -256,6 +263,68 @@ export default function ClientProfile() {
   const [aiGeneratedAt, setAiGeneratedAt] = useState(null);
   const [aiRunning, setAiRunning] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
+
+  // Pull the latest appointment for this lead. Newest-first sort lives
+  // on the server (list_appointments orders by date+time asc, so we
+  // reverse here). Quietly empties on any error — the card just
+  // renders the empty-state copy.
+  const loadRecentAppt = useCallback(async () => {
+    if (!leadId) return;
+    try {
+      const { data } = await api.get(
+        `/appointments?lead_id=${encodeURIComponent(leadId)}&limit=50`,
+      );
+      const rows = data?.appointments || [];
+      // Pick the most recent by appointment_date desc, then time desc.
+      rows.sort((a, b) => {
+        const da = `${a.appointment_date} ${a.appointment_time || ""}`;
+        const db = `${b.appointment_date} ${b.appointment_time || ""}`;
+        return db.localeCompare(da);
+      });
+      setRecentAppt(rows[0] || null);
+    } catch {
+      setRecentAppt(null);
+    }
+  }, [leadId]);
+
+  useEffect(() => {
+    loadRecentAppt();
+  }, [loadRecentAppt]);
+
+  // Feature A — outcome button handler. POSTs the chosen outcome,
+  // navigates to /applications on "sold", and refreshes the card on
+  // any other outcome so the badge + history line update inline.
+  const setAppointmentOutcome = useCallback(
+    async (outcome) => {
+      if (!recentAppt?.appointment_id) return;
+      setOutcomeSaving(true);
+      try {
+        await api.post(
+          `/appointments/${encodeURIComponent(recentAppt.appointment_id)}/outcome`,
+          { outcome },
+        );
+        if (outcome === "sold") {
+          // ApplicationSubmission Step 1 reads ?lead_id and pre-loads
+          // the contact (existing two-tab flow already handles this).
+          navigate(`/applications?lead_id=${encodeURIComponent(leadId)}`);
+          return;
+        }
+        toast.success(
+          outcome === "no_show"
+            ? "Marked no-show — reschedule email sent."
+            : `Marked ${outcome.replace("_", " ")}.`,
+        );
+        await loadRecentAppt();
+      } catch (err) {
+        toast.error(
+          err?.response?.data?.detail || "Couldn't save the outcome.",
+        );
+      } finally {
+        setOutcomeSaving(false);
+      }
+    },
+    [recentAppt, leadId, navigate, loadRecentAppt],
+  );
 
   const loadSoaRecords = useCallback(async () => {
     if (!leadId) return;
@@ -1167,6 +1236,81 @@ export default function ClientProfile() {
               onRefresh={refreshAi}
               onStartCna={() => setActiveTab("cna")}
             />
+
+            {/* Feature A — appointment outcome buttons. Shows the most
+                recent appointment + four outcome actions. "Sold"
+                navigates to the application wizard; "No Show" fires a
+                reschedule email server-side; "Showed" / "Not Sold"
+                stamp the outcome only. */}
+            {recentAppt && (
+              <Card data-testid="appointment-outcome-card">
+                <CardContent className="p-5">
+                  <div className="flex items-start justify-between mb-3">
+                    <div>
+                      <h3 className="text-sm font-semibold">
+                        Most recent appointment
+                      </h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {fmtDate(recentAppt.appointment_date)}
+                        {recentAppt.appointment_time
+                          ? ` · ${recentAppt.appointment_time}`
+                          : ""}
+                        {recentAppt.type
+                          ? ` · ${recentAppt.type.replace(/_/g, " ")}`
+                          : ""}
+                      </p>
+                    </div>
+                    {recentAppt.outcome && (
+                      <Badge
+                        variant="outline"
+                        className="text-[11px]"
+                        data-testid="appointment-outcome-badge"
+                      >
+                        {recentAppt.outcome.replace(/_/g, " ")}
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={outcomeSaving}
+                      onClick={() => setAppointmentOutcome("showed")}
+                      data-testid="outcome-btn-showed"
+                    >
+                      Showed
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={outcomeSaving}
+                      onClick={() => setAppointmentOutcome("no_show")}
+                      data-testid="outcome-btn-no-show"
+                    >
+                      No Show
+                    </Button>
+                    <Button
+                      size="sm"
+                      disabled={outcomeSaving}
+                      onClick={() => setAppointmentOutcome("sold")}
+                      data-testid="outcome-btn-sold"
+                      className="bg-emerald-600 hover:bg-emerald-700"
+                    >
+                      Sold
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={outcomeSaving}
+                      onClick={() => setAppointmentOutcome("not_sold")}
+                      data-testid="outcome-btn-not-sold"
+                    >
+                      Not Sold
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {policySummary && (
               <div className="grid grid-cols-3 gap-3" data-testid="policy-summary">

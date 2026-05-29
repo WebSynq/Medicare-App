@@ -312,12 +312,22 @@ def start_scheduler(get_db_fn):
         except Exception as e:                                  # noqa: BLE001
             logger.exception("dashboard_agg: scheduled refresh failed: %s", e)
 
+    # Startup-pile hardening (2026-05): delay first run by 8 min so
+    # the dashboard refresh doesn't ignite alongside the automations
+    # tick (+5 min). The two 15-min schedules never collide on the
+    # quarter-hour boundary because their start_dates differ by 3
+    # minutes. coalesce=True collapses misfire backlogs into a single
+    # run instead of flooding the worker on recovery.
     scheduler.add_job(
         _job,
-        trigger=IntervalTrigger(minutes=15),
+        trigger=IntervalTrigger(
+            minutes=15,
+            start_date=datetime.now(timezone.utc) + timedelta(minutes=8),
+        ),
         id="dashboard_stats_refresh",
         max_instances=1,
-        next_run_time=datetime.now(timezone.utc),  # fire once at boot
+        coalesce=True,
+        misfire_grace_time=60,
         replace_existing=True,
     )
     scheduler.start()

@@ -2095,6 +2095,11 @@ export default function Settings() {
             <TabsTrigger value="booking" data-testid="tab-booking">
               Booking Page
             </TabsTrigger>
+            {isAdmin && (
+              <TabsTrigger value="calendars" data-testid="tab-calendars">
+                Calendars
+              </TabsTrigger>
+            )}
             {canSeeAudit && (
               <TabsTrigger value="audit" data-testid="tab-audit">
                 Audit Log
@@ -2129,6 +2134,11 @@ export default function Settings() {
           <TabsContent value="booking" className="mt-4">
             <BookingTab me={me} refresh={applyPatched} />
           </TabsContent>
+          {isAdmin && (
+            <TabsContent value="calendars" className="mt-4">
+              <CalendarsTab />
+            </TabsContent>
+          )}
           <TabsContent value="audit" className="mt-4">
             {canSeeAudit && <AuditLogTab me={me} />}
           </TabsContent>
@@ -2597,6 +2607,61 @@ function BookingTab({ me, refresh }) {
 
   const [form, setForm] = useState(initial);
   const [saving, setSaving] = useState(false);
+  // Feature C — sub-phase C2. On mount, look for an Individual
+  // calendar owned by the caller. When present, saves PATCH the
+  // calendar row instead of profile/booking-settings — the calendar
+  // becomes the authoritative source for slug, hours, duration.
+  // When absent (pre-migration user), we keep the legacy save path
+  // and surface a banner so the user knows a migration is pending.
+  const [calendarId, setCalendarId] = useState(null);
+  const [calendarLoading, setCalendarLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadOwnCalendar() {
+      if (!me?.id) {
+        setCalendarLoading(false);
+        return;
+      }
+      try {
+        const { data } = await api.get("/calendars?type=individual");
+        if (cancelled) return;
+        const owned = (data?.calendars || []).find(
+          (c) => c.owner_id === me.id && c.is_active !== false,
+        );
+        setCalendarId(owned?.id || null);
+        if (owned?.booking_settings) {
+          // Translate calendar shape → form shape for any keys that
+          // differ. Both sides share working_hours / meeting_types.
+          setForm((f) => ({
+            ...f,
+            appointment_duration:
+              owned.booking_settings.duration_minutes
+              ?? f.appointment_duration,
+            buffer_minutes:
+              owned.booking_settings.buffer_minutes ?? f.buffer_minutes,
+            advance_notice_hours:
+              owned.booking_settings.advance_notice_hours
+              ?? f.advance_notice_hours,
+            max_per_day:
+              owned.booking_settings.max_bookings_per_day ?? f.max_per_day,
+            working_hours:
+              owned.booking_settings.working_hours || f.working_hours,
+            meeting_types:
+              owned.booking_settings.meeting_types || f.meeting_types,
+            slug: owned.slug || f.slug,
+          }));
+        }
+      } catch {
+        // 401/403/etc — silent fallback to legacy save path.
+        if (!cancelled) setCalendarId(null);
+      } finally {
+        if (!cancelled) setCalendarLoading(false);
+      }
+    }
+    loadOwnCalendar();
+    return () => { cancelled = true; };
+  }, [me?.id]);
 
   useEffect(() => {
     setForm(initial);
@@ -2628,27 +2693,55 @@ function BookingTab({ me, refresh }) {
   async function save() {
     setSaving(true);
     try {
-      const payload = {
-        is_enabled: !!form.is_enabled,
-        bio: form.bio || "",
-        meeting_types: form.meeting_types || ["phone"],
-        phone_number: form.phone_number || "",
-        video_link: form.video_link || "",
-        appointment_duration: parseInt(form.appointment_duration, 10) || 30,
-        buffer_minutes: parseInt(form.buffer_minutes, 10) || 0,
-        max_per_day: parseInt(form.max_per_day, 10) || 10,
-        advance_notice_hours: parseInt(form.advance_notice_hours, 10) || 24,
-        booking_window_days: parseInt(form.booking_window_days, 10) || 60,
-        working_hours: form.working_hours,
-      };
-      const { data } = await api.patch(
-        "/profile/booking-settings", payload,
-      );
-      if (refresh) refresh(data);
-      if (data?.booking_settings) {
-        setForm((f) => ({ ...f, ...data.booking_settings }));
+      if (calendarId) {
+        // C2 path — PATCH the agent's Individual calendar. Field
+        // names use the calendar shape (duration_minutes,
+        // max_bookings_per_day); the C2 router silently drops
+        // anything outside the agent allow-list.
+        const calendarPayload = {
+          booking_settings: {
+            duration_minutes:
+              parseInt(form.appointment_duration, 10) || 30,
+            buffer_minutes: parseInt(form.buffer_minutes, 10) || 0,
+            advance_notice_hours:
+              parseInt(form.advance_notice_hours, 10) || 24,
+            max_bookings_per_day:
+              parseInt(form.max_per_day, 10) || 10,
+            working_hours: form.working_hours,
+            meeting_types: form.meeting_types || ["phone"],
+            timezone: "America/Chicago",
+          },
+        };
+        await api.patch(`/calendars/${calendarId}`, calendarPayload);
+        toast.success("Booking page saved");
+      } else {
+        // Legacy fallback — kept verbatim so pre-migration users and
+        // tenants that haven't run migrate_calendars yet still save.
+        const payload = {
+          is_enabled: !!form.is_enabled,
+          bio: form.bio || "",
+          meeting_types: form.meeting_types || ["phone"],
+          phone_number: form.phone_number || "",
+          video_link: form.video_link || "",
+          appointment_duration:
+            parseInt(form.appointment_duration, 10) || 30,
+          buffer_minutes: parseInt(form.buffer_minutes, 10) || 0,
+          max_per_day: parseInt(form.max_per_day, 10) || 10,
+          advance_notice_hours:
+            parseInt(form.advance_notice_hours, 10) || 24,
+          booking_window_days:
+            parseInt(form.booking_window_days, 10) || 60,
+          working_hours: form.working_hours,
+        };
+        const { data } = await api.patch(
+          "/profile/booking-settings", payload,
+        );
+        if (refresh) refresh(data);
+        if (data?.booking_settings) {
+          setForm((f) => ({ ...f, ...data.booking_settings }));
+        }
+        toast.success("Booking page saved");
       }
-      toast.success("Booking page saved");
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Save failed");
     } finally {
@@ -2672,6 +2765,17 @@ function BookingTab({ me, refresh }) {
 
   return (
     <div className="space-y-4" data-testid="booking-tab">
+      {!calendarLoading && !calendarId && (
+        <div
+          className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900"
+          data-testid="calendar-migration-pending"
+        >
+          <strong>Calendar migration pending.</strong> Your booking page
+          still saves against the legacy per-user profile. Once your
+          tenant runs the calendar migration, this tab will move to the
+          new Calendars system automatically — no action needed.
+        </div>
+      )}
       <Card>
         <CardContent className="p-5 space-y-4">
           <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -3539,5 +3643,1063 @@ function ReportLink({ jobId }) {
     <Button size="sm" variant="outline" onClick={download} disabled={busy}>
       {busy ? "…" : "Report"}
     </Button>
+  );
+}
+
+
+// ── Calendars tab (admin only — Feature C sub-phase C5) ──────────────────
+// Production-grade calendar management. Surface includes:
+//   - Compact list with color dot, type badge, source chip, copy-link,
+//     edit button, and active/inactive toggle.
+//   - Three-step create / edit modal (type → details → members) with
+//     auto-slugify, live collision check, color presets + custom hex,
+//     collapsible booking-settings panel, and a Round Robin members
+//     picker against the live agency team.
+//   - Distribution panel embedded in the edit modal for Round Robin
+//     calendars: per-member weight slider (save on blur), assignment
+//     count, last_assigned_at, deficit score, is_available_now, plus
+//     a confirm-gated "Reset counts" button.
+//
+// Wires to endpoints built in C2 + C3 only — no new backend in C5.
+
+const _CALENDAR_TYPE_LABEL = {
+  individual: "Individual",
+  round_robin: "Round Robin",
+  group: "Group",
+};
+
+// Color presets match BOOKING_TYPE_COLOR (C4) so a calendar's source
+// label and its display color stay visually aligned with the
+// react-big-calendar event grid.
+const _CALENDAR_COLOR_PRESETS = [
+  { value: "#16a34a", label: "Autobook" },
+  { value: "#9333ea", label: "VA" },
+  { value: "#ea580c", label: "AE" },
+  { value: "#6b7280", label: "Manual" },
+];
+
+const _SOURCE_LABELS = ["manual", "autobook", "va", "ae"];
+
+const _CAL_TIMEZONES = [
+  "America/Chicago", "America/New_York", "America/Denver",
+  "America/Los_Angeles", "America/Phoenix", "America/Anchorage",
+  "Pacific/Honolulu", "UTC",
+];
+
+const _CAL_DEFAULT_BS = () => ({
+  duration_minutes: 30,
+  buffer_minutes: 15,
+  advance_notice_hours: 24,
+  max_bookings_per_day: 10,
+  timezone: "America/Chicago",
+  meeting_types: ["phone", "video"],
+  working_hours: {
+    monday:    { enabled: true,  start: "09:00", end: "17:00" },
+    tuesday:   { enabled: true,  start: "09:00", end: "17:00" },
+    wednesday: { enabled: true,  start: "09:00", end: "17:00" },
+    thursday:  { enabled: true,  start: "09:00", end: "17:00" },
+    friday:    { enabled: true,  start: "09:00", end: "17:00" },
+    saturday:  { enabled: false, start: "09:00", end: "12:00" },
+    sunday:    { enabled: false, start: "09:00", end: "12:00" },
+  },
+});
+
+function _calSlugify(s) {
+  return (s || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60);
+}
+
+function CalendarsTab() {
+  const [calendars, setCalendars] = useState([]);
+  const [team, setTeam] = useState([]);
+  const [loading, setLoading] = useState(true);
+  // null = closed; "new" = create mode; calendar object = edit mode
+  const [modalState, setModalState] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get("/calendars");
+      setCalendars(data?.calendars || []);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Couldn't load calendars");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadTeam = async () => {
+    try {
+      const { data } = await api.get("/profile/team");
+      // /profile/team returns {team: [...]} per the existing TeamTab.
+      // Defensive: accept users/members shapes too.
+      setTeam(data?.team || data?.users || data?.members || []);
+    } catch {
+      setTeam([]);
+    }
+  };
+
+  useEffect(() => { load(); loadTeam(); }, []);
+
+  async function copyBookingLink(slug) {
+    const url = `${window.location.origin}/book/${slug}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success("Booking link copied");
+    } catch {
+      toast.error("Couldn't copy — select the link manually.");
+    }
+  }
+
+  async function toggleActive(cal) {
+    if (cal.is_active === false) {
+      // Reactivate via PATCH — no blocking-appointments concern.
+      try {
+        await api.patch(`/calendars/${cal.id}`, { is_active: true });
+        toast.success("Calendar reactivated");
+        await load();
+      } catch (err) {
+        toast.error(err?.response?.data?.detail || "Reactivate failed");
+      }
+      return;
+    }
+    // Deactivate — DELETE returns 409 with blocking count if any
+    // upcoming non-cancelled appointments reference this calendar.
+    try {
+      await api.delete(`/calendars/${cal.id}`);
+      toast.success("Calendar deactivated");
+      await load();
+    } catch (err) {
+      const detail = err?.response?.data?.detail;
+      if (detail && typeof detail === "object" && detail.blocking_appointments) {
+        // Surface the count in the confirm dialog so the admin knows
+        // exactly what's blocking. We do NOT bypass — the C2 endpoint
+        // refuses on principle and the admin must move/cancel those
+        // appointments before retrying.
+        window.alert(
+          `Cannot deactivate "${cal.name}" — ${detail.blocking_appointments} ` +
+          `upcoming appointment(s) still reference this calendar. ` +
+          `Move or cancel them first.`
+        );
+      } else {
+        toast.error(typeof detail === "string" ? detail : "Deactivate failed");
+      }
+    }
+  }
+
+  return (
+    <div className="space-y-4" data-testid="calendars-tab">
+      <Card>
+        <CardContent className="p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-sm font-semibold">Agency Calendars</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Manage Individual and Round Robin calendars. Slugs are
+                globally unique across all tenants.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => setModalState("new")}
+              data-testid="calendars-new-btn"
+            >
+              New Calendar
+            </Button>
+          </div>
+
+          {loading ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : calendars.length === 0 ? (
+            <p
+              className="text-sm text-muted-foreground"
+              data-testid="calendars-empty"
+            >
+              No calendars yet. Create one to get started.
+            </p>
+          ) : (
+            <div className="space-y-2" data-testid="calendars-list">
+              {calendars.map((cal) => (
+                <CalendarRow
+                  key={cal.id}
+                  cal={cal}
+                  onEdit={() => setModalState(cal)}
+                  onToggleActive={() => toggleActive(cal)}
+                  onCopyLink={() => copyBookingLink(cal.slug)}
+                />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {modalState && (
+        <CalendarFormModal
+          calendar={modalState === "new" ? null : modalState}
+          existingSlugs={calendars
+            .filter((c) =>
+              modalState === "new" ? true : c.id !== modalState.id,
+            )
+            .map((c) => c.slug)}
+          team={team}
+          onClose={() => setModalState(null)}
+          onSaved={async () => {
+            setModalState(null);
+            await load();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+
+function CalendarRow({ cal, onEdit, onToggleActive, onCopyLink }) {
+  const isGroup = cal.type === "group";
+  return (
+    <div
+      className="flex flex-wrap items-center gap-3 p-3 border rounded-md"
+      data-testid={`calendar-row-${cal.slug}`}
+    >
+      <span
+        aria-hidden
+        className="inline-block w-4 h-4 rounded-full flex-shrink-0"
+        style={{ background: cal.color || "#6b7280" }}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="font-medium text-sm truncate">{cal.name}</div>
+        <div className="flex items-center gap-1 text-xs text-muted-foreground">
+          <button
+            type="button"
+            className="truncate hover:text-foreground underline-offset-2 hover:underline"
+            onClick={onCopyLink}
+            title="Click to copy"
+            data-testid={`calendar-copy-${cal.slug}`}
+          >
+            /book/{cal.slug}
+          </button>
+          <span aria-hidden>·</span>
+          <span className="text-[10px]">click to copy</span>
+        </div>
+      </div>
+      <Badge
+        variant="outline"
+        className={`text-[10px] ${isGroup ? "opacity-50" : ""}`}
+        title={isGroup ? "Group calendars are coming soon" : undefined}
+      >
+        {_CALENDAR_TYPE_LABEL[cal.type] || cal.type}
+        {isGroup && " (coming soon)"}
+      </Badge>
+      <Badge variant="outline" className="text-[10px] capitalize">
+        {cal.source_label}
+      </Badge>
+      {cal.is_active === false && (
+        <Badge variant="outline" className="text-[10px] text-muted-foreground">
+          inactive
+        </Badge>
+      )}
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={onEdit}
+        data-testid={`calendar-edit-${cal.slug}`}
+        disabled={isGroup}
+      >
+        Edit
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={onToggleActive}
+        data-testid={`calendar-toggle-active-${cal.slug}`}
+        disabled={isGroup}
+      >
+        {cal.is_active === false ? "Reactivate" : "Deactivate"}
+      </Button>
+    </div>
+  );
+}
+
+
+function CalendarFormModal({
+  calendar, existingSlugs, team, onClose, onSaved,
+}) {
+  const isEdit = !!calendar;
+  const [step, setStep] = useState(1);
+  const [saving, setSaving] = useState(false);
+  const [slugWarning, setSlugWarning] = useState("");
+
+  const initialForm = useMemo(() => {
+    if (!calendar) {
+      return {
+        type: "individual",
+        name: "",
+        slug: "",
+        source_label: "manual",
+        color: "#16a34a",
+        owner_id: "",
+        member_ids: [],
+        weights: {},
+        booking_settings: _CAL_DEFAULT_BS(),
+      };
+    }
+    const bs = { ..._CAL_DEFAULT_BS(), ...(calendar.booking_settings || {}) };
+    return {
+      type: calendar.type,
+      name: calendar.name || "",
+      slug: calendar.slug || "",
+      source_label: calendar.source_label || "manual",
+      color: calendar.color || "#16a34a",
+      owner_id: calendar.owner_id || "",
+      member_ids: calendar.member_ids || [],
+      weights: (calendar.distribution && calendar.distribution.weights) || {},
+      booking_settings: bs,
+    };
+  }, [calendar]);
+
+  const [form, setForm] = useState(initialForm);
+
+  function set(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  function setBS(k, v) {
+    setForm((f) => ({
+      ...f,
+      booking_settings: { ...f.booking_settings, [k]: v },
+    }));
+  }
+  function setHours(day, patch) {
+    setForm((f) => ({
+      ...f,
+      booking_settings: {
+        ...f.booking_settings,
+        working_hours: {
+          ...f.booking_settings.working_hours,
+          [day]: { ...f.booking_settings.working_hours[day], ...patch },
+        },
+      },
+    }));
+  }
+
+  function checkSlugCollision(slug) {
+    const clean = (slug || "").trim().toLowerCase();
+    if (!clean) { setSlugWarning(""); return; }
+    if (!/^[a-z0-9-]+$/.test(clean) || clean.length < 3 || clean.length > 60) {
+      setSlugWarning("Use 3-60 lowercase letters, numbers, and dashes only.");
+      return;
+    }
+    if ((existingSlugs || []).includes(clean)) {
+      setSlugWarning(`"${clean}" is already taken. Pick another.`);
+      return;
+    }
+    setSlugWarning("");
+  }
+
+  function autoSlugifyFromName() {
+    if (form.slug) return; // user already typed one — don't overwrite
+    const candidate = _calSlugify(form.name);
+    if (candidate) {
+      set("slug", candidate);
+      checkSlugCollision(candidate);
+    }
+  }
+
+  const canGoToStep2 = isEdit || !!form.type;
+  const canGoToStep3 = (
+    canGoToStep2
+    && form.name.trim().length >= 1
+    && form.slug.trim().length >= 3
+    && !slugWarning
+  );
+
+  const totalSteps = form.type === "round_robin" ? 3 : 2;
+
+  function toggleMember(uid) {
+    setForm((f) => {
+      const has = f.member_ids.includes(uid);
+      const nextMembers = has
+        ? f.member_ids.filter((x) => x !== uid)
+        : [...f.member_ids, uid];
+      const nextWeights = { ...f.weights };
+      if (has) {
+        delete nextWeights[uid];
+      } else if (nextWeights[uid] == null) {
+        nextWeights[uid] = 1;
+      }
+      return { ...f, member_ids: nextMembers, weights: nextWeights };
+    });
+  }
+
+  function setWeight(uid, w) {
+    setForm((f) => ({ ...f, weights: { ...f.weights, [uid]: w } }));
+  }
+
+  async function submit() {
+    if (slugWarning) { toast.error(slugWarning); return; }
+    const payload = {
+      name: form.name.trim(),
+      slug: form.slug.trim().toLowerCase(),
+      source_label: form.source_label,
+      color: form.color,
+      booking_settings: form.booking_settings,
+    };
+    if (!isEdit) payload.type = form.type;
+    if (form.type === "individual") {
+      if (!form.owner_id.trim()) {
+        toast.error("Individual calendars need an owner agent.");
+        return;
+      }
+      if (!isEdit) payload.owner_id = form.owner_id.trim();
+    } else if (form.type === "round_robin") {
+      if (form.member_ids.length < 2) {
+        toast.error("Round Robin calendars need at least 2 members.");
+        return;
+      }
+      payload.member_ids = form.member_ids;
+    }
+
+    setSaving(true);
+    try {
+      let cid = calendar?.id;
+      if (isEdit) {
+        await api.patch(`/calendars/${calendar.id}`, payload);
+      } else {
+        const { data } = await api.post("/calendars", payload);
+        cid = data?.id;
+      }
+      // For Round Robin: push the weight ledger via the dedicated
+      // distribution endpoint so audit log records a separate
+      // calendar_distribution_updated event.
+      if (form.type === "round_robin" && cid && form.member_ids.length > 0) {
+        const weights = {};
+        for (const uid of form.member_ids) {
+          const w = parseInt(form.weights[uid], 10);
+          if (Number.isFinite(w) && w >= 1 && w <= 5) weights[uid] = w;
+        }
+        if (Object.keys(weights).length > 0) {
+          try {
+            await api.patch(`/calendars/${cid}/distribution`, { weights });
+          } catch (e) {
+            // Don't block the save on a weight push failure — surface
+            // a soft warning and let the admin retry from the
+            // Distribution panel after the modal closes.
+            console.warn("Weight push failed:", e);
+          }
+        }
+      }
+      toast.success(isEdit ? "Calendar updated" : "Calendar created");
+      onSaved();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4 overflow-y-auto"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-lg shadow-xl max-w-2xl w-full p-5 space-y-4 max-h-[92vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+        data-testid="calendar-form-modal"
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold">
+            {isEdit ? `Edit "${calendar.name}"` : "New Calendar"}
+          </h3>
+          <div className="text-xs text-muted-foreground">
+            Step {step} of {totalSteps}
+          </div>
+        </div>
+
+        {/* Step 1 — Type picker */}
+        {step === 1 && (
+          <div className="space-y-3" data-testid="cal-step-1">
+            <p className="text-xs text-muted-foreground">
+              Choose the kind of calendar this is. Type is locked once
+              the calendar is created.
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              {["individual", "round_robin", "group"].map((t) => {
+                const isGroup = t === "group";
+                const selected = form.type === t;
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    disabled={isEdit || isGroup}
+                    onClick={() => !isEdit && set("type", t)}
+                    className={[
+                      "rounded-md border p-3 text-left text-sm",
+                      selected
+                        ? "border-foreground bg-secondary"
+                        : "border-border bg-white",
+                      (isEdit || isGroup) && !selected
+                        ? "opacity-50 cursor-not-allowed"
+                        : "",
+                    ].join(" ")}
+                    title={
+                      isGroup
+                        ? "Group calendars are coming soon"
+                        : isEdit
+                        ? "Type is locked after creation"
+                        : undefined
+                    }
+                    data-testid={`cal-type-${t}`}
+                  >
+                    <div className="font-medium">
+                      {_CALENDAR_TYPE_LABEL[t]}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground mt-1">
+                      {t === "individual" && "One agent, one calendar."}
+                      {t === "round_robin" && "Multiple agents, deficit-weighted."}
+                      {t === "group" && "Coming soon."}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Step 2 — Details */}
+        {step === 2 && (
+          <div className="space-y-3" data-testid="cal-step-2">
+            <div>
+              <label className="text-xs text-muted-foreground">Name</label>
+              <input
+                type="text"
+                value={form.name}
+                onChange={(e) => set("name", e.target.value)}
+                onBlur={autoSlugifyFromName}
+                className="w-full text-sm rounded-md border border-border px-2 py-1.5 mt-1"
+                placeholder="e.g. Autobook Team"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs text-muted-foreground">
+                Slug (URL — globally unique, lowercase + hyphens)
+              </label>
+              <input
+                type="text"
+                value={form.slug}
+                onChange={(e) => set("slug", e.target.value)}
+                onBlur={(e) => checkSlugCollision(e.target.value)}
+                className="w-full text-sm rounded-md border border-border px-2 py-1.5 mt-1"
+                placeholder="autobook-team"
+                disabled={isEdit && calendar?.slug}  // discourage slug renames
+                data-testid="cal-slug-input"
+              />
+              {slugWarning && (
+                <p
+                  className="text-xs text-red-600 mt-1"
+                  data-testid="cal-slug-warning"
+                >
+                  {slugWarning}
+                </p>
+              )}
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Booking URL: <code>/book/{form.slug || "your-slug"}</code>
+              </p>
+            </div>
+
+            <div>
+              <label className="text-xs text-muted-foreground">Source label</label>
+              <select
+                value={form.source_label}
+                onChange={(e) => set("source_label", e.target.value)}
+                className="w-full text-sm rounded-md border border-border px-2 py-1.5 mt-1 capitalize"
+              >
+                {_SOURCE_LABELS.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs text-muted-foreground">Color</label>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                {_CALENDAR_COLOR_PRESETS.map((c) => (
+                  <button
+                    key={c.value}
+                    type="button"
+                    onClick={() => set("color", c.value)}
+                    className={`inline-flex items-center gap-1.5 rounded-full pl-1 pr-2 py-0.5 border ${
+                      form.color === c.value
+                        ? "border-foreground"
+                        : "border-border"
+                    }`}
+                    title={c.label}
+                    data-testid={`cal-color-${c.label.toLowerCase()}`}
+                  >
+                    <span
+                      className="inline-block w-4 h-4 rounded-full"
+                      style={{ background: c.value }}
+                    />
+                    <span className="text-[10px]">{c.label}</span>
+                  </button>
+                ))}
+                <span className="text-[11px] text-muted-foreground">
+                  Custom:
+                </span>
+                <input
+                  type="text"
+                  value={form.color}
+                  onChange={(e) => set("color", e.target.value)}
+                  className="w-24 text-xs rounded-md border border-border px-2 py-1"
+                  placeholder="#000000"
+                />
+                <span
+                  aria-hidden
+                  className="inline-block w-5 h-5 rounded-full border"
+                  style={{ background: form.color }}
+                />
+              </div>
+            </div>
+
+            {form.type === "individual" && !isEdit && (
+              <div>
+                <label className="text-xs text-muted-foreground">
+                  Owner agent
+                </label>
+                <select
+                  value={form.owner_id}
+                  onChange={(e) => set("owner_id", e.target.value)}
+                  className="w-full text-sm rounded-md border border-border px-2 py-1.5 mt-1"
+                >
+                  <option value="">— Pick an agent —</option>
+                  {team.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.full_name || u.agent_name || u.email}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <CollapsibleBookingSettings
+              bs={form.booking_settings}
+              setBS={setBS}
+              setHours={setHours}
+            />
+          </div>
+        )}
+
+        {/* Step 3 — Members (Round Robin only) */}
+        {step === 3 && form.type === "round_robin" && (
+          <RoundRobinMembersStep
+            team={team}
+            form={form}
+            toggleMember={toggleMember}
+            setWeight={setWeight}
+            calendarId={calendar?.id}
+          />
+        )}
+
+        <div className="flex justify-between gap-2 pt-2 border-t mt-2">
+          <Button size="sm" variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <div className="flex gap-2">
+            {step > 1 && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setStep((s) => s - 1)}
+              >
+                Back
+              </Button>
+            )}
+            {step < totalSteps ? (
+              <Button
+                size="sm"
+                onClick={() => setStep((s) => s + 1)}
+                disabled={
+                  (step === 1 && !canGoToStep2)
+                  || (step === 2 && !canGoToStep3)
+                }
+                data-testid="cal-modal-next"
+              >
+                Next
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                onClick={submit}
+                disabled={saving}
+                data-testid="cal-modal-save"
+              >
+                {saving ? "Saving…" : isEdit ? "Save changes" : "Create calendar"}
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function CollapsibleBookingSettings({ bs, setBS, setHours }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-md border border-border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium"
+      >
+        <span>Booking settings</span>
+        <span className="text-muted-foreground">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open && (
+        <div className="p-3 space-y-3 border-t">
+          <div className="grid grid-cols-2 gap-3">
+            <NumberField
+              label="Duration (min)"
+              value={bs.duration_minutes}
+              onChange={(v) => setBS("duration_minutes", v)}
+            />
+            <NumberField
+              label="Buffer (min)"
+              value={bs.buffer_minutes}
+              onChange={(v) => setBS("buffer_minutes", v)}
+            />
+            <NumberField
+              label="Advance notice (h)"
+              value={bs.advance_notice_hours}
+              onChange={(v) => setBS("advance_notice_hours", v)}
+            />
+            <NumberField
+              label="Max bookings/day"
+              value={bs.max_bookings_per_day}
+              onChange={(v) => setBS("max_bookings_per_day", v)}
+            />
+          </div>
+
+          <div>
+            <label className="text-xs text-muted-foreground">Timezone</label>
+            <select
+              value={bs.timezone || "America/Chicago"}
+              onChange={(e) => setBS("timezone", e.target.value)}
+              className="w-full text-sm rounded-md border border-border px-2 py-1.5 mt-1"
+            >
+              {_CAL_TIMEZONES.map((tz) => (
+                <option key={tz} value={tz}>{tz}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs text-muted-foreground">
+              Meeting types (comma-separated)
+            </label>
+            <input
+              type="text"
+              value={(bs.meeting_types || []).join(", ")}
+              onChange={(e) =>
+                setBS(
+                  "meeting_types",
+                  e.target.value
+                    .split(",").map((s) => s.trim()).filter(Boolean),
+                )
+              }
+              className="w-full text-sm rounded-md border border-border px-2 py-1.5 mt-1"
+              placeholder="phone, video"
+            />
+          </div>
+
+          <div>
+            <p className="text-xs text-muted-foreground mb-1">Working hours</p>
+            <div className="space-y-1">
+              {_WEEKDAYS.map((day) => {
+                const w = bs.working_hours?.[day] || {};
+                return (
+                  <div
+                    key={day}
+                    className="grid grid-cols-[110px_60px_1fr_1fr] items-center gap-2 text-xs"
+                  >
+                    <span className="capitalize">{day}</span>
+                    <label className="flex items-center gap-1">
+                      <input
+                        type="checkbox"
+                        checked={!!w.enabled}
+                        onChange={(e) =>
+                          setHours(day, { enabled: e.target.checked })
+                        }
+                      />
+                      <span>{w.enabled ? "On" : "Off"}</span>
+                    </label>
+                    <select
+                      value={w.start || "09:00"}
+                      onChange={(e) => setHours(day, { start: e.target.value })}
+                      disabled={!w.enabled}
+                      className="rounded-md border border-border px-1 py-1 text-xs"
+                    >
+                      {TIME_OPTIONS.map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={w.end || "17:00"}
+                      onChange={(e) => setHours(day, { end: e.target.value })}
+                      disabled={!w.enabled}
+                      className="rounded-md border border-border px-1 py-1 text-xs"
+                    >
+                      {TIME_OPTIONS.map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function NumberField({ label, value, onChange }) {
+  return (
+    <div>
+      <label className="text-xs text-muted-foreground">{label}</label>
+      <input
+        type="number"
+        value={value ?? ""}
+        onChange={(e) => onChange(parseInt(e.target.value, 10) || 0)}
+        className="w-full text-sm rounded-md border border-border px-2 py-1.5 mt-1"
+      />
+    </div>
+  );
+}
+
+
+function RoundRobinMembersStep({
+  team, form, toggleMember, setWeight, calendarId,
+}) {
+  const [search, setSearch] = useState("");
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return team;
+    return team.filter((u) => {
+      const haystack = `${u.full_name || ""} ${u.email || ""} ${u.agent_name || ""}`.toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [team, search]);
+
+  return (
+    <div className="space-y-3" data-testid="cal-step-3">
+      <p className="text-xs text-muted-foreground">
+        Pick at least 2 members. Set each member's weight (1-5) — higher
+        weight = larger target share of bookings.
+      </p>
+
+      <input
+        type="text"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search by name or email"
+        className="w-full text-sm rounded-md border border-border px-2 py-1.5"
+      />
+
+      <div className="max-h-72 overflow-y-auto border rounded-md divide-y">
+        {filtered.length === 0 ? (
+          <p className="p-3 text-xs text-muted-foreground">
+            No team members match.
+          </p>
+        ) : (
+          filtered.map((u) => {
+            const selected = form.member_ids.includes(u.id);
+            const w = form.weights[u.id] ?? 1;
+            return (
+              <div
+                key={u.id}
+                className="flex items-center gap-2 p-2 text-xs"
+                data-testid={`rr-member-${u.id}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={selected}
+                  onChange={() => toggleMember(u.id)}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium truncate">
+                    {u.full_name || u.agent_name || u.email}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground truncate">
+                    {u.email}
+                  </div>
+                </div>
+                {selected && (
+                  <div className="flex items-center gap-1">
+                    <span className="text-[10px] text-muted-foreground">
+                      Weight
+                    </span>
+                    <input
+                      type="range"
+                      min={1} max={5} step={1} value={w}
+                      onChange={(e) => setWeight(u.id, parseInt(e.target.value, 10))}
+                      className="w-24"
+                    />
+                    <span className="tabular-nums text-[11px] w-3 text-right">
+                      {w}
+                    </span>
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      <p className="text-[11px] text-muted-foreground">
+        {form.member_ids.length} member(s) selected
+        {form.member_ids.length < 2 && " — need at least 2"}
+      </p>
+
+      {calendarId && (
+        <DistributionPanel calendarId={calendarId} />
+      )}
+    </div>
+  );
+}
+
+
+function DistributionPanel({ calendarId }) {
+  const [dist, setDist] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [resetting, setResetting] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get(`/calendars/${calendarId}/distribution`);
+      setDist(data);
+    } catch {
+      setDist(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [calendarId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function patchWeight(uid, weight) {
+    try {
+      await api.patch(`/calendars/${calendarId}/distribution`, {
+        weights: { [uid]: weight },
+      });
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Weight save failed");
+    }
+  }
+
+  async function resetCounts() {
+    if (!window.confirm(
+      "This will reset all assignment counts to zero. Weights are preserved."
+    )) return;
+    setResetting(true);
+    try {
+      await api.post(`/calendars/${calendarId}/distribution/reset`);
+      toast.success("Counts reset");
+      await load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Reset failed");
+    } finally {
+      setResetting(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="rounded-md border p-3 text-xs text-muted-foreground">
+        Loading distribution…
+      </div>
+    );
+  }
+  if (!dist) return null;
+
+  return (
+    <div
+      className="rounded-md border p-3 space-y-2"
+      data-testid="distribution-panel"
+    >
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium">Distribution</p>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={resetCounts}
+          disabled={resetting}
+          data-testid="distribution-reset"
+        >
+          {resetting ? "…" : "Reset counts"}
+        </Button>
+      </div>
+      <div className="space-y-1">
+        {(dist.members || []).map((m) => (
+          <DistributionRow
+            key={m.user_id}
+            member={m}
+            onPatchWeight={(w) => patchWeight(m.user_id, w)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+function DistributionRow({ member, onPatchWeight }) {
+  const [weight, setWeight] = useState(member.weight);
+  useEffect(() => { setWeight(member.weight); }, [member.weight]);
+  return (
+    <div
+      className="grid grid-cols-[1fr_140px_60px_90px_50px] gap-2 items-center text-xs py-1"
+      data-testid={`distribution-row-${member.user_id}`}
+    >
+      <div className="min-w-0 truncate">
+        <span className="font-medium">{member.full_name || member.user_id}</span>
+        {!member.is_available_now && (
+          <span className="ml-1 text-[10px] text-muted-foreground">
+            (off-hours)
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-1">
+        <input
+          type="range"
+          min={1} max={5} step={1} value={weight}
+          onChange={(e) => setWeight(parseInt(e.target.value, 10))}
+          onMouseUp={() => weight !== member.weight && onPatchWeight(weight)}
+          onTouchEnd={() => weight !== member.weight && onPatchWeight(weight)}
+          onBlur={() => weight !== member.weight && onPatchWeight(weight)}
+          className="w-full"
+        />
+        <span className="tabular-nums w-3 text-right">{weight}</span>
+      </div>
+      <div className="tabular-nums text-right">{member.assignment_count}</div>
+      <div className="text-muted-foreground text-[10px] truncate">
+        {member.last_assigned_at
+          ? new Date(member.last_assigned_at).toLocaleDateString()
+          : "—"}
+      </div>
+      <div className="tabular-nums text-right text-[11px]">
+        {Number(member.deficit).toFixed(3)}
+      </div>
+    </div>
   );
 }
