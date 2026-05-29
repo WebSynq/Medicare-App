@@ -782,7 +782,16 @@ _PROD_INDEXES = [
     ("invite_tokens", "token", {"background": True, "unique": True, "sparse": True}),
     ("invite_tokens", "email", {"background": True}),
     ("invite_tokens", "used", {"background": True}),
-    ("invite_tokens", "expires_at", {"background": True}),
+    # expires_at carries a TTL — must match the explicit create_index
+    # call further down in on_startup (expireAfterSeconds=0) so the
+    # two paths declare the same options. Without the TTL key here
+    # MongoDB raised IndexOptionsConflict on every boot and logged
+    # the warning "Index with name: expires_at_1 already exists with
+    # different options" — a no-op for production but cosmetically
+    # noisy in the boot log. See scripts/fix_invite_tokens_index.py
+    # for the one-shot drop+recreate that aligns existing indexes.
+    ("invite_tokens", "expires_at",
+     {"background": True, "expireAfterSeconds": 0}),
 
     # password_resets
     ("password_resets", "token", {"background": True, "unique": True}),
