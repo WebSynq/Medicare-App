@@ -224,6 +224,16 @@ agent_name unified across all commission endpoints — /commissions/summary,
 Rule: `agent_name` primary, `full_name` fallback for legacy records only.
 Endpoints fail closed (400) when neither field is set.
 
+## Render deployment
+
+Service name: **`ghw-medicare-backend`** (Oregon, Python). `render.yaml`
+at the repo root codifies the service plan (`standard`), region, runtime,
+health-check path (`/api/health`), graceful shutdown delay (120s), and
+auto-deploy trigger (`commit`). Everything else — env vars, build
+command, start command, root dir — lives in the Render dashboard so
+`render.yaml` stays minimal and rotating a secret never requires a
+repo edit.
+
 ## Env Vars Required (Render)
 
 **Core (already set):**
