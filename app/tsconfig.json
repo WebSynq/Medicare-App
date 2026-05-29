@@ -3,7 +3,27 @@
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
+
+    // Baseline strict family.
     "strict": true,
+
+    // Extra strict — turned on at scaffold time so we never accumulate
+    // a backlog of "we should turn this on eventually" debt:
+    //   - noUncheckedIndexedAccess: arr[0] is T | undefined, not T.
+    //   - exactOptionalPropertyTypes: `field?: T` distinguishes undefined
+    //     from absent; matches "full strict mode" per spec.
+    //   - noFallthroughCasesInSwitch: switch cases must explicitly
+    //     fall through (or end with break/return/throw).
+    //   - noImplicitOverride: subclass methods must use the `override`
+    //     keyword.
+    //   - forceConsistentCasingInFileNames: catches import-casing bugs
+    //     that pass on case-insensitive macOS but break on Linux CI.
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "forceConsistentCasingInFileNames": true,
+
     "noEmit": true,
     "esModuleInterop": true,
     "module": "esnext",
