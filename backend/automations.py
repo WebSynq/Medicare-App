@@ -515,6 +515,15 @@ async def run_post_appointment_followup(db) -> int:
         # Exclude cancelled — completed and no_show are valid for follow-up.
         if appt.get("status") == "cancelled":
             continue
+        # Feature A — appointment outcome buttons. Skip the generic 24h
+        # follow-up when the agent has already classified the outcome:
+        #   - "sold":    customer enrolled — no chase needed
+        #   - "no_show": reschedule email already fired by the outcome
+        #                button at the moment of classification
+        # "showed" and "not_sold" still get the generic follow-up because
+        # their post-call comms remains the existing template.
+        if appt.get("outcome") in ("sold", "no_show"):
+            continue
 
         agent = await _agent_for(db, appt.get("agent_id"))
         if not agent:
