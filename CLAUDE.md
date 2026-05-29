@@ -654,6 +654,38 @@ scheduler tick:
 - Test count remains 441 (no new tests added in this pass —
   pure memory-management hardening).
 
+### Scheduler hardening (May 2026)
+Three follow-up fixes targeting boot-time stability:
+
+- **invite_tokens TTL index aligned** — the `_PROD_INDEXES`
+  declarative table and the manual `create_index` call in
+  `on_startup` used to disagree on `expireAfterSeconds=0`,
+  triggering an `IndexOptionsConflict` warning on every boot and
+  potentially leaving production indexes without the TTL. Both
+  paths now declare the same shape. **Action required: run
+  `backend/scripts/fix_invite_tokens_index.py` once on prod before
+  the next deploy** to reconcile any production index that landed
+  without the TTL.
+- **Schedulers staggered + coalesced** — every interval-triggered
+  APScheduler job now carries `coalesce=True` plus a per-job
+  `start_date` offset so the boot pile doesn't ignite at t=0:
+    - `automations._tick` fires at T+5min
+    - `dashboard_agg` fires at T+8min
+    - `notifications generator` fires at T+3min
+  All cron-triggered jobs (daily brief 12:00 UTC, backup 02:00,
+  comtrack 06:00, metering day=1 06:00, stripe 07:00, statements
+  day=1 08:00) already deferred on startup so they were left alone.
+- **`security_intelligence` skips first run after startup** —
+  module-level `_first_run_skipped` flag in
+  `security_intelligence.py` makes the first call to
+  `run_ai_security_analysis` a no-op skip. The second 15-min tick
+  is the actual first analysis, by which point the worker is warm
+  and connection pools have settled. Conftest resets the flag per
+  test so the manual `/api/security/run-analysis` endpoint always
+  exercises the real path under pytest.
+- Test count remains 441 (no new tests added; conftest gained a
+  single guard reset).
+
 
 ## Pending
 
