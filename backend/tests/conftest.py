@@ -151,6 +151,20 @@ async def _clean_db():
         "hashed_password": hash_password(os.environ["SEED_ADMIN_PASSWORD"]),
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
+
+    # Bypass the production-only "skip first run after startup" guard
+    # in security_intelligence so every test that hits /run-analysis
+    # exercises the real path. The guard's whole purpose is to avoid
+    # an Anthropic call before a freshly-deployed worker is warm —
+    # an artifact of the scheduler firing on boot, irrelevant under
+    # pytest (ANTHROPIC_API_KEY is unset and the call is mocked
+    # anyway). Reset per-test so test order doesn't matter.
+    try:
+        import security_intelligence as _si
+        _si._first_run_skipped = True
+    except Exception:
+        pass
+
     yield inst
 
 

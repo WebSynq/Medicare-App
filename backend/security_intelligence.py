@@ -58,6 +58,16 @@ _TOR_HINTS = ("tor", "exit node")
 _SECURITY_CONFIG_KEY = "security_config"
 _DEFAULT_ALERT_EMAILS: List[str] = []   # populated from env fallback below
 
+# Startup-pile hardening (2026-05): every deploy/restart used to burn
+# one Anthropic call on the first scheduler tick, before the worker
+# was fully warm. Module-level flag — flipped to True on the first
+# call to ``run_ai_security_analysis`` (which becomes a no-op skip)
+# so the second 15-min tick is the actual first analysis. The flag
+# is process-local and resets to False on every restart by design —
+# that's the whole point. Tests reset the flag in conftest so the
+# /run-analysis endpoint always exercises the real path.
+_first_run_skipped: bool = False
+
 
 # ── Config (system_config singleton) ───────────────────────────────────────
 async def get_security_config(db) -> Dict[str, Any]:
@@ -674,7 +684,19 @@ async def unban_ip(db, ip: str) -> bool:
 
 # ── Main entrypoint ────────────────────────────────────────────────────────
 async def run_ai_security_analysis(db, phi_db=None) -> Dict[str, Any]:
-    """Tick-driven main loop. Never raises. Returns a summary dict."""
+    """Tick-driven main loop. Never raises. Returns a summary dict.
+
+    Startup-pile hardening: the first call after process startup is a
+    no-op skip — see ``_first_run_skipped`` for the rationale. The
+    second tick (15 minutes later, given the post-startup delay also
+    set on the scheduler) is the real first analysis.
+    """
+    global _first_run_skipped
+    if not _first_run_skipped:
+        _first_run_skipped = True
+        logger.info("[security_intel] skipping first run after startup")
+        return
+
     started = time.monotonic()
     if phi_db is None:
         phi_db = db   # caller may pass a single client
