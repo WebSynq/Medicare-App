@@ -18,14 +18,11 @@ import {
   BarChart2,
   Bell,
   Building2,
-  Cake,
   Calculator,
   CalendarClock,
   CalendarDays,
   DollarSign,
   FileText,
-  LayoutDashboard,
-  LayoutGrid,
   PieChart,
   Settings,
   Shield,
@@ -115,15 +112,16 @@ export const NAV: readonly NavSection[] = [
         icon: BarChart2,
         roles: COMMAND_CENTER_ROLES,
       },
+      // Today is the canonical agent landing — /dashboard route still
+      // exists but is no longer in the top nav (Today serves that need).
+      // Pipeline / Birthday Rule / Renewals are surfaced as tabs inside
+      // the Clients page, so they're redundant here. Page routes are
+      // untouched — deep links still work.
       { label: "Today", href: "/today", icon: Sparkles },
-      { label: "Pipeline", href: "/pipeline", icon: LayoutGrid },
       { label: "Appointments", href: "/appointments", icon: CalendarClock },
       { label: "Calendar", href: "/calendar", icon: CalendarDays },
-      { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
       { label: "Clients", href: "/clients", icon: Users },
       { label: "Leaderboard", href: "/leaderboard", icon: Trophy },
-      { label: "Birthday Rule", href: "/birthday-rule", icon: Cake },
-      { label: "Renewals", href: "/renewals", icon: CalendarClock },
       { label: "Applications", href: "/applications", icon: FileText },
       { label: "Commissions", href: "/commissions", icon: DollarSign },
     ],
