@@ -14,6 +14,7 @@ import * as authNs from "./auth";
 import * as calendarsNs from "./calendars";
 import * as leadsNs from "./leads";
 import * as appointmentsNs from "./appointments";
+import * as todayNs from "./today";
 
 export { api, isApiError, setImpersonationAgentId, getImpersonationAgentId } from "./client";
 
@@ -21,3 +22,4 @@ export const auth = authNs;
 export const calendars = calendarsNs;
 export const leads = leadsNs;
 export const appointments = appointmentsNs;
+export const today = todayNs;
