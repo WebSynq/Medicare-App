@@ -25,6 +25,7 @@ import * as profileNs from "./profile";
 import * as ghlNs from "./ghl";
 import * as agencyNs from "./agency";
 import * as applicationsNs from "./applications";
+import * as opsNs from "./ops";
 
 export { api, isApiError, setImpersonationAgentId, getImpersonationAgentId } from "./client";
 
@@ -43,3 +44,4 @@ export const profile = profileNs;
 export const ghl = ghlNs;
 export const agency = agencyNs;
 export const applications = applicationsNs;
+export const ops = opsNs;
