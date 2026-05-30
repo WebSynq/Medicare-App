@@ -149,7 +149,7 @@
 | Growth      | $497 / mo   | 15           | + booking, app intake AI, GHL import |
 | Domination  | $997 / mo   | Unlimited    | + CNA, AI client intelligence, AEP   |
 
-- **Tests: 441 passing** (mongomock-motor + TestClient).
+- **Tests: 523 passed, 1 skipped — 524 collected** (mongomock-motor + TestClient).
 
 ## Known Drift to Fix
 - agent_name is empty for existing users — needs backfill migration
@@ -685,6 +685,35 @@ Three follow-up fixes targeting boot-time stability:
   exercises the real path under pytest.
 - Test count remains 441 (no new tests added; conftest gained a
   single guard reset).
+
+### MongoDB schema hardening (May 2026)
+Multi-tenant scale prep — index coverage + array growth bounds:
+- **3 compound indexes added** to `_PROD_INDEXES` in `server.py`:
+  - `leads (agency_id, status, created_at desc)` — collapses the
+    in-memory sort tail on `list_leads`. The existing
+    `(agency_id, status)` 2-key compound served the filter but the
+    `created_at DESC` sort still had to materialize and sort all
+    matching rows.
+  - `appointments (agency_id, status, appointment_date)` — covers
+    the 15-min APScheduler reminder scan
+    (`{agency_id, status:"scheduled", appointment_date: range}`).
+    Field order is equality predicates first, range last so the
+    planner can range-scan a contiguous prefix.
+  - `audit_logs (event_type, timestamp desc)` — covers
+    `export_audit_events` plus `security_intelligence`'s
+    high-value-event scan, both filter on event_type and order by
+    timestamp DESC.
+- **4 array fields capped via Pydantic `max_length`** in `models.py`:
+  - `Lead.tags` → 50
+  - `Lead.doctors` → 20
+  - `Lead.prescriptions` → 50
+  - `Lead.document_ids` → 500
+
+  Caps apply on write only (Pydantic validation). Existing over-cap
+  docs aren't rejected at read time — no migration needed.
+- **Tests: 523 passed, 1 skipped — 524 collected** (4 new tests in
+  `test_models_array_caps.py`, one per capped field, each covering
+  both edges of the boundary: at-cap accepted, at-cap+1 rejected).
 
 
 ## Pending

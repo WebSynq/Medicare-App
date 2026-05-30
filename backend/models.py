@@ -348,8 +348,11 @@ class LeadBase(BaseModel):
     medicare_part_b_effective: Optional[str] = None
     current_carrier: Optional[str] = None
     current_plan: Optional[str] = None
-    doctors: List[str] = []
-    prescriptions: List[str] = []
+    # Patient-supplied lists. Capped to bound the embedded array size on
+    # the lead doc — a single lead can't accumulate >20 prescribers or
+    # >50 medications without a deliberate schema change.
+    doctors: List[str] = Field(default_factory=list, max_length=20)
+    prescriptions: List[str] = Field(default_factory=list, max_length=50)
     preferred_contact_time: Optional[str] = None
     notes: Optional[str] = None
     # ----- Application details (GHW app sale submission) -----
@@ -382,7 +385,7 @@ class LeadBase(BaseModel):
     # source of truth — the library entry is just a presentation hint
     # and may be deleted after leads have been tagged without nuking
     # the tags themselves.
-    tags: List[str] = []
+    tags: List[str] = Field(default_factory=list, max_length=50)
 
     @field_validator("state", mode="before")
     @classmethod
@@ -443,7 +446,7 @@ class Lead(LeadBase):
     # across later edits so the conversion-rate dashboards report the
     # original enrollment moment, not the latest mutation.
     enrolled_at: Optional[str] = None
-    document_ids: List[str] = []
+    document_ids: List[str] = Field(default_factory=list, max_length=500)
     # Workspace-isolation scoping (Phase 2). agent_id is the canonical key
     # used by deps.agent_filter; agent_email/agent_name are denormalized so
     # downstream rollups don't have to join on users for every read.
