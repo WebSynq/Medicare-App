@@ -21,7 +21,19 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const ACCESS_TOKEN_COOKIE = "ghw_access_token";
+/**
+ * Auth cookie names checked in order. Production backend plants
+ * `ghw_access_token` (see backend/auth_router.py:15 and deps.py:17 —
+ * the `ghw_` prefix scopes the cookie to the GHW agency). The
+ * `access_token` and `token` fallbacks let us run against alternate
+ * backends that ship the JWT under a generic name during dev / smoke
+ * tests without recompiling the edge middleware.
+ */
+const AUTH_COOKIE_NAMES = [
+  "ghw_access_token",
+  "access_token",
+  "token",
+] as const;
 
 /** Routes that don't require auth. Patterns match against the
  *  pathname only — query strings are stripped before comparison. */
@@ -47,9 +59,17 @@ function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 
+function readAuthCookie(request: NextRequest): string | null {
+  for (const name of AUTH_COOKIE_NAMES) {
+    const value = request.cookies.get(name)?.value;
+    if (value) return value;
+  }
+  return null;
+}
+
 export function middleware(request: NextRequest): NextResponse {
   const { pathname } = request.nextUrl;
-  const hasSession = request.cookies.has(ACCESS_TOKEN_COOKIE);
+  const hasSession = readAuthCookie(request) !== null;
 
   // Root — bounce to /dashboard or /login based on session.
   if (pathname === "/") {
