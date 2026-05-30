@@ -1,13 +1,14 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
+import { Toaster } from "@/components/ui/sonner";
+
+import { ThemeProvider } from "@/components/providers/theme-provider";
+import { QueryProvider } from "@/components/providers/query-provider";
+import { AuthBootstrap } from "@/components/providers/auth-bootstrap";
 import { cn } from "@/lib/utils";
+
 import "./globals.css";
 
-// Geist isn't on Google Fonts — Vercel ships it as a separate `geist`
-// npm package OR as bundled .woff files (the create-next-app default,
-// which is what we use here). shadcn init tries to import Geist from
-// next/font/google and breaks the build; the canonical path is
-// next/font/local against the .woff files in this directory.
 const geistSans = localFont({
   src: "./fonts/GeistVF.woff",
   variable: "--font-geist-sans",
@@ -20,8 +21,12 @@ const geistMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "GHW Portal",
-  description: "Gruening Health & Wealth — agent portal.",
+  title: {
+    default: "GHW Portal",
+    template: "%s · GHW Portal",
+  },
+  description:
+    "Gruening Health & Wealth — agent portal for Medicare intake, SOA capture, and commission tracking.",
 };
 
 export default function RootLayout({
@@ -30,11 +35,23 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
+    // suppressHydrationWarning on <html> — next-themes flips the
+    // `dark` class before React hydrates, which would otherwise be
+    // flagged as a hydration mismatch.
     <html
       lang="en"
-      className={cn("font-sans", geistSans.variable, geistMono.variable)}
+      suppressHydrationWarning
+      className={cn(geistSans.variable, geistMono.variable)}
     >
-      <body className="antialiased">{children}</body>
+      <body className="min-h-screen bg-background font-sans text-foreground antialiased">
+        <ThemeProvider>
+          <QueryProvider>
+            <AuthBootstrap />
+            {children}
+            <Toaster richColors closeButton position="top-right" />
+          </QueryProvider>
+        </ThemeProvider>
+      </body>
     </html>
   );
 }
