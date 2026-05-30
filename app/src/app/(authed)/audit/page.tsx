@@ -47,7 +47,7 @@ export default function AuditPage() {
 
   React.useEffect(() => {
     if (status === "authed" && !allowed) {
-      router.replace("/today");
+      router.replace("/dashboard");
     }
   }, [status, allowed, router]);
 

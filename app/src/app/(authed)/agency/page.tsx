@@ -76,7 +76,7 @@ export default function AgencyDashboardPage() {
 
   React.useEffect(() => {
     if (status === "authed" && !hasAgencyScope) {
-      router.replace("/today");
+      router.replace("/dashboard");
     }
   }, [status, hasAgencyScope, router]);
 

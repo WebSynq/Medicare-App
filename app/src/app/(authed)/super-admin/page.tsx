@@ -120,7 +120,7 @@ export default function SuperAdminPage() {
 
   React.useEffect(() => {
     if (status === "authed" && !isSuperAdmin) {
-      router.replace("/today");
+      router.replace("/dashboard");
     }
   }, [status, isSuperAdmin, router]);
 

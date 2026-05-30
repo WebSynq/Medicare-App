@@ -7,7 +7,7 @@
  * presence and routes accordingly:
  *
  *   - Public routes        → always allowed
- *   - /                    → / if anon → /login; if authed → /today
+ *   - /                    → / if anon → /login; if authed → /dashboard
  *   - All other routes     → require the cookie; otherwise
  *                            redirect to /login?redirect_to=<path>
  *
@@ -51,15 +51,15 @@ export function middleware(request: NextRequest): NextResponse {
   const { pathname } = request.nextUrl;
   const hasSession = request.cookies.has(ACCESS_TOKEN_COOKIE);
 
-  // Root — bounce to /today or /login based on session.
+  // Root — bounce to /dashboard or /login based on session.
   if (pathname === "/") {
-    const target = hasSession ? "/today" : "/login";
+    const target = hasSession ? "/dashboard" : "/login";
     return NextResponse.redirect(new URL(target, request.url));
   }
 
   // Public route — allow through unconditionally. Authed users
   // hitting /login still get the form; the login page itself can
-  // detect a stale session and redirect to /today client-side
+  // detect a stale session and redirect to /dashboard client-side
   // after a /me probe.
   if (isPublicPath(pathname)) {
     return NextResponse.next();

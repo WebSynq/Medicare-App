@@ -23,7 +23,6 @@ import {
   RefreshCw,
   Settings,
   ShieldAlert,
-  Sparkles,
   Trophy,
   UsersRound,
   Wallet,
@@ -63,7 +62,7 @@ export const NAV: readonly NavSection[] = [
   {
     title: "Action",
     items: [
-      { label: "Today", href: "/today", icon: Sparkles },
+      { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
       { label: "Pipeline", href: "/pipeline", icon: GitBranch },
       { label: "Clients", href: "/clients", icon: UsersRound },
       { label: "Calendar", href: "/calendar", icon: CalendarDays },
@@ -74,7 +73,6 @@ export const NAV: readonly NavSection[] = [
   {
     title: "Reports",
     items: [
-      { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
       { label: "Lead Sources", href: "/reports/lead-sources", icon: BarChart3 },
       { label: "Leaderboard", href: "/leaderboard", icon: Trophy },
       { label: "Birthday Rule", href: "/birthday-rule", icon: Cake },

@@ -8,7 +8,7 @@
  *
  * Login flow:
  *   1. POST /login {email, password} — returns either:
- *        a) LoginSuccessResponse  — cookie planted, ship to /today
+ *        a) LoginSuccessResponse  — cookie planted, ship to /dashboard
  *        b) LoginMfaRequiredResponse — session_token returned,
  *           SPA pushes /mfa and posts /mfa/verify
  *   2. POST /mfa/verify {session_token, code} — cookie planted.
@@ -16,7 +16,7 @@
  * Magic-link flow:
  *   1. POST /magic-link {email} — backend emails a signed URL.
  *   2. The URL lands on /auth/magic?token=…; the page POSTs
- *      /magic-link/verify {token}, cookie planted, ship to /today.
+ *      /magic-link/verify {token}, cookie planted, ship to /dashboard.
  */
 
 import { api } from "./client";

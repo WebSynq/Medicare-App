@@ -78,7 +78,7 @@ export default function OpsPage() {
 
   React.useEffect(() => {
     if (status === "authed" && !allowed) {
-      router.replace("/today");
+      router.replace("/dashboard");
     }
   }, [status, allowed, router]);
 

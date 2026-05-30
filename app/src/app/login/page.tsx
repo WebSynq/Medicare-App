@@ -24,9 +24,9 @@ const REDIRECT_PARAM = "redirect_to";
 function safeRedirectTarget(raw: string | null): string {
   // Only allow internal paths. External URLs would be an open-
   // redirect surface a phisher could chain onto a forged invite.
-  if (!raw) return "/today";
-  if (!raw.startsWith("/")) return "/today";
-  if (raw.startsWith("//")) return "/today";
+  if (!raw) return "/dashboard";
+  if (!raw.startsWith("/")) return "/dashboard";
+  if (raw.startsWith("//")) return "/dashboard";
   return raw;
 }
 

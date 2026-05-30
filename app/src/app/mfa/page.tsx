@@ -71,7 +71,7 @@ export default function MfaPage() {
       setUser(response.user);
       sessionStorage.removeItem(MFA_SESSION_KEY);
       toast.success(`Welcome back, ${response.user.full_name ?? response.user.email}.`);
-      router.replace("/today");
+      router.replace("/dashboard");
     } catch (err) {
       const message = isApiError(err) ? err.message : "Verification failed.";
       toast.error(message);

@@ -23,7 +23,7 @@ import { useAuthStore } from "@/stores";
  *   https://app.ghwcrm.com/auth/magic?token=<opaque>
  *
  * This page reads the token, posts it to /api/auth/magic-link/verify,
- * and on success redirects to /today (or /mfa if the user has MFA
+ * and on success redirects to /dashboard (or /mfa if the user has MFA
  * enrolled and the verify flow chose to require it).
  *
  * StrictMode-safe via a ref gate — we run the verify exactly once
@@ -75,7 +75,7 @@ function MagicLinkVerifyInner() {
         }
         setUser(response.user);
         toast.success("Signed in.");
-        router.replace("/today");
+        router.replace("/dashboard");
       } catch (err) {
         setStatus("error");
         if (isApiError(err)) {
