@@ -12,3 +12,4 @@ export * from "./appointment";
 export * from "./agency";
 export * from "./today";
 export * from "./profile";
+export * from "./profile-tab";

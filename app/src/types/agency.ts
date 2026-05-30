@@ -90,16 +90,38 @@ export interface Agency {
   updated_at: string;
 }
 
-/** GET /api/agency/usage response. */
+/** GET /api/agency/usage response.
+ *
+ *  Shape matches the owner-facing endpoint mounted at /api/agency/usage —
+ *  see backend/agency_settings_router.py. The earlier draft of this
+ *  interface predicted a different shape that never shipped.
+ */
 export interface AgencyUsage {
   agency_id: string;
-  period_start: string;
-  period_end: string;
-  ai_messages: { used: number; limit: number };
-  emails_sent: { used: number; limit: number };
-  app_intake: { used: number; limit: number };
-  storage_bytes: { used: number; limit: number };
-  seats: { used: number; limit: number };
+  billing_period: string;
+  tier: string;
+  billing_status: string;
+  seats: {
+    active: number;
+    max: number;
+    included: number;
+  };
+  limits: {
+    seats: number;
+    ai_calls_included: number;
+    emails_included: number;
+    storage_gb_included: number;
+    app_intakes_included: number;
+  };
+  usage: {
+    ai_calls_total: number;
+    emails_sent: number;
+    app_intakes: number;
+    storage_gb: number;
+    live: boolean;
+    total_invoice_usd?: number;
+    total_overage_usd?: number;
+  };
 }
 
 /** GET /api/agency/stats response — the admin dashboard payload. */

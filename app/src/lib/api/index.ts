@@ -21,6 +21,9 @@ import * as soaNs from "./soa";
 import * as policiesNs from "./policies";
 import * as notesNs from "./notes";
 import * as commissionsNs from "./commissions";
+import * as profileNs from "./profile";
+import * as ghlNs from "./ghl";
+import * as agencyNs from "./agency";
 
 export { api, isApiError, setImpersonationAgentId, getImpersonationAgentId } from "./client";
 
@@ -35,3 +38,6 @@ export const soa = soaNs;
 export const policies = policiesNs;
 export const notes = notesNs;
 export const commissions = commissionsNs;
+export const profile = profileNs;
+export const ghl = ghlNs;
+export const agency = agencyNs;
