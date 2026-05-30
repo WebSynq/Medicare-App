@@ -1,0 +1,51 @@
+{
+  "compilerOptions": {
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+
+    // Baseline strict family.
+    "strict": true,
+
+    // Extra strict — turned on at scaffold time so we never accumulate
+    // a backlog of "we should turn this on eventually" debt:
+    //   - noUncheckedIndexedAccess: arr[0] is T | undefined, not T.
+    //   - noFallthroughCasesInSwitch: switch cases must explicitly
+    //     fall through (or end with break/return/throw).
+    //   - noImplicitOverride: subclass methods must use the `override`
+    //     keyword.
+    //   - forceConsistentCasingInFileNames: catches import-casing bugs
+    //     that pass on case-insensitive macOS but break on Linux CI.
+    //
+    // exactOptionalPropertyTypes intentionally NOT enabled — Radix UI
+    // (and consequently shadcn) declares props as `?: T` and consumers
+    // forward `...props` patterns that produce `T | undefined`. The
+    // strict variant makes those forwards a compile error and the fix
+    // is to patch every shadcn primitive. Trade not worth it for our
+    // own code's benefit; turn back on once we write a wrapper layer
+    // that does the runtime undefined-stripping.
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
