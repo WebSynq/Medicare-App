@@ -21,7 +21,6 @@ import {
   Save,
   Search,
   Server,
-  ShieldCheck,
   Sparkles,
   Users,
   X,
@@ -144,16 +143,6 @@ function SuperAdminConsole({ meEmail }: { meEmail: string }) {
 
   return (
     <div className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-          <ShieldCheck className="h-6 w-6 text-primary" />
-          Super Admin
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Platform-wide controls. Every mutation is audit-logged.
-        </p>
-      </header>
-
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="flex flex-wrap h-auto">
           <TabsTrigger value="agencies">

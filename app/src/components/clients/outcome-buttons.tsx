@@ -179,7 +179,7 @@ export function OutcomeButtonsRow({ leadId }: { leadId: string }) {
             >
               Close
             </Button>
-            <Button onClick={() => router.push("/calendar")}>
+            <Button onClick={() => router.push("/appointments/calendar")}>
               Open Calendar
             </Button>
           </DialogFooter>

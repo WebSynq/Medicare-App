@@ -19,7 +19,6 @@ import {
   Network,
   Power,
   RefreshCw,
-  Shield,
   ShieldAlert,
   Skull,
   TrendingUp,
@@ -136,17 +135,11 @@ function OpsConsole() {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Shield className="h-6 w-6 text-primary" />
-            Ops Console
-          </h1>
-          <p className="text-xs text-muted-foreground mt-1 tabular-nums">
-            Snapshot {new Date(health.generated_at).toLocaleString()} · refreshes
-            every 60s
-          </p>
-        </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-muted-foreground tabular-nums">
+          Snapshot {new Date(health.generated_at).toLocaleString()} · refreshes
+          every 60s
+        </p>
         <Button
           variant="outline"
           size="sm"
@@ -162,7 +155,7 @@ function OpsConsole() {
           )}
           Refresh
         </Button>
-      </header>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <SystemSection data={health.system} />

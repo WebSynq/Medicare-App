@@ -6,7 +6,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   AlertCircle,
   AlertTriangle,
-  Building2,
   Cake,
   CalendarDays,
   CheckCircle2,
@@ -117,16 +116,7 @@ function AgencyDashboard() {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Building2 className="h-6 w-6 text-primary" />
-            Agency dashboard
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Production roll-up across all agents in your agency.
-          </p>
-        </div>
+      <div className="flex justify-end">
         <Select value={period} onValueChange={(v) => setPeriod(v as Period)}>
           <SelectTrigger className="h-9 w-[180px]">
             <SelectValue />
@@ -139,7 +129,7 @@ function AgencyDashboard() {
             ))}
           </SelectContent>
         </Select>
-      </header>
+      </div>
 
       {alertsQuery.data?.alerts && alertsQuery.data.alerts.length > 0 ? (
         <AlertsRow alerts={alertsQuery.data.alerts} />

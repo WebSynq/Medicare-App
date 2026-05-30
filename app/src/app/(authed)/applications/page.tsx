@@ -147,23 +147,16 @@ function ApplicationsWizard() {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">
-            Submit application
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Three steps: pick the client + extract the app, attach supporting
-            docs, review and submit.
-          </p>
-        </div>
-        {step > 0 ? (
+      {/* Section title is on the Applications layout. Inline header
+          keeps the Start-over CTA visible while the wizard is open. */}
+      {step > 0 ? (
+        <div className="flex justify-end">
           <Button variant="ghost" size="sm" onClick={resetWizard}>
             <X className="h-3.5 w-3.5 mr-1.5" />
             Start over
           </Button>
-        ) : null}
-      </header>
+        </div>
+      ) : null}
 
       <ImpersonationBanner />
 

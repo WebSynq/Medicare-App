@@ -225,19 +225,14 @@ export default function CalendarPage() {
 
   return (
     <div className="space-y-5">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Calendar</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Your bookings — color-coded by source. Click any event to edit;
-            click an empty slot to book.
-          </p>
-        </div>
+      {/* Section header lives on the Appointments layout. Keep the
+          primary action inline at the top of the Calendar tab. */}
+      <div className="flex justify-end">
         <Button onClick={handleNewClick}>
           <Plus className="h-4 w-4 mr-1.5" />
           New appointment
         </Button>
-      </header>
+      </div>
 
       <ImpersonationBanner />
 

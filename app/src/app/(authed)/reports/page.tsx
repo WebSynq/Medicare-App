@@ -51,16 +51,8 @@ export default function LeadSourcesPage() {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">
-            Lead sources
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Where your leads are coming from — and which ones actually
-            convert to enrollments.
-          </p>
-        </div>
+      {/* Section title is on the Reports layout. */}
+      <div className="flex justify-end">
         <Select value={period} onValueChange={(v) => setPeriod(v as Period)}>
           <SelectTrigger className="h-9 w-[180px]">
             <SelectValue />
@@ -73,7 +65,7 @@ export default function LeadSourcesPage() {
             ))}
           </SelectContent>
         </Select>
-      </header>
+      </div>
 
       {query.isLoading ? (
         <Skeleton className="h-64 w-full" />

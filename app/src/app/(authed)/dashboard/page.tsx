@@ -142,7 +142,7 @@ export default function DashboardPage() {
   );
 
   return (
-    <div className="max-w-[1500px] mx-auto">
+    <div className="max-w-[1500px] mx-auto p-4 md:p-6">
       {/* Header */}
       <header className="mb-6 md:mb-8">
         <div className="flex items-center gap-2 mb-1">
@@ -586,7 +586,7 @@ function UrgentCallsBucketCard({
       accent="border-l-destructive"
       loading={loading}
       countLabel={`${count} open`}
-      href="/birthday-rule"
+      href="/clients/birthday-rule"
     >
       {top.length === 0 ? (
         <EmptyInline message="No open windows today." />
@@ -625,7 +625,7 @@ function StaleLeadsBucketCard({
       accent="border-l-chart-4"
       loading={loading}
       countLabel={`${count} cooling`}
-      href="/pipeline"
+      href="/clients/pipeline"
     >
       {top.length === 0 ? (
         <EmptyInline message="Nothing's gone cold." />
@@ -662,7 +662,7 @@ function RenewalsBucketCard({
       accent="border-l-primary"
       loading={loading}
       countLabel={`${count} this month`}
-      href="/renewals"
+      href="/clients/renewals"
     >
       {top.length === 0 ? (
         <EmptyInline message="No renewals in the next 30 days." />
@@ -670,7 +670,7 @@ function RenewalsBucketCard({
         top.map((r, i) => (
           <BucketLeadRow
             key={`${r.lead_id ?? "noid"}-${i}`}
-            href={r.lead_id ? `/clients/${r.lead_id}` : "/renewals"}
+            href={r.lead_id ? `/clients/${r.lead_id}` : "/clients/renewals"}
             name={r.full_name}
             secondary={[r.carrier, r.product_label]
               .filter(Boolean)

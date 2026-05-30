@@ -52,15 +52,7 @@ export default function LeaderboardPage() {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Leaderboard</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Agency-wide production rankings, sourced from production_records.
-          </p>
-        </div>
-      </header>
-
+      {/* Section header lives on the Commissions layout. */}
       <ImpersonationBanner />
 
       <Tabs value={period} onValueChange={(v) => setPeriod(v as Period)}>

@@ -188,18 +188,15 @@ export default function AppointmentsPage() {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Appointments</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Every booking on your calendar — past, present, and future.
-          </p>
-        </div>
+      {/* Section title + description live on the Appointments layout
+          now. We keep the action button visible inline at the top of
+          the Upcoming page since it's the primary CTA for this tab. */}
+      <div className="flex justify-end">
         <Button onClick={() => setCreateOpen(true)}>
           <Plus className="h-4 w-4 mr-1.5" />
           New appointment
         </Button>
-      </header>
+      </div>
 
       <ImpersonationBanner />
 

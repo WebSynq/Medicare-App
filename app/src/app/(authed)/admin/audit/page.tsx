@@ -93,20 +93,14 @@ function AuditConsole() {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Audit log</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            HIPAA 7-year retention. Every state-changing event is captured.
-          </p>
-        </div>
+      <div className="flex justify-end">
         <Button asChild variant="outline">
           <a href={exportUrl} download>
             <Download className="h-3.5 w-3.5 mr-1.5" />
             Export CSV
           </a>
         </Button>
-      </header>
+      </div>
 
       <Card>
         <CardContent className="p-4 md:p-5 space-y-3">
