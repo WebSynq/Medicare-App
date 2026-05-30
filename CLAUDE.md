@@ -913,6 +913,65 @@ fixed in WS3):
   prerendered static). No backend changes — backend test floor
   (524) unaffected.
 
+### Leaderboard TV Mode + auto-refresh (May 2026)
+Standalone full-screen sales board built for wall display
+(1080p / Chromecast / HDMI cast). Lives OUTSIDE the `(authed)`
+route group so it gets only the root layout — no sidebar, no
+nav chrome, pure full-screen render.
+
+Files:
+- `app/src/app/leaderboard/tv/page.tsx` — NEW. Standalone route
+  at `/leaderboard/tv` (not under `(authed)`). Header (GHW
+  wordmark + SALES LEADERBOARD title + clock + period tabs) →
+  podium (2nd | 1st | 3rd, 1st card taller) → rankings table
+  (4+, generous row height for 10-ft readability) → footer
+  ("Live · Updates every 30s" + "Last updated Xs ago" tick).
+  Diff-driven celebration banner with confetti — on each poll
+  iterate previous rows, find each by `agent_name` in new rows,
+  if `policies_count` went up queue a celebration. Banner
+  slides down from top (600ms ease-out), shows for 8s, slides
+  back up, then the next queued celebration mounts. Round-number
+  milestones (10/25/50/100) get a tailored sub-line; others get
+  "Keep crushing it! 🔥". Confetti fires on mount via
+  `canvas-confetti` (gold/orange/white/navy palette).
+- `app/src/app/(authed)/commissions/leaderboard/page.tsx` —
+  added `refetchInterval: 60_000` to the existing React Query
+  call (matches CRA cadence) and a TV Mode button in the
+  header ("Cast to TV via Chromecast or HDMI" helper text).
+- `app/src/components/sidebar/nav-config.ts` — Leaderboard nav
+  item href fixed: `/leaderboard` (404) → `/commissions/
+  leaderboard` (real page).
+
+Auth flow without `(authed)` layout:
+- Edge middleware (`app/src/middleware.ts`) gates `/leaderboard/
+  tv` by `ghw_access_token` cookie presence and bounces to
+  `/login?redirect_to=/leaderboard/tv` if missing.
+- Root layout's `<AuthBootstrap />` fires `/api/auth/me` on
+  mount and populates `useAuthStore`; the TV page mirrors the
+  `(authed)` layout's `status === "anon"` → redirect check
+  inline so a stale session client-side still bounces.
+- `status === "unknown"` shows a quiet "Loading…" splash for
+  the brief hydration window.
+
+Real-time architecture (audit-confirmed):
+- Backend has zero WebSocket / SSE / pub-sub for production
+  events. Every "live" feel is polling. The TV page polls
+  `/api/leaderboard?period=&limit=200` every 30s and diffs
+  the result against the previous tick to drive celebrations
+  — the closest thing to real-time push that the existing
+  infrastructure supports without new backend work.
+
+Dep change: `canvas-confetti@^1` + `@types/canvas-confetti`
+added to `app/package.json`. Pure-JS canvas overlay (~5 KB
+minified), no runtime config.
+
+- **Verification**: `npm run typecheck` clean, `npm run lint`
+  clean for changed files, `npm run build` clean
+  (`/leaderboard/tv` 11.1 kB / 136 kB First Load JS,
+  prerendered static; `/commissions/leaderboard` 9.57 kB /
+  149 kB after wiring the TV button). No backend changes —
+  backend test floor (524) unaffected.
+
 
 ## Pending
 

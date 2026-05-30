@@ -121,7 +121,7 @@ export const NAV: readonly NavSection[] = [
       { label: "Appointments", href: "/appointments", icon: CalendarClock },
       { label: "Calendar", href: "/calendar", icon: CalendarDays },
       { label: "Clients", href: "/clients", icon: Users },
-      { label: "Leaderboard", href: "/leaderboard", icon: Trophy },
+      { label: "Leaderboard", href: "/commissions/leaderboard", icon: Trophy },
       { label: "Applications", href: "/applications", icon: FileText },
       { label: "Commissions", href: "/commissions", icon: DollarSign },
     ],

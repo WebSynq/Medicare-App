@@ -6,12 +6,14 @@ import {
   Award,
   Crown,
   Medal,
+  MonitorPlay,
   TrendingUp,
   Trophy,
   User,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -45,6 +47,10 @@ export default function LeaderboardPage() {
   const query = useQuery({
     queryKey: ["leaderboard", period, 50],
     queryFn: () => commissionsApi.getLeaderboard(period, 50),
+    // Auto-refresh every 60s — matches the CRA Leaderboard.jsx
+    // cadence so the SPA leaderboard view stays live without the
+    // user hitting refresh.
+    refetchInterval: 60_000,
   });
 
   const rows = query.data?.rows ?? [];
@@ -55,15 +61,31 @@ export default function LeaderboardPage() {
       {/* Section header lives on the Commissions layout. */}
       <ImpersonationBanner />
 
-      <Tabs value={period} onValueChange={(v) => setPeriod(v as Period)}>
-        <TabsList>
-          {PERIODS.map((p) => (
-            <TabsTrigger key={p.value} value={p.value}>
-              {p.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <Tabs value={period} onValueChange={(v) => setPeriod(v as Period)}>
+          <TabsList>
+            {PERIODS.map((p) => (
+              <TabsTrigger key={p.value} value={p.value}>
+                {p.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+        <div className="text-right">
+          <Button
+            variant="outline"
+            onClick={() => window.open("/leaderboard/tv", "_blank")}
+            className="gap-2"
+            data-testid="leaderboard-tv-mode"
+          >
+            <MonitorPlay className="h-4 w-4" />
+            TV Mode
+          </Button>
+          <p className="text-[10px] text-muted-foreground mt-1">
+            Cast to TV via Chromecast or HDMI
+          </p>
+        </div>
+      </div>
 
       {query.isLoading ? (
         <LoadingSkeleton />
