@@ -71,6 +71,17 @@ const config: Config = {
           cream: "hsl(38 25% 92%)",
           charcoal: "hsl(30 8% 12%)",
         },
+        // GHW design-system vocabulary v2. These aliases point at the
+        // same HSL variables that back the shadcn tokens (card / muted-
+        // foreground / secondary / accent), so `bg-surface` and
+        // `bg-card` are interchangeable. Lets new components reach for
+        // semantic names without forcing a refactor of the shadcn
+        // primitives. Keep both families in sync when adding tokens.
+        surface: "hsl(var(--surface))",
+        elevated: "hsl(var(--elevated))",
+        "foreground-muted": "hsl(var(--foreground-muted))",
+        "foreground-subtle": "hsl(var(--foreground-subtle))",
+        "accent-hover": "hsl(var(--accent-hover))",
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -78,12 +89,31 @@ const config: Config = {
         sm: "calc(var(--radius) - 4px)",
       },
       fontFamily: {
-        // Geist Sans/Mono ship as local .woff via next/font in layout.tsx.
-        // `--font-outfit` is reserved for the headline font carried over
-        // from the legacy CRM — loaded lazily by pages that opt in.
-        sans: ["var(--font-geist-sans)", "system-ui", "sans-serif"],
-        mono: ["var(--font-geist-mono)", "ui-monospace", "monospace"],
-        display: ["var(--font-outfit)", "var(--font-geist-sans)", "system-ui", "sans-serif"],
+        // GHW v2 type system — loaded via next/font/google in
+        // app/layout.tsx and exposed as CSS variables. Geist still
+        // ships locally as a fallback (small woff payload, no FOUT
+        // window).
+        //   sans     — DM Sans for body / UI
+        //   display  — Syne for headlines (futurist serifed sans)
+        //   mono     — JetBrains Mono for code / tabular fields
+        sans: [
+          "var(--font-dm-sans)",
+          "var(--font-geist-sans)",
+          "system-ui",
+          "sans-serif",
+        ],
+        display: [
+          "var(--font-syne)",
+          "var(--font-dm-sans)",
+          "system-ui",
+          "sans-serif",
+        ],
+        mono: [
+          "var(--font-jetbrains-mono)",
+          "var(--font-geist-mono)",
+          "ui-monospace",
+          "monospace",
+        ],
       },
       keyframes: {
         "accordion-down": {

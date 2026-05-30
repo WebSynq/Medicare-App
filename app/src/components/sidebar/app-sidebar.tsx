@@ -44,16 +44,19 @@ function SidebarNavLink({
       href={href}
       onClick={onNavigate}
       className={cn(
-        "group flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
+        // Border-l-2 reserves the gold accent strip slot whether the
+        // link is active or not — keeps icons aligned the same column
+        // either way (no x-shift on hover/active swap).
+        "group flex items-center gap-3 rounded-md pl-3 pr-3 py-2 text-sm transition-colors border-l-2",
         active
-          ? "bg-sidebar-accent text-sidebar-accent-foreground"
-          : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
+          ? "border-primary bg-elevated text-primary"
+          : "border-transparent text-foreground-muted hover:bg-elevated hover:text-foreground",
       )}
     >
       <Icon
         className={cn(
           "h-4 w-4 flex-shrink-0",
-          active ? "text-primary" : "text-sidebar-foreground/60",
+          active ? "text-primary" : "text-foreground-subtle group-hover:text-foreground",
         )}
       />
       <span className="truncate">{label}</span>
@@ -81,17 +84,17 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   }, [router, onNavigate]);
 
   return (
-    <div className="flex h-full flex-col bg-sidebar text-sidebar-foreground">
+    <div className="flex h-full flex-col bg-background text-foreground">
       {/* Brand */}
-      <div className="flex h-16 items-center gap-2 border-b border-sidebar-border px-5">
+      <div className="flex h-16 items-center gap-2 border-b border-border px-5">
         <div className="h-8 w-8 rounded-md bg-primary/15 ring-1 ring-primary/30 flex items-center justify-center">
-          <span className="text-sm font-bold text-primary">G</span>
+          <span className="text-sm font-bold text-primary font-display">G</span>
         </div>
         <div className="min-w-0">
-          <div className="text-sm font-semibold tracking-wide">
+          <div className="text-sm font-semibold tracking-wide font-display">
             GHW Portal
           </div>
-          <div className="text-[10px] uppercase tracking-[0.18em] text-sidebar-foreground/50">
+          <div className="text-[10px] uppercase tracking-[0.18em] text-foreground-subtle">
             Gruening Health
           </div>
         </div>
@@ -105,7 +108,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           if (items.length === 0) return null;
           return (
             <div key={section.title} className="mb-5">
-              <div className="px-3 pb-1 text-[10px] uppercase tracking-[0.18em] text-sidebar-foreground/50">
+              <div className="px-3 pb-1 text-xs uppercase tracking-wider text-foreground-subtle font-medium">
                 {section.title}
               </div>
               <nav className="space-y-0.5">
@@ -130,7 +133,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         })}
       </ScrollArea>
 
-      <Separator className="bg-sidebar-border" />
+      <Separator className="bg-border" />
 
       {/* Footer nav + user card + logout */}
       <div className="px-3 py-3 space-y-0.5">
@@ -150,19 +153,19 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         })}
       </div>
 
-      <div className="border-t border-sidebar-border px-3 py-3">
+      <div className="bg-elevated border-t border-border px-3 py-3">
         <div className="px-3 pb-2">
           <div className="text-sm font-medium truncate">
             {user?.full_name ?? user?.email ?? "Loading…"}
           </div>
-          <div className="text-[11px] text-sidebar-foreground/60 truncate capitalize">
+          <div className="text-[11px] text-foreground-muted truncate capitalize">
             {role ?? "—"}
             {isSuperAdmin ? " · super admin" : ""}
           </div>
         </div>
         <Button
           variant="ghost"
-          className="w-full justify-start text-sidebar-foreground/80 hover:text-sidebar-foreground"
+          className="w-full justify-start text-foreground-muted hover:text-foreground hover:bg-accent-hover"
           onClick={handleLogout}
         >
           <LogOut className="h-4 w-4 mr-2" />
@@ -177,7 +180,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 export function AppSidebar() {
   return (
     <aside
-      className="hidden md:block border-r border-sidebar-border flex-shrink-0"
+      className="hidden md:block bg-background border-r border-border flex-shrink-0"
       style={{ width: SIDEBAR_WIDTH }}
     >
       <SidebarContent />
@@ -194,7 +197,7 @@ export function AppSidebarMobile() {
     <Sheet open={open} onOpenChange={setOpen}>
       <SheetContent
         side="left"
-        className="p-0 w-72 bg-sidebar text-sidebar-foreground border-r border-sidebar-border"
+        className="p-0 w-72 bg-background text-foreground border-r border-border"
       >
         <SheetTitle className="sr-only">Navigation</SheetTitle>
         <SidebarContent onNavigate={() => setOpen(false)} />

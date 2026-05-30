@@ -3,31 +3,28 @@
 @tailwind utilities;
 
 /*
- * GHW Dark Gold — design system
+ * GHW Dark Gold — design system (v2, navy edition)
  *
- * Two themes carried side-by-side via CSS variables. The site
- * defaults to dark (set in <html className="dark"> by the theme
- * provider) and treats light as a secondary mode for daylight
- * field use. All tokens are HSL values without the wrapping
- * `hsl()` so Tailwind's `hsl(var(--token) / <alpha-value>)`
- * pattern stays composable.
+ * Dark mode is the brand default: deep navy base with gold accents.
+ * Light mode (kept for daylight field use) stays warm cream.
  *
- * Palette vocabulary:
- *   bg / fg          base surface + text
- *   card / popover   elevated surfaces (1-2 levels above bg)
- *   muted            subtle bg + dimmer fg pair
- *   secondary        secondary action surface
- *   accent           hover / focus surface
- *   primary          GHW gold — primary action buttons, focus ring
- *   destructive      error / delete surface
- *   chart-1..5       sequential viz palette (gold → copper →
- *                    forest → slate → purple)
- *   sidebar-*        dedicated sidebar surface (darker than bg
- *                    in dark mode for hierarchy)
+ * Two parallel token vocabularies live here side-by-side:
+ *
+ *   1. shadcn semantic tokens — what every shadcn primitive expects
+ *      (background, foreground, card, popover, primary, secondary,
+ *      muted, accent, border, ring, …). Don't rename these.
+ *
+ *   2. GHW design-system aliases — surface, elevated, foreground-
+ *      muted, foreground-subtle, accent-hover. Point at the same
+ *      underlying HSL values as the shadcn tokens above. Components
+ *      can use either family interchangeably.
+ *
+ * All values are bare HSL triplets (no wrapping `hsl()`) so Tailwind's
+ * `hsl(var(--token) / <alpha-value>)` pattern stays composable.
  */
 
 @layer base {
-  /* Light mode — warm cream surfaces, deeper gold accents for AA contrast */
+  /* Light mode — warm cream, gold accents (AA-contrast tuned) */
   :root {
     --background: 36 30% 97%;
     --foreground: 30 12% 12%;
@@ -62,42 +59,63 @@
     --sidebar-accent-foreground: 30 12% 14%;
     --sidebar-border: 36 18% 84%;
     --sidebar-ring: 38 65% 42%;
+
+    /* GHW vocabulary — aliases the user-facing components reach for. */
+    --surface: 0 0% 100%;
+    --elevated: 36 25% 92%;
+    --foreground-muted: 30 8% 42%;
+    --foreground-subtle: 30 6% 58%;
+    --accent-hover: 36 30% 84%;
   }
 
-  /* Dark gold — primary GHW theme */
+  /* Dark gold — primary GHW theme, navy base.
+   *
+   * Background ≈ #0A0F1E (HSL 225 50% 8%). Surfaces step up in
+   * lightness 3-6%, foreground steps down in saturation so the gold
+   * primary stays the focal point. */
   .dark {
-    --background: 30 6% 7%;
-    --foreground: 38 25% 90%;
-    --card: 30 7% 11%;
-    --card-foreground: 38 25% 92%;
-    --popover: 30 7% 13%;
-    --popover-foreground: 38 25% 92%;
-    --primary: 38 65% 52%;
-    --primary-foreground: 30 30% 10%;
-    --secondary: 30 6% 17%;
-    --secondary-foreground: 38 20% 88%;
-    --muted: 30 6% 15%;
-    --muted-foreground: 38 12% 65%;
-    --accent: 30 6% 20%;
+    --background: 225 50% 8%;        /* #0A0F1E — deep navy */
+    --foreground: 38 25% 92%;        /* warm cream — gold-tinted white */
+    --card: 225 35% 11%;             /* +3% lightness, slightly less saturated */
+    --card-foreground: 38 25% 94%;
+    --popover: 225 35% 13%;
+    --popover-foreground: 38 25% 94%;
+    --primary: 38 70% 55%;           /* GHW gold, brighter on navy */
+    --primary-foreground: 225 50% 8%;
+    --secondary: 225 28% 15%;        /* elevated card / table head bg */
+    --secondary-foreground: 38 20% 90%;
+    --muted: 225 25% 13%;
+    --muted-foreground: 225 8% 68%;
+    --accent: 225 25% 18%;           /* hover surface */
     --accent-foreground: 38 25% 95%;
-    --destructive: 0 65% 50%;
+    --destructive: 0 70% 55%;
     --destructive-foreground: 0 0% 100%;
-    --border: 30 8% 20%;
-    --input: 30 6% 18%;
-    --ring: 38 65% 52%;
-    --chart-1: 38 65% 52%;
-    --chart-2: 18 50% 45%;
-    --chart-3: 140 35% 38%;
-    --chart-4: 200 40% 55%;
-    --chart-5: 280 35% 55%;
-    --sidebar-background: 30 6% 5%;
-    --sidebar-foreground: 38 20% 85%;
-    --sidebar-primary: 38 65% 52%;
-    --sidebar-primary-foreground: 30 30% 10%;
-    --sidebar-accent: 30 8% 12%;
+    --border: 225 18% 22%;
+    --input: 225 22% 16%;
+    --ring: 38 70% 55%;
+    --chart-1: 38 70% 55%;
+    --chart-2: 18 55% 50%;
+    --chart-3: 140 38% 42%;
+    --chart-4: 200 45% 58%;
+    --chart-5: 280 40% 60%;
+    /* Sidebar shares the page background so the column reads as one
+       continuous surface separated only by the border-r line (per the
+       v2 design spec). */
+    --sidebar-background: 225 50% 8%;
+    --sidebar-foreground: 38 22% 88%;
+    --sidebar-primary: 38 70% 55%;
+    --sidebar-primary-foreground: 225 50% 8%;
+    --sidebar-accent: 225 28% 14%;
     --sidebar-accent-foreground: 38 25% 95%;
-    --sidebar-border: 30 8% 15%;
-    --sidebar-ring: 38 65% 52%;
+    --sidebar-border: 225 18% 18%;
+    --sidebar-ring: 38 70% 55%;
+
+    /* GHW vocabulary aliases (dark). */
+    --surface: 225 35% 11%;
+    --elevated: 225 28% 15%;
+    --foreground-muted: 225 8% 68%;
+    --foreground-subtle: 225 6% 48%;
+    --accent-hover: 225 25% 22%;
   }
 }
 
@@ -111,10 +129,7 @@
     color-scheme: light dark;
   }
   body {
-    @apply bg-background text-foreground;
-    /* Subtle vignette so the dark gold feels intentional, not
-       just "black". Disabled in light mode where it'd dirty the
-       cream. */
+    @apply bg-background text-foreground antialiased;
     background-image: radial-gradient(
       ellipse at top,
       hsl(var(--background)) 0%,
@@ -122,9 +137,11 @@
     );
   }
   .dark body {
+    /* Subtle vignette so the navy feels intentional, not flat black.
+       Lighter at the top, deeper at the edges. */
     background-image: radial-gradient(
       ellipse at top,
-      hsl(30 8% 9%) 0%,
+      hsl(225 40% 11%) 0%,
       hsl(var(--background)) 65%
     );
   }

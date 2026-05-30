@@ -20,6 +20,15 @@ import { useAuthStore } from "@/stores";
  * /me probe came back 401 (status flipped to "anon") we redirect
  * to /login. Covers the case where the cookie is present but
  * the session is server-side invalidated mid-tab.
+ *
+ * Layout grid:
+ *   <main wrapper>   bg-background — the navy canvas
+ *     <sidebar>      bg-background border-r — continuous with canvas
+ *     <content>      bg-background — scroll container
+ *
+ * Both sidebar and content share --background so the column
+ * feels like one surface with only the border-r line separating
+ * them, matching the v2 design spec.
  */
 export default function AuthedLayout({
   children,
@@ -36,10 +45,10 @@ export default function AuthedLayout({
   }, [status, router]);
 
   return (
-    <div className="flex h-screen w-full overflow-hidden">
+    <div className="flex h-screen bg-background overflow-hidden">
       <AppSidebar />
       <AppSidebarMobile />
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 bg-background">
         <MobileTopBar />
         <main className="flex-1 overflow-y-auto bg-background">
           <PageTransition>{children}</PageTransition>
