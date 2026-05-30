@@ -7,25 +7,19 @@
 
 import {
   BarChart3,
-  Briefcase,
   Building2,
-  Cake,
-  CalendarClock,
   CalendarDays,
-  ClipboardList,
-  Database,
+  Clock,
+  Crown,
   DollarSign,
   FileText,
-  GitBranch,
-  HardHat,
+  Kanban,
   LayoutDashboard,
-  Receipt,
-  RefreshCw,
   Settings,
-  ShieldAlert,
+  Shield,
+  Terminal,
   Trophy,
-  UsersRound,
-  Wallet,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 
@@ -50,104 +44,83 @@ export interface NavSection {
 }
 
 const ADMIN_ROLES: readonly UserRole[] = ["admin", "owner"];
-const LEADERSHIP_ROLES: readonly UserRole[] = [
-  "admin",
-  "owner",
-  "compliance",
-  "coach",
-  "accounting",
-];
 
 export const NAV: readonly NavSection[] = [
   {
-    title: "Action",
+    title: "Main",
     items: [
       { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-      { label: "Pipeline", href: "/pipeline", icon: GitBranch },
-      { label: "Clients", href: "/clients", icon: UsersRound },
+      { label: "Clients", href: "/clients", icon: Users },
+      { label: "Pipeline", href: "/pipeline", icon: Kanban },
+      { label: "Appointments", href: "/appointments", icon: Clock },
       { label: "Calendar", href: "/calendar", icon: CalendarDays },
-      { label: "Appointments", href: "/appointments", icon: CalendarClock },
-      { label: "Applications", href: "/applications", icon: ClipboardList },
     ],
   },
   {
-    title: "Reports",
+    title: "Revenue",
     items: [
-      { label: "Lead Sources", href: "/reports/lead-sources", icon: BarChart3 },
+      { label: "Commissions", href: "/commissions", icon: DollarSign },
       { label: "Leaderboard", href: "/leaderboard", icon: Trophy },
-      { label: "Birthday Rule", href: "/birthday-rule", icon: Cake },
-      { label: "Renewals", href: "/renewals", icon: RefreshCw },
+      { label: "Applications", href: "/applications", icon: FileText },
     ],
   },
   {
-    title: "Money",
+    title: "Admin",
     items: [
-      { label: "Commissions", href: "/commissions", icon: Wallet },
-      {
-        label: "Admin Commissions",
-        href: "/admin/commissions",
-        icon: DollarSign,
-        roles: LEADERSHIP_ROLES,
-      },
-      {
-        label: "Accounting",
-        href: "/admin/accounting",
-        icon: Receipt,
-        roles: LEADERSHIP_ROLES,
-      },
-    ],
-  },
-  {
-    title: "Agency",
-    items: [
-      {
-        label: "Agency Dashboard",
-        href: "/agency-dashboard",
-        icon: Building2,
-        roles: LEADERSHIP_ROLES,
-      },
       {
         label: "Agency",
         href: "/agency",
-        icon: Briefcase,
+        icon: Building2,
         roles: ADMIN_ROLES,
       },
       {
-        label: "Agents",
-        href: "/agents",
-        icon: UsersRound,
-        roles: LEADERSHIP_ROLES,
-      },
-      {
-        label: "Data Import",
-        href: "/admin/import",
-        icon: Database,
+        // No /reports landing page exists yet — the only built reports
+        // route is /reports/lead-sources, so the link targets that.
+        // Re-target once a reports index lands.
+        label: "Reports",
+        href: "/reports/lead-sources",
+        icon: BarChart3,
         roles: ADMIN_ROLES,
       },
       {
         label: "Audit Log",
         href: "/audit",
-        icon: FileText,
-        roles: LEADERSHIP_ROLES,
+        icon: Shield,
+        roles: ADMIN_ROLES,
       },
+    ],
+  },
+  {
+    title: "System",
+    items: [
       {
         label: "Ops Console",
         href: "/ops",
-        icon: HardHat,
+        icon: Terminal,
         roles: ADMIN_ROLES,
       },
+      // Settings stays ungated — every agent manages their own
+      // profile / password / MFA / calendar / booking page from
+      // here. The "System (admin/owner only)" section header in
+      // the design spec referred to Ops Console; gating Settings
+      // would lock regular agents out of their own account.
+      { label: "Settings", href: "/settings", icon: Settings },
+    ],
+  },
+  {
+    title: "Super Admin",
+    items: [
       {
         label: "Super Admin",
         href: "/super-admin",
-        icon: ShieldAlert,
+        icon: Crown,
         superAdminOnly: true,
       },
     ],
   },
 ];
 
-/** Bottom-anchored items (Settings, etc.) — sit below the
- *  vertically-stacked sections in the sidebar. */
-export const NAV_FOOTER: readonly NavItem[] = [
-  { label: "Settings", href: "/settings", icon: Settings },
-];
+/** Bottom-anchored items. Empty now that Settings lives in the
+ *  System section — kept exported so the sidebar component's
+ *  render path stays stable. */
+export const NAV_FOOTER: readonly NavItem[] = [];

@@ -30,6 +30,7 @@ import * as superAdminNs from "./super-admin";
 import * as dashboardNs from "./dashboard";
 import * as auditNs from "./audit";
 import * as bookNs from "./book";
+import * as quoteNs from "./quote";
 
 export { api, isApiError, setImpersonationAgentId, getImpersonationAgentId } from "./client";
 
@@ -53,3 +54,4 @@ export const superAdmin = superAdminNs;
 export const dashboard = dashboardNs;
 export const audit = auditNs;
 export const book = bookNs;
+export const quote = quoteNs;

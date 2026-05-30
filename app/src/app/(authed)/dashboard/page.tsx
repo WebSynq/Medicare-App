@@ -28,6 +28,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { today as todayApi } from "@/lib/api";
+import { QuoteCard } from "@/components/dashboard/quote-card";
 import type {
   BriefTopCall,
   DailyBrief,
@@ -166,6 +167,11 @@ export default function DashboardPage() {
           ) : null}
         </div>
       </header>
+
+      {/* Daily Inspiration — sits above the KPI row per spec.
+          Independent query so a quote-API outage doesn't block the
+          action center. */}
+      <QuoteCard />
 
       {isError ? (
         <ErrorBanner onRetry={() => actionsQuery.refetch()} />

@@ -133,25 +133,28 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         })}
       </ScrollArea>
 
-      <Separator className="bg-border" />
-
-      {/* Footer nav + user card + logout */}
-      <div className="px-3 py-3 space-y-0.5">
-        {NAV_FOOTER.map((item) => {
-          const active =
-            pathname === item.href || pathname.startsWith(item.href + "/");
-          return (
-            <SidebarNavLink
-              key={item.href}
-              href={item.href}
-              label={item.label}
-              Icon={item.icon}
-              active={active}
-              onNavigate={onNavigate}
-            />
-          );
-        })}
-      </div>
+      {NAV_FOOTER.length > 0 ? (
+        <>
+          <Separator className="bg-border" />
+          <div className="px-3 py-3 space-y-0.5">
+            {NAV_FOOTER.map((item) => {
+              const active =
+                pathname === item.href ||
+                pathname.startsWith(item.href + "/");
+              return (
+                <SidebarNavLink
+                  key={item.href}
+                  href={item.href}
+                  label={item.label}
+                  Icon={item.icon}
+                  active={active}
+                  onNavigate={onNavigate}
+                />
+              );
+            })}
+          </div>
+        </>
+      ) : null}
 
       <div className="bg-elevated border-t border-border px-3 py-3">
         <div className="px-3 pb-2">
