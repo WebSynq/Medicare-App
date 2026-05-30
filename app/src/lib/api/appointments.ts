@@ -8,12 +8,40 @@ import type {
   AppointmentCreatePayload,
   AppointmentOutcomePayload,
   AppointmentStatus,
+  AppointmentType,
   AppointmentUpdatePayload,
 } from "@/types";
 
 export interface AppointmentListResponse {
   appointments: Appointment[];
   total: number;
+}
+
+export interface RevenueStatsByType {
+  type: AppointmentType | string;
+  count: number;
+  total_commission: number;
+  avg_commission: number;
+}
+
+export interface RevenueTopAppointment {
+  client_name: string | null;
+  appointment_date: string;
+  type: string;
+  estimated_commission: number;
+  lead_id: string | null;
+}
+
+export interface RevenueStatsResponse {
+  period: "mtd" | "ytd" | "last30" | "last90" | "all";
+  total_appointments: number;
+  completed_appointments: number;
+  appointments_with_commission: number;
+  total_estimated_commission: number;
+  avg_commission_per_appointment: number;
+  avg_commission_per_completed: number;
+  by_type: RevenueStatsByType[];
+  top_appointment: RevenueTopAppointment | null;
 }
 
 export async function listAppointments(options?: {
@@ -70,6 +98,16 @@ export async function setAppointmentOutcome(
   const { data } = await api.post<Appointment>(
     `/api/appointments/${id}/outcome`,
     payload,
+  );
+  return data;
+}
+
+export async function getRevenueStats(
+  period: "mtd" | "ytd" | "last30" | "last90" | "all" = "mtd",
+): Promise<RevenueStatsResponse> {
+  const { data } = await api.get<RevenueStatsResponse>(
+    "/api/appointments/revenue-stats",
+    { params: { period } },
   );
   return data;
 }
