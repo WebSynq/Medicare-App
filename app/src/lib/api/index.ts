@@ -27,6 +27,9 @@ import * as agencyNs from "./agency";
 import * as applicationsNs from "./applications";
 import * as opsNs from "./ops";
 import * as superAdminNs from "./super-admin";
+import * as dashboardNs from "./dashboard";
+import * as auditNs from "./audit";
+import * as bookNs from "./book";
 
 export { api, isApiError, setImpersonationAgentId, getImpersonationAgentId } from "./client";
 
@@ -47,3 +50,6 @@ export const agency = agencyNs;
 export const applications = applicationsNs;
 export const ops = opsNs;
 export const superAdmin = superAdminNs;
+export const dashboard = dashboardNs;
+export const audit = auditNs;
+export const book = bookNs;
