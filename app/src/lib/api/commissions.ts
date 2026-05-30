@@ -141,8 +141,11 @@ export async function uploadStatement(
 // ─── /api/leaderboard (preview widget on /commissions) ────────────────────
 
 export interface LeaderboardRow {
+  rank: number;
   agent_name: string;
   agent_split: number;
+  agent_split_pct: number;
+  /** Admin / compliance only. */
   revenue_total?: number;
   audit_gap: number;
   policies_count: number;
