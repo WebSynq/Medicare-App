@@ -10,17 +10,23 @@ export interface LeadListResponse {
   total: number;
 }
 
-export async function listLeads(options?: {
+export interface ListLeadsParams {
   status?: LeadStatus;
   tags?: string[];
   q?: string;
   limit?: number;
-}): Promise<LeadListResponse> {
+  skip?: number;
+}
+
+export async function listLeads(
+  options?: ListLeadsParams,
+): Promise<LeadListResponse> {
   const params: Record<string, string | number> = {};
   if (options?.status) params.status = options.status;
   if (options?.tags?.length) params.tags = options.tags.join(",");
   if (options?.q) params.q = options.q;
-  if (options?.limit) params.limit = options.limit;
+  if (options?.limit != null) params.limit = options.limit;
+  if (options?.skip != null) params.skip = options.skip;
   const { data } = await api.get<LeadListResponse>("/api/leads", { params });
   return data;
 }
