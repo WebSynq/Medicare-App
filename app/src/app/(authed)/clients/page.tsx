@@ -211,11 +211,7 @@ export default function ClientsPage() {
 
       {/* Desktop table */}
       <div className="hidden md:block">
-        <LeadsTable
-          rows={rows}
-          loading={isLoading}
-          onRowClick={handleRowClick}
-        />
+        <LeadsTable rows={rows} loading={isLoading} />
       </div>
 
       {/* Mobile cards */}
@@ -402,11 +398,9 @@ function TagFilterPopover({
 function LeadsTable({
   rows,
   loading,
-  onRowClick,
 }: {
   rows: Lead[];
   loading: boolean;
-  onRowClick: (lead: Lead) => void;
 }) {
   const [sorting, setSorting] = React.useState<SortingState>([]);
   const [selection, setSelection] = React.useState<Record<string, boolean>>({});
@@ -426,12 +420,14 @@ function LeadsTable({
           />
         ),
         cell: ({ row }) => (
-          <Checkbox
-            checked={row.getIsSelected()}
-            onClick={(e) => e.stopPropagation()}
-            onCheckedChange={(v) => row.toggleSelected(!!v)}
-            aria-label={`Select ${leadFullName(row.original)}`}
-          />
+          <span data-row-stop>
+            <Checkbox
+              checked={row.getIsSelected()}
+              onClick={(e) => e.stopPropagation()}
+              onCheckedChange={(v) => row.toggleSelected(!!v)}
+              aria-label={`Select ${leadFullName(row.original)}`}
+            />
+          </span>
         ),
         enableSorting: false,
         size: 40,
@@ -541,9 +537,15 @@ function LeadsTable({
         id: "actions",
         header: () => <span className="sr-only">Actions</span>,
         cell: ({ row }) => (
+          // data-row-stop lets the row-level click handler skip this
+          // cell — the Link's own navigation already handles the click,
+          // and we want middle-click/Cmd-click to "open in new tab"
+          // here without the parent <tr onClick> also firing a same-
+          // tab navigation.
           <Link
             href={`/clients/${row.original.id}`}
             onClick={(e) => e.stopPropagation()}
+            data-row-stop
             className="inline-flex items-center justify-center w-7 h-7 rounded-md hover:bg-secondary text-muted-foreground hover:text-foreground"
             aria-label="View"
           >
@@ -626,13 +628,7 @@ function LeadsTable({
             {items.map((vRow) => {
               const row = tableRows[vRow.index];
               if (!row) return null;
-              return (
-                <VirtualRow
-                  key={row.id}
-                  row={row}
-                  onClick={() => onRowClick(row.original)}
-                />
-              );
+              return <VirtualRow key={row.id} row={row} />;
             })}
             {paddingBottom > 0 ? (
               <tr style={{ height: paddingBottom }}>
@@ -646,19 +642,43 @@ function LeadsTable({
   );
 }
 
-function VirtualRow({
-  row,
-  onClick,
-}: {
-  row: Row<Lead>;
-  onClick: () => void;
-}) {
+function VirtualRow({ row }: { row: Row<Lead> }) {
+  const router = useRouter();
+  const href = `/clients/${row.original.id}`;
+
+  // Click anywhere on the row navigates to the client profile EXCEPT
+  // when the click originates inside something marked
+  // `data-row-stop="true"` (the checkbox cell, the action arrow link).
+  // Reading the closest data-stop ancestor is more robust than trusting
+  // child components to call stopPropagation — we get the same effect
+  // even when a child re-renders without the handler.
+  function onClick(e: React.MouseEvent<HTMLTableRowElement>) {
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("[data-row-stop]")) return;
+    router.push(href);
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLTableRowElement>) {
+    if (e.key === "Enter" || e.key === " ") {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("[data-row-stop]")) return;
+      e.preventDefault();
+      router.push(href);
+    }
+  }
+
   return (
     <tr
       onClick={onClick}
+      onKeyDown={onKeyDown}
+      tabIndex={0}
+      role="link"
+      aria-label={`Open ${leadFullName(row.original)}`}
       data-state={row.getIsSelected() ? "selected" : undefined}
       className={cn(
-        "border-b border-border/60 cursor-pointer transition-colors hover:bg-secondary/40",
+        "border-b border-border/60 cursor-pointer transition-colors",
+        "hover:bg-secondary/40 focus:bg-secondary/40 focus:outline-none",
+        "focus-visible:ring-1 focus-visible:ring-primary/40",
         row.getIsSelected() ? "bg-primary/5" : "",
       )}
     >
