@@ -976,6 +976,41 @@ _PROD_INDEXES = [
     # on grace_period_ends_at because healthy agencies don't have one.
     ("agencies", "grace_period_ends_at",
      {"background": True, "sparse": True}),
+
+    # ── Multi-tenant hot-path compounds ───────────────────────────────
+    # Three compound indexes that line up with the actual filter+sort
+    # shapes our highest-traffic queries produce. Each one collapses an
+    # in-memory sort or COLLSCAN tail that the existing single-field /
+    # 2-key compounds cannot serve.
+    #
+    # leads (agency_id, status, created_at desc) — list_leads filters
+    # on agency_id+status then sorts created_at DESC. The existing
+    # (agency_id, status) prefix can serve the filter but forces a
+    # sort stage; adding created_at to the index makes the sort
+    # index-served at any tenant size.
+    ("leads",
+     [("agency_id", 1), ("status", 1), ("created_at", -1)],
+     {"background": True}),
+
+    # appointments (agency_id, status, appointment_date) — the 15-min
+    # APScheduler reminder scan filters {agency_id, status:"scheduled",
+    # appointment_date: range}. The existing (agency_id, appointment_date)
+    # compound doesn't carry status, so the scheduler scans every
+    # scheduled+done+cancelled row in the window and discards non-
+    # scheduled rows in memory. status before appointment_date is the
+    # right field order: equality predicate first, range last.
+    ("appointments",
+     [("agency_id", 1), ("status", 1), ("appointment_date", 1)],
+     {"background": True}),
+
+    # audit_logs (event_type, timestamp desc) — export_audit_events
+    # plus security_intelligence's high-value-event scan both filter
+    # on event_type (often $in a set) and order by timestamp DESC.
+    # The existing single-field event_type index can't help the sort;
+    # this compound serves both predicates from one index.
+    ("audit_logs",
+     [("event_type", 1), ("timestamp", -1)],
+     {"background": True}),
 ]
 
 
