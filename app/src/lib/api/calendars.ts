@@ -82,3 +82,43 @@ export async function resetDistribution(calendarId: string): Promise<Calendar> {
   );
   return data;
 }
+
+// ── Google Calendar OAuth (per-agent) ────────────────────────────────
+// Lives on backend/calendar_router.py under /api/calendar/google/*.
+// One-way sync today: appointments created in this app push to Google
+// when the agent has connected; the reverse (Google → app) is intentionally
+// not synced.
+
+export interface GoogleCalendarStatus {
+  connected: boolean;
+  email?: string | null;
+  connected_at?: string | null;
+}
+
+export async function getGoogleStatus(): Promise<GoogleCalendarStatus> {
+  const { data } = await api.get<GoogleCalendarStatus>(
+    "/api/calendar/google/status",
+  );
+  return data;
+}
+
+/** Returns the OAuth start URL. The page navigates the browser to it;
+ *  Google bounces back to /api/calendar/google/callback which closes
+ *  the loop. */
+export interface GoogleConnectStart {
+  authorization_url: string;
+}
+
+export async function startGoogleConnect(): Promise<GoogleConnectStart> {
+  const { data } = await api.get<GoogleConnectStart>(
+    "/api/calendar/google/connect",
+  );
+  return data;
+}
+
+export async function disconnectGoogle(): Promise<{ status: string }> {
+  const { data } = await api.delete<{ status: string }>(
+    "/api/calendar/google/disconnect",
+  );
+  return data;
+}
