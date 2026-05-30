@@ -2,76 +2,102 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * GHW Dark Gold — design system
+ *
+ * Two themes carried side-by-side via CSS variables. The site
+ * defaults to dark (set in <html className="dark"> by the theme
+ * provider) and treats light as a secondary mode for daylight
+ * field use. All tokens are HSL values without the wrapping
+ * `hsl()` so Tailwind's `hsl(var(--token) / <alpha-value>)`
+ * pattern stays composable.
+ *
+ * Palette vocabulary:
+ *   bg / fg          base surface + text
+ *   card / popover   elevated surfaces (1-2 levels above bg)
+ *   muted            subtle bg + dimmer fg pair
+ *   secondary        secondary action surface
+ *   accent           hover / focus surface
+ *   primary          GHW gold — primary action buttons, focus ring
+ *   destructive      error / delete surface
+ *   chart-1..5       sequential viz palette (gold → copper →
+ *                    forest → slate → purple)
+ *   sidebar-*        dedicated sidebar surface (darker than bg
+ *                    in dark mode for hierarchy)
+ */
+
 @layer base {
+  /* Light mode — warm cream surfaces, deeper gold accents for AA contrast */
   :root {
-    --background: 0 0% 100%;
-    --foreground: 0 0% 3.9%;
+    --background: 36 30% 97%;
+    --foreground: 30 12% 12%;
     --card: 0 0% 100%;
-    --card-foreground: 0 0% 3.9%;
+    --card-foreground: 30 12% 12%;
     --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 3.9%;
-    --primary: 0 0% 9%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 0 0% 96.1%;
-    --secondary-foreground: 0 0% 9%;
-    --muted: 0 0% 96.1%;
-    --muted-foreground: 0 0% 45.1%;
-    --accent: 0 0% 96.1%;
-    --accent-foreground: 0 0% 9%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 89.8%;
-    --input: 0 0% 89.8%;
-    --ring: 0 0% 3.9%;
-    --chart-1: 12 76% 61%;
-    --chart-2: 173 58% 39%;
-    --chart-3: 197 37% 24%;
-    --chart-4: 43 74% 66%;
-    --chart-5: 27 87% 67%;
+    --popover-foreground: 30 12% 12%;
+    --primary: 38 65% 42%;
+    --primary-foreground: 36 30% 97%;
+    --secondary: 36 25% 92%;
+    --secondary-foreground: 30 12% 18%;
+    --muted: 36 20% 94%;
+    --muted-foreground: 30 8% 42%;
+    --accent: 36 30% 90%;
+    --accent-foreground: 30 12% 14%;
+    --destructive: 0 70% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 36 18% 88%;
+    --input: 36 18% 86%;
+    --ring: 38 65% 42%;
+    --chart-1: 38 65% 42%;
+    --chart-2: 18 50% 40%;
+    --chart-3: 140 35% 32%;
+    --chart-4: 200 35% 45%;
+    --chart-5: 280 30% 45%;
     --radius: 0.5rem;
-    --sidebar-background: 0 0% 98%;
-    --sidebar-foreground: 240 5.3% 26.1%;
-    --sidebar-primary: 240 5.9% 10%;
-    --sidebar-primary-foreground: 0 0% 98%;
-    --sidebar-accent: 240 4.8% 95.9%;
-    --sidebar-accent-foreground: 240 5.9% 10%;
-    --sidebar-border: 220 13% 91%;
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    --sidebar-background: 36 30% 96%;
+    --sidebar-foreground: 30 12% 18%;
+    --sidebar-primary: 38 65% 42%;
+    --sidebar-primary-foreground: 36 30% 97%;
+    --sidebar-accent: 36 25% 90%;
+    --sidebar-accent-foreground: 30 12% 14%;
+    --sidebar-border: 36 18% 84%;
+    --sidebar-ring: 38 65% 42%;
   }
 
+  /* Dark gold — primary GHW theme */
   .dark {
-    --background: 0 0% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 0 0% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 0 0% 9%;
-    --secondary: 0 0% 14.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 14.9%;
-    --muted-foreground: 0 0% 63.9%;
-    --accent: 0 0% 14.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 14.9%;
-    --input: 0 0% 14.9%;
-    --ring: 0 0% 83.1%;
-    --chart-1: 220 70% 50%;
-    --chart-2: 160 60% 45%;
-    --chart-3: 30 80% 55%;
-    --chart-4: 280 65% 60%;
-    --chart-5: 340 75% 55%;
-    --sidebar-background: 240 5.9% 10%;
-    --sidebar-foreground: 240 4.8% 95.9%;
-    --sidebar-primary: 224.3 76.3% 48%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 240 3.7% 15.9%;
-    --sidebar-accent-foreground: 240 4.8% 95.9%;
-    --sidebar-border: 240 3.7% 15.9%;
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    --background: 30 6% 7%;
+    --foreground: 38 25% 90%;
+    --card: 30 7% 11%;
+    --card-foreground: 38 25% 92%;
+    --popover: 30 7% 13%;
+    --popover-foreground: 38 25% 92%;
+    --primary: 38 65% 52%;
+    --primary-foreground: 30 30% 10%;
+    --secondary: 30 6% 17%;
+    --secondary-foreground: 38 20% 88%;
+    --muted: 30 6% 15%;
+    --muted-foreground: 38 12% 65%;
+    --accent: 30 6% 20%;
+    --accent-foreground: 38 25% 95%;
+    --destructive: 0 65% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 30 8% 20%;
+    --input: 30 6% 18%;
+    --ring: 38 65% 52%;
+    --chart-1: 38 65% 52%;
+    --chart-2: 18 50% 45%;
+    --chart-3: 140 35% 38%;
+    --chart-4: 200 40% 55%;
+    --chart-5: 280 35% 55%;
+    --sidebar-background: 30 6% 5%;
+    --sidebar-foreground: 38 20% 85%;
+    --sidebar-primary: 38 65% 52%;
+    --sidebar-primary-foreground: 30 30% 10%;
+    --sidebar-accent: 30 8% 12%;
+    --sidebar-accent-foreground: 38 25% 95%;
+    --sidebar-border: 30 8% 15%;
+    --sidebar-ring: 38 65% 52%;
   }
 }
 
@@ -79,7 +105,46 @@
   * {
     @apply border-border;
   }
+  html {
+    /* Prevent the light/dark flash on theme toggle — next-themes
+       writes the class to <html> before the body paints. */
+    color-scheme: light dark;
+  }
   body {
     @apply bg-background text-foreground;
+    /* Subtle vignette so the dark gold feels intentional, not
+       just "black". Disabled in light mode where it'd dirty the
+       cream. */
+    background-image: radial-gradient(
+      ellipse at top,
+      hsl(var(--background)) 0%,
+      hsl(var(--background)) 100%
+    );
+  }
+  .dark body {
+    background-image: radial-gradient(
+      ellipse at top,
+      hsl(30 8% 9%) 0%,
+      hsl(var(--background)) 65%
+    );
+  }
+}
+
+/* GHW utility classes — small, name-only. Anything that needs
+   variants stays a Tailwind utility composition. */
+@layer utilities {
+  .text-gold {
+    color: hsl(var(--primary));
+  }
+  .bg-gold {
+    background-color: hsl(var(--primary));
+  }
+  .ring-gold {
+    --tw-ring-color: hsl(var(--primary));
+  }
+  /* Used for the section labels in the legacy CRM ("ACTION CENTER",
+     "AGENCY DASHBOARD") — small caps with the gold accent. */
+  .text-eyebrow {
+    @apply text-[11px] uppercase tracking-[0.18em] text-muted-foreground;
   }
 }

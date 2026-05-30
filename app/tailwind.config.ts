@@ -60,6 +60,17 @@ const config: Config = {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        // GHW brand colors — semantic aliases for the gold/copper/forest
+        // accents the legacy CRM used in inline styles. Kept separate
+        // from the shadcn tokens so theme-toggling the surface palette
+        // doesn't accidentally shift brand identity.
+        ghw: {
+          gold: "hsl(38 65% 52%)",
+          copper: "hsl(18 50% 45%)",
+          forest: "hsl(140 35% 32%)",
+          cream: "hsl(38 25% 92%)",
+          charcoal: "hsl(30 8% 12%)",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -67,8 +78,12 @@ const config: Config = {
         sm: "calc(var(--radius) - 4px)",
       },
       fontFamily: {
+        // Geist Sans/Mono ship as local .woff via next/font in layout.tsx.
+        // `--font-outfit` is reserved for the headline font carried over
+        // from the legacy CRM — loaded lazily by pages that opt in.
         sans: ["var(--font-geist-sans)", "system-ui", "sans-serif"],
         mono: ["var(--font-geist-mono)", "ui-monospace", "monospace"],
+        display: ["var(--font-outfit)", "var(--font-geist-sans)", "system-ui", "sans-serif"],
       },
       keyframes: {
         "accordion-down": {
@@ -79,10 +94,28 @@ const config: Config = {
           from: { height: "var(--radix-accordion-content-height)" },
           to: { height: "0" },
         },
+        // Used by Sonner toast and shadcn dialog overlays — fades the
+        // backdrop in instead of a hard flip.
+        "fade-in": {
+          from: { opacity: "0" },
+          to: { opacity: "1" },
+        },
+        "fade-out": {
+          from: { opacity: "1" },
+          to: { opacity: "0" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
+        "fade-in": "fade-in 200ms ease-out",
+        "fade-out": "fade-out 150ms ease-in",
+      },
+      boxShadow: {
+        // GHW-flavored soft glow on focused gold elements. Use with
+        // `shadow-gold-glow` on focus rings around primary buttons.
+        "gold-glow":
+          "0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--primary) / 0.5)",
       },
     },
   },
