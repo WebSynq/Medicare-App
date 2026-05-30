@@ -1,6 +1,7 @@
 """Authentication routes: register, login, magic-link, me, approval, invite."""
 import hashlib
 import logging
+import os
 import secrets
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -13,6 +14,28 @@ from slowapi.util import get_remote_address
 
 # Cookie / CSRF constants
 _ACCESS_COOKIE = "ghw_access_token"
+
+# ── Environment-aware cookie scoping ──────────────────────────────────────
+# In staging/production the SPA lives at app.ghwcrm.com and the API lives
+# at api.ghwcrm.com. For the cookie planted by /login on api.* to be
+# carried back on requests from app.*, it MUST be set with
+# Domain=.ghwcrm.com so both subdomains share the cookie jar. Setting
+# Domain in development would scope the cookie to a .ghwcrm.com domain
+# the dev browser never visits — so dev leaves Domain unset (cookie
+# scopes to the request host, typically localhost).
+#
+# SameSite policy is coupled to Domain by the same cross-context logic.
+# When Domain is set we expect the SPA to be a different eTLD+1-of-
+# subdomain than the API origin, so we must opt-in to SameSite=None to
+# allow the cookie to travel. SameSite=None REQUIRES Secure=True per the
+# spec — never relax that pair. In dev (no Domain) we drop to
+# SameSite=Lax which is the safer default and still lets same-origin
+# tools work without HTTPS gymnastics.
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+COOKIE_DOMAIN = (
+    ".ghwcrm.com" if ENVIRONMENT in ("production", "staging") else None
+)
+COOKIE_SAMESITE = "none" if COOKIE_DOMAIN else "lax"
 
 
 async def _notify_admin_account_locked(email, attempt_result, request):
@@ -62,24 +85,33 @@ _COOKIE_MAX_AGE = 60 * 60 * 24  # 24h — matches what we ask of the JWT expiry
 def _set_session_cookies(response: Response, jwt_token: str) -> None:
     """Plant the httpOnly access cookie + JS-readable CSRF cookie.
 
-    SameSite=None;Secure is the only configuration that works for the
-    cross-site Vercel → Render flow AND for mobile browsers that
-    enforce SameSite=Lax-by-default with stricter cross-context rules
-    than desktop. Per the spec these two flags must travel together —
-    SameSite=None without Secure is rejected by every modern browser.
+    Two flags never change regardless of environment:
+      * httponly=True on the access cookie — XSS-stolen JS can't read
+        the JWT
+      * secure=True on both cookies — only ever sent over HTTPS
 
-    Hardcoded (not env-conditional) so a misconfigured ENVIRONMENT
-    var on Render can't silently downgrade prod cookies and break the
-    mobile login flow. Local dev over plain HTTP cannot plant these
-    cookies as a result — tunnel through HTTPS (ngrok, Caddy, etc.)
-    or run the SPA against a deployed API for end-to-end testing.
+    Two flags are environment-aware (see COOKIE_DOMAIN / COOKIE_SAMESITE
+    notes at the top of this module):
+      * domain — only set in staging/production where the SPA and API
+        live on different subdomains of ghwcrm.com
+      * samesite — "none" alongside Domain, "lax" in dev for the safer
+        default
+
+    SameSite=None without Secure=True is rejected by every modern
+    browser. Since Secure stays True in every environment, that pair
+    invariant is maintained automatically.
+
+    Dev caveat: Secure=True means the dev browser still needs HTTPS to
+    accept these cookies (tunnel through ngrok / Caddy, or run the SPA
+    against a deployed API for end-to-end testing).
     """
     response.set_cookie(
         key=_ACCESS_COOKIE,
         value=jwt_token,
-        httponly=True,
-        secure=True,
-        samesite="none",
+        httponly=True,                 # XSS protection — never remove
+        secure=True,                   # HTTPS only — never remove
+        samesite=COOKIE_SAMESITE,
+        domain=COOKIE_DOMAIN,
         max_age=_COOKIE_MAX_AGE,
         path="/",
     )
@@ -87,16 +119,25 @@ def _set_session_cookies(response: Response, jwt_token: str) -> None:
         key=_CSRF_COOKIE,
         value=secrets.token_hex(32),
         httponly=False,                # JS must read this to echo as header
-        secure=True,
-        samesite="none",
+        secure=True,                   # HTTPS only — never remove
+        samesite=COOKIE_SAMESITE,
+        domain=COOKIE_DOMAIN,
         max_age=_COOKIE_MAX_AGE,
         path="/",
     )
 
 
 def _clear_session_cookies(response: Response) -> None:
-    response.delete_cookie(_ACCESS_COOKIE, path="/")
-    response.delete_cookie(_CSRF_COOKIE, path="/")
+    """Clear both cookies. CRITICAL: a cookie planted with
+    Domain=.ghwcrm.com can ONLY be deleted by a Set-Cookie with the
+    same Domain attribute. Pass the same COOKIE_DOMAIN we used at
+    plant time so logout works in every environment."""
+    response.delete_cookie(
+        _ACCESS_COOKIE, path="/", domain=COOKIE_DOMAIN,
+    )
+    response.delete_cookie(
+        _CSRF_COOKIE, path="/", domain=COOKIE_DOMAIN,
+    )
 
 # Dummy bcrypt hash used to keep response time constant when the email doesn't
 # exist. Computed once at import; the plaintext is never used.
