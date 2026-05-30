@@ -715,6 +715,42 @@ Multi-tenant scale prep — index coverage + array growth bounds:
   `test_models_array_caps.py`, one per capped field, each covering
   both edges of the boundary: at-cap accepted, at-cap+1 rejected).
 
+### Next.js sidebar parity — WS1 (May 2026)
+First of three workstreams porting the CRA → Next.js gap to staging.
+This pass touches `app/src/components/sidebar/nav-config.ts` only.
+- **14 plain nav items added** to bring the Next.js sidebar to
+  CRA parity: Command Center, Today, Pipeline, Calendar,
+  Leaderboard, Birthday Rule, Renewals, Lead Sources, Super
+  Admin, Agent Commissions, Accounting, Team, Data Import, Ops
+  Console. Order, section grouping (Main / Reports / Platform /
+  Admin), and per-item role gates mirror `frontend/src/components/
+  Layout.jsx` exactly.
+- **Role-gate constants ported verbatim**: `ADMIN_ROLES`,
+  `ADMIN_OR_COMPLIANCE_ROLES` (includes cyber_security +
+  sales_manager), `COMMAND_CENTER_ROLES`, `IMPERSONATION_ROLES`.
+  Super Admin still uses the existing `superAdminOnly: true` hard
+  gate on `User.super_admin === true`.
+- **URL drift handled**: CRA links Super Admin → `/super-admin`
+  and Ops Console → `/ops` (top-level). The Next.js pages live
+  at `/admin/super-admin` and `/admin/ops`. The nav items link to
+  the Next.js paths so the links work; top-level redirects can
+  follow if URL parity becomes desirable.
+- **Bell + Agent Switcher shipped as visible placeholders** in
+  `NAV_FOOTER` — Bell → `/notifications` (page TBD), Switch
+  Agent → `/agents` (Team roster — closest sensible landing
+  surface until the AgentContext + `X-Agent-ID` interceptor are
+  ported on their own branch). These are tracked follow-ups; the
+  real bell wiring (poll-driven unread badge + NotificationPanel)
+  and the real impersonation popover are NOT in this branch.
+- **Routes that still 404 on click** (deferred to later
+  workstreams or own branches): `/today`, `/pipeline`, `/calendar`,
+  `/leaderboard`, `/birthday-rule`, `/renewals`, `/reports/lead-
+  sources`, `/notifications`, `/agency`. The 404 is intentional
+  feedback about what still needs porting; WS2 closes `/today`
+  via the combined dashboard.
+- **Verification**: `npm run typecheck` clean (exit 0), `npm run
+  lint` clean. No backend changes, no test impact.
+
 
 ## Pending
 
