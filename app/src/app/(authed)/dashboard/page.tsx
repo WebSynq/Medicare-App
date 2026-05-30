@@ -28,6 +28,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { today as todayApi } from "@/lib/api";
+import { useAuthStore } from "@/stores";
 import { QuoteCard } from "@/components/dashboard/quote-card";
 import type {
   BriefTopCall,
@@ -38,7 +39,24 @@ import type {
   TodayRenewalDue,
   TodayStaleLead,
   TodayUrgentCall,
+  UserRole,
 } from "@/types";
+
+import { AgencySection } from "./_agency-section";
+import { PERIOD_TABS, type Period } from "./_period";
+
+// ─── Role gate ────────────────────────────────────────────────────────────
+// Mirrors CRA Layout.jsx's COMMAND_CENTER_ROLES_SET (lines 530-532) and
+// the backend agency_dashboard_router AGENCY_ROLES. Update all three
+// together if leadership composition changes.
+const COMMAND_CENTER_ROLES: readonly UserRole[] = [
+  "owner",
+  "admin",
+  "coach",
+  "sales_manager",
+  "compliance",
+  "accounting",
+] as const;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -117,6 +135,18 @@ const URGENCY_STYLE: Record<
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
+  // Role gate for the agency section. Agents always see the agent
+  // section above; leadership roles see both. Selectors are tightly
+  // scoped so this component only re-renders when the role changes.
+  const role = useAuthStore((s) => s.user?.role ?? null);
+  const showAgency =
+    role !== null && COMMAND_CENTER_ROLES.includes(role);
+
+  // Period state lives on the page so the header's period selector
+  // drives every query in the agency section below. Default to MTD
+  // — matches CRA's first-paint behavior.
+  const [period, setPeriod] = React.useState<Period>("mtd");
+
   const actionsQuery = useQuery<TodayActionsResponse>({
     queryKey: ["today", "actions"],
     queryFn: todayApi.getActions,
@@ -162,9 +192,17 @@ export default function DashboardPage() {
               )}
             </p>
           </div>
-          {data && data.mtd_commission > 0 ? (
-            <MtdPill amount={data.mtd_commission} />
-          ) : null}
+          <div className="flex flex-wrap items-center gap-3">
+            {data && data.mtd_commission > 0 ? (
+              <MtdPill amount={data.mtd_commission} />
+            ) : null}
+            {/* Period selector — drives the Agency Overview queries.
+                Hidden for agent roles since the agency section isn't
+                rendered for them. */}
+            {showAgency ? (
+              <PeriodTabs value={period} onChange={setPeriod} />
+            ) : null}
+          </div>
         </div>
       </header>
 
@@ -239,6 +277,52 @@ export default function DashboardPage() {
           </section>
         </>
       )}
+
+      {/* Agency Overview — leadership-only second half. Sits below the
+          agent's own day so owners/admins still get their personal
+          action items at the top of the page. */}
+      {showAgency ? <AgencySection period={period} /> : null}
+    </div>
+  );
+}
+
+// ─── Period tabs (header control) ─────────────────────────────────────────
+
+function PeriodTabs({
+  value,
+  onChange,
+}: {
+  value: Period;
+  onChange: (next: Period) => void;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Agency period filter"
+      className="inline-flex items-center gap-1 p-1 rounded-full bg-secondary"
+      data-testid="agency-period-tabs"
+    >
+      {PERIOD_TABS.map((t) => {
+        const selected = t.value === value;
+        return (
+          <button
+            key={t.value}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            onClick={() => onChange(t.value)}
+            className={cn(
+              "px-3.5 h-8 text-xs font-medium rounded-full transition-colors tabular-nums",
+              selected
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            data-testid={`agency-period-${t.value}`}
+          >
+            {t.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

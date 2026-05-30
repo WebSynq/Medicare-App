@@ -96,10 +96,34 @@ export async function getAgentPerformance(
   return data;
 }
 
+/** Row shapes mirror what backend/agency_dashboard_router.py:/charts
+ *  actually returns (verified 2026-05). The earlier drafts that
+ *  declared only `{week,count}` and `{source,count}` predicted a
+ *  shape that never shipped; the production CRA reads `label`,
+ *  `total`, and `enrolled`. */
+export interface EnrollmentsByWeekRow {
+  /** ISO week key, e.g. "2024-W12". */
+  week: string;
+  /** Short display label for chart axis, e.g. "Mar 18". */
+  label: string;
+  count: number;
+}
+export interface RevenueByCarrierRow {
+  carrier: string;
+  revenue: number;
+  count: number;
+}
+export interface LeadsBySourceRow {
+  source: string;
+  total: number;
+  enrolled: number;
+  conversion_rate: number;
+}
+
 export interface AgencyChartsResponse {
-  enrollments_by_week: { week: string; count: number }[];
-  revenue_by_carrier: { carrier: string; revenue: number }[];
-  leads_by_source: { source: string; count: number }[];
+  enrollments_by_week: EnrollmentsByWeekRow[];
+  revenue_by_carrier: RevenueByCarrierRow[];
+  leads_by_source: LeadsBySourceRow[];
 }
 
 export async function getAgencyCharts(
@@ -112,6 +136,10 @@ export async function getAgencyCharts(
   return data;
 }
 
+/** @deprecated Earlier draft expected a `{ alerts: AgencyAlert[] }`
+ *  envelope; backend never shipped that shape. Kept on the response
+ *  union so existing callers reading `.alerts` still typecheck while
+ *  they get migrated to the per-category arrays below. */
 export interface AgencyAlert {
   level: "info" | "warning" | "critical" | string;
   title: string;
@@ -119,8 +147,41 @@ export interface AgencyAlert {
   count?: number;
 }
 
+export interface StaleLeadAlertRow {
+  agent_id: string;
+  agent_name: string;
+  count: number;
+}
+
+export interface BirthdayWindowAlertRow {
+  lead_id: string;
+  client_name: string;
+  agent_name: string;
+  days_remaining: number;
+  carrier: string | null;
+}
+
+export interface RenewalDueAlertRow {
+  lead_id: string | null;
+  client_name: string;
+  agent_name: string;
+  renewal_date: string;
+  days_until: number;
+  carrier: string | null;
+}
+
+/** What backend/agency_dashboard_router.py:/alerts actually returns
+ *  (verified 2026-05): three per-category arrays. The `alerts` field
+ *  is kept optional for backwards compatibility with the deprecated
+ *  envelope shape — see AgencyAlert. */
 export interface AgencyAlertsResponse {
-  alerts: AgencyAlert[];
+  stale_leads?: StaleLeadAlertRow[];
+  birthday_windows?: BirthdayWindowAlertRow[];
+  renewals_due?: RenewalDueAlertRow[];
+  /** @deprecated — never returned by the backend; preserved on the
+   *  type for the AlertsRow callsite in /admin until migrated. */
+  alerts?: AgencyAlert[];
+  _meta?: Record<string, unknown>;
 }
 
 export async function getAgencyAlerts(): Promise<AgencyAlertsResponse> {

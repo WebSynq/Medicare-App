@@ -751,6 +751,66 @@ This pass touches `app/src/components/sidebar/nav-config.ts` only.
 - **Verification**: `npm run typecheck` clean (exit 0), `npm run
   lint` clean. No backend changes, no test impact.
 
+### Combined dashboard — WS2 (May 2026)
+Second of three workstreams. Collapses CRA's two pages
+(`TodayPage.jsx` agent view + `AgencyCommandCenter.jsx` leadership
+view) into a single role-aware page at `/dashboard` in the Next.js
+app. Agent always sees their day at the top; leadership roles
+(COMMAND_CENTER_ROLES = owner/admin/coach/sales_manager/compliance/
+accounting) see the same agent panel above plus an "Agency Overview"
+section below.
+
+Files touched (`app/` only, no backend changes):
+- `app/src/app/(authed)/dashboard/page.tsx` — extended with role
+  check (useAuthStore), period state, header period selector, and
+  conditional `<AgencySection>` render below the existing agent
+  blocks. Existing agent KPI row + AI priority list + bucket cards
+  preserved as-is.
+- `app/src/app/(authed)/dashboard/_agency-section.tsx` — NEW. 8-card
+  KPI grid + 2 charts (Enrollments by Week, Revenue by Carrier) +
+  sortable Agent Performance table + 3 alert cards (Stale Leads,
+  Birthday Windows, Renewals Due). Ports
+  `frontend/src/pages/AgencyCommandCenter.jsx` panel-for-panel,
+  swapping CRA's hardcoded brand colors for theme-aware
+  `hsl(var(--primary))` so the section matches the existing
+  Next.js dark navy theme.
+- `app/src/app/(authed)/dashboard/_period.ts` — NEW. Shared `Period`
+  type + `PERIOD_TABS` constant so the page and the agency section
+  can both reach it without a circular dep.
+- `app/src/lib/api/dashboard.ts` — type drift fix. Updated three
+  response shapes to match what the backend actually returns
+  (verified against `backend/agency_dashboard_router.py`):
+  - `enrollments_by_week`: added `label` (the chart's x-axis key)
+    alongside the existing `week`/`count`.
+  - `revenue_by_carrier`: added `count` (the row also carries a
+    policy count, kept for forwards-compat).
+  - `leads_by_source`: replaced placeholder `{source, count}` with
+    real `{source, total, enrolled, conversion_rate}`.
+  - `AgencyAlertsResponse`: added `stale_leads` / `birthday_windows`
+    / `renewals_due` row arrays + row-level interfaces. The legacy
+    `alerts: AgencyAlert[]` field stays optional and `@deprecated`
+    so the existing `/admin/page.tsx` AlertsRow callsite keeps
+    typechecking until it's migrated.
+
+Patterns ported from CRA: dual-tier role gate (agent always sees
+their day; leadership sees agency too), pill-style period tabs
+(MTD/Last30/Last90/YTD), sortable column headers with arrow
+indicators, status-dot + status-badge row prefix, click-row =
+view-agent (placeholder action — fires a sonner toast pointing to
+the AgentSwitcher follow-up since AgentContext + X-Agent-ID
+interceptor aren't ported yet).
+
+Existing /admin and /reports/revenue Recharts dataKey strings still
+hardcode the stale field names (`week`, `count`) — typecheck passes
+because Recharts dataKey is a free-form string, but those charts
+keep rendering blank at runtime until they're migrated to the new
+field names (`label`, `total`/`enrolled`). Tracked follow-up;
+out-of-scope for WS2.
+
+- **Verification**: `npm run typecheck` clean, `npm run lint` clean,
+  `npm run build` clean (16.2 kB /dashboard bundle, prerendered
+  static). No backend changes — backend test floor (524) unaffected.
+
 
 ## Pending
 
