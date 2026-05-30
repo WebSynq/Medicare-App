@@ -8,6 +8,7 @@ import {
   AppSidebarMobile,
   MobileTopBar,
 } from "@/components/sidebar/app-sidebar";
+import { PageTransition } from "@/components/page-transition";
 import { useAuthStore } from "@/stores";
 
 /**
@@ -41,7 +42,7 @@ export default function AuthedLayout({
       <div className="flex-1 flex flex-col min-w-0">
         <MobileTopBar />
         <main className="flex-1 overflow-y-auto bg-background">
-          {children}
+          <PageTransition>{children}</PageTransition>
         </main>
       </div>
     </div>

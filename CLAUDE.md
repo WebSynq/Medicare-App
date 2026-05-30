@@ -1,7 +1,10 @@
 # GHW Medicare Agent Portal — Session Context
 
 ## Stack
-- Frontend: React CRA + Tailwind + shadcn/ui → Vercel
+- Frontend (current, production): React CRA + Tailwind + shadcn/ui → Vercel
+- Frontend (next, on the `nextjs-app` branch — see "Next.js rebuild"
+  section below): Next.js 14 App Router + TypeScript + Tailwind v3 +
+  shadcn/ui new-york style. Awaiting Vercel project cutover.
 - Backend: FastAPI (Python 3.11.9) → Render
 - Database: MongoDB (Atlas) — DB_NAME = `gruening_medicare`
 - Auth: JWT (HS256) + httpOnly cookie + CSRF middleware + magic-link sign-in
@@ -685,6 +688,84 @@ Three follow-up fixes targeting boot-time stability:
   exercises the real path under pytest.
 - Test count remains 441 (no new tests added; conftest gained a
   single guard reset).
+
+
+## Next.js rebuild (`nextjs-app` branch — May 2026, 20 phases shipped)
+
+Full frontend rebuild from Create React App → Next.js 14 App Router on
+the `nextjs-app` branch. All 20 phases (5 weeks of work) complete and
+pushed. Backend untouched — same FastAPI service at api.ghwcrm.com.
+
+**Stack:**
+- Next.js 14.2 (App Router, all pages "use client" except public booking)
+- TypeScript strict (minus exactOptionalPropertyTypes — incompatible
+  with Radix UI's prop forwarding)
+- Tailwind v3 + shadcn/ui (new-york style; 44 components installed)
+- TanStack Query v5 + Table v8 + Virtual v3
+- Zustand v5 with persist middleware (auth + impersonation + UI stores)
+- Axios with X-CSRF-Token + X-Agent-ID interceptors
+- react-big-calendar (themed via custom CSS sheet bound to HSL vars)
+- recharts (Ops Console + Agency dashboard + reports)
+- Framer Motion (page transitions in (authed) layout)
+- Edge middleware route gating via httpOnly cookie presence
+
+**Phase log (all merged to `nextjs-app`):**
+- 1-7 — Foundation, auth bootstrap, sidebar, all 37 placeholder routes
+- 8 — /today
+- 9 — /clients (TanStack Table + Virtual, 100-row pagination, filters)
+- 10 — /clients/[id] (6 tabs: Overview, CNA, Documents, SOA, Policies, Notes)
+- 11 — /appointments (TanStack Table + revenue stats + outcome dialogs)
+- 12 — /calendar (themed react-big-calendar, color-coded by booking_type)
+- 13 — /commissions (live ComTrack + history + upload + calculator + leaderboard preview)
+- 14 — /settings (6 tabs: Profile, Booking, Security, Integrations, Calendars, Agency)
+- 15 — /leaderboard (medal podium 2/1/3 layout + self-row highlight)
+- 16 — /applications (3-step wizard: extract → supporting → submit)
+- 17 — /ops (single /api/ops/health aggregate, self-degrading sections, AI security panel)
+- 18 — /super-admin (4 tabs: Agencies, Users, Usage, System)
+- 19 — /agency + /reports/lead-sources + /audit + public /book/[slug]
+- 20 — Polish (Framer Motion page transitions, loading.tsx, padding harmonization)
+
+**Bundle sizes (largest first):**
+- /ops 12.8 kB / 264 kB (recharts)
+- /calendar 65.1 kB / 253 kB (react-big-calendar)
+- /agency 11.4 kB / 287 kB (recharts × 3)
+- /reports/lead-sources 4.17 kB / 273 kB (recharts)
+- /appointments 11.5 kB / 225 kB
+- /clients/[id] 17.2 kB / 216 kB
+- /commissions 10.8 kB / 211 kB
+- /clients 17 kB / 204 kB
+- /settings 13.2 kB / 199 kB
+- /super-admin 9.79 kB / 196 kB
+- /applications 10.8 kB / 195 kB
+- /book/[slug] 9.33 kB / 180 kB (public, no credentials)
+- /audit 6.96 kB / 171 kB
+- /today 7.41 kB / 157 kB
+- /leaderboard 8.4 kB / 148 kB
+- Shared baseline: 87.6 kB First Load JS
+
+**Test floor:** still 441 backend tests (no test changes needed — frontend
+rebuild only). Backend untouched on `nextjs-app`.
+
+**Vercel cutover instructions (when ready):**
+1. Create a new Vercel project pointing at the `nextjs-app` branch,
+   root directory `app/`.
+2. Set env vars:
+   - `NEXT_PUBLIC_BACKEND_URL=https://api.ghwcrm.com` (production)
+   - For staging: point at the staging Render URL.
+3. Build command stays default (`next build`); output stays default
+   (`.next/`).
+4. Smoke-test on the preview URL before merging `nextjs-app` to
+   `main`. Verify login, magic-link, clients list, client profile,
+   calendar, appointments, settings.
+5. Update CORS_ORIGINS on Render to include the new Vercel preview +
+   prod URLs.
+6. Once preview is green, merge `nextjs-app` → `main` and Vercel
+   auto-deploys.
+7. Park or delete the old CRA Vercel project after a week of overlap.
+
+**Pre-existing CRA frontend** is untouched on `main` and stays running
+until the cutover is approved. The `nextjs-app` branch is forward-only
+work; do not back-port any changes to the CRA codebase.
 
 
 ## Pending

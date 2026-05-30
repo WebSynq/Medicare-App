@@ -185,7 +185,7 @@ export default function ClientsPage() {
   );
 
   return (
-    <div className="p-4 md:p-8 max-w-[1600px] mx-auto">
+    <div className="max-w-[1600px] mx-auto">
       {/* Header */}
       <header className="mb-5 md:mb-6">
         <div className="flex items-center gap-2 mb-1">

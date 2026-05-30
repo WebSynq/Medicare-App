@@ -141,7 +141,7 @@ export default function TodayPage() {
   );
 
   return (
-    <div className="p-4 md:p-8 max-w-[1500px] mx-auto">
+    <div className="max-w-[1500px] mx-auto">
       {/* Header */}
       <header className="mb-6 md:mb-8">
         <div className="flex items-center gap-2 mb-1">

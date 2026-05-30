@@ -124,7 +124,7 @@ export default function ClientProfilePage() {
   const lead = leadQuery.data;
 
   return (
-    <div className="p-4 md:p-8 max-w-[1400px] mx-auto">
+    <div className="max-w-[1400px] mx-auto">
       <PageHeader lead={lead} />
       <ImpersonationBanner />
       <OutcomeButtonsRow leadId={lead.id} />
@@ -282,7 +282,7 @@ function PageHeader({ lead }: { lead: Lead }) {
 
 function PageLoadingShell() {
   return (
-    <div className="p-4 md:p-8 max-w-[1400px] mx-auto">
+    <div className="max-w-[1400px] mx-auto">
       <Skeleton className="h-4 w-32 mb-3" />
       <div className="flex items-start gap-4 flex-wrap">
         <Skeleton className="h-16 w-16 rounded-full" />
@@ -302,7 +302,7 @@ function PageLoadingShell() {
 
 function NotFoundCard({ onBack }: { onBack: () => void }) {
   return (
-    <div className="p-4 md:p-8 max-w-2xl mx-auto">
+    <div className="max-w-2xl mx-auto">
       <Card>
         <CardContent className="p-10 text-center">
           <Inbox className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
