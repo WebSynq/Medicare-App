@@ -811,6 +811,108 @@ out-of-scope for WS2.
   `npm run build` clean (16.2 kB /dashboard bundle, prerendered
   static). No backend changes — backend test floor (524) unaffected.
 
+### Accounting port — WS3 (May 2026)
+Third and final Next.js parity workstream. Full port of the CRA
+`AccountingDashboard.jsx` (1,753 lines) to the Next.js placeholder
+at `/admin/accounting`. This is the QuickBooks-for-Medicare page —
+the highest-value surface for agency owners and accounting staff.
+
+Files (all under `app/src/app/(authed)/admin/accounting/`):
+- `page.tsx` — page shell. Role gate (admin/owner/compliance/
+  accounting, super_admin bypass) with client-side redirect to
+  `/dashboard` for off-role users. Tabs are local state (not URL
+  segments) so cross-tab handoffs (donut → Ledger pre-filtered,
+  carrier card → Disputes create-modal pre-opened) work without
+  router round-trips. CFO chat toggle in the header reserves
+  right-side space when open via a Tailwind padding transition.
+- `_overview-tab.tsx` — 6 KPIs + 12-month Recharts BarChart
+  (Expected vs Received) + 2 donuts (Carrier / Product) + Top
+  Agents progress list + Aging Report (4 buckets + drill-down)
+  + Recent Disputes summary + **Agent Commission Breakdown
+  (NEW)** — sortable table per agent, sourced from
+  `/summary.revenue_by_agent` (period-scoped). Spec asked for
+  Advance / Earned columns too but the backend doesn't classify
+  advance vs earned on `production_records` yet — flagged as a
+  tracked follow-up; the column set ships as it stands today
+  (Agent / Policies / Expected / Received / Gap).
+- `_ledger-tab.tsx` — paginated commission ledger. Filters:
+  carrier, agent_id, product, status. Client-name search is
+  client-side on the current page (backend `/ledger` doesn't
+  accept a free-text search param yet — follow-up). CSV export
+  via `downloadCsv` helper.
+- `_carriers-tab.tsx` — 3-col carrier card grid. Per-card
+  Expected YTD / Received YTD / Gap / Collection rate + progress
+  bar coloured by collection rate (green ≥90, copper ≥75,
+  destructive otherwise). View Ledger + Create Dispute CTAs
+  (Create Dispute only when gap_ytd > $500, hands off to the
+  Disputes tab's modal via parent state).
+- `_disputes-tab.tsx` — 4 stat cards (Open / In Progress /
+  Resolved / Recovered MTD) + sortable disputes table + per-row
+  status updater + AI Letter button. New Dispute modal (carrier
+  / policy / agent / client / amount / reason / notes). Letter
+  modal (copy + download) — calls
+  `POST /api/accounting/disputes/{id}/letter` via raw `fetch`
+  since axios's auto-JSON parse trips on the streamed
+  `text/plain` response. Parent can force the modal open via
+  `forceCreateOpen` so the Carriers card CTA pre-opens it.
+- `_statements-tab.tsx` — carrier statement upload (PDF/CSV,
+  max 10 MB) + reconciliation results. Multipart upload via raw
+  `fetch` (axios FormData works but the dedicated wrapper is
+  small enough to inline next to the drop zone that owns it).
+  After upload, fires `POST /api/reconciliation/{id}/match` via
+  the typed wrapper, surfaces 5 KPIs (Total / Matched / Gaps /
+  Unmatched / Total Gap) + the full reconciliation results
+  table. Bulk-create disputes for every underpaid row.
+- `_cfo-chat.tsx` — Bedrock-backed SSE chat side panel.
+  Streams `text/event-stream` via `fetch + ReadableStream`
+  (`@/lib/api/cfo.streamCFOChat` is the typed wrapper).
+  Last-10-turn history sent per request; per-send abortable
+  via AbortController; markdown rendering via `react-markdown`
+  (new dep, see below).
+- `_helpers.ts` — shared formatters (`fmt` / `fmtShort` /
+  `fmtDate` / `fmtPct` / `fmtNum`) + CSV export helper +
+  `PERIOD_OPTIONS` constant.
+- `_status-badges.tsx` — `LedgerStatusBadge` +
+  `DisputeStatusBadge`, theme-aware variants.
+
+API client additions:
+- `app/src/lib/api/accounting.ts` — typed wrappers for every
+  `/api/accounting/*` and `/api/reconciliation/*` endpoint the
+  page consumes, including full response shapes verified against
+  `backend/accounting_router.py` and `backend/reconciliation_
+  router.py`.
+- `app/src/lib/api/cfo.ts` — `streamCFOChat` SSE wrapper with
+  text/error callbacks + AbortController support.
+- `app/src/lib/api/index.ts` — barrel re-export adds `accounting`
+  + `cfo` namespaces.
+
+Dep change: `react-markdown@^9` added to `app/package.json` — CRA
+CFO chat uses it for AI-response formatting (tables, lists, code).
+~30 KB minified. Listed under follow-ups if removing it later for
+bundle reasons; bundling it now matches the CRA UX.
+
+Backend API drift surfaced (logged in PR for follow-up — not
+fixed in WS3):
+- `/accounting/summary` returns the right shape, but
+  `revenue_by_agent` rows don't carry an advance-vs-earned
+  classification. Spec asked for those columns in the Agent
+  Commission Breakdown — needs a `production_records` schema
+  addition.
+- `/accounting/ledger` doesn't accept a `client_search` query
+  param. The page does client-side search on the current page;
+  pagination won't respect search matches until backend grows
+  the param.
+- Period selector exposes `mtd|ytd|q1-q4|all` (what
+  `accounting_router._period_window` actually supports), not
+  the spec's `last30/last90` (those exist on
+  `agency_dashboard_router` but not here).
+
+- **Verification**: `npm run typecheck` clean, `npm run lint` clean
+  for changed files, `npm run build` clean (51 kB
+  `/admin/accounting` page bundle, 346 kB First Load JS,
+  prerendered static). No backend changes — backend test floor
+  (524) unaffected.
+
 
 ## Pending
 
