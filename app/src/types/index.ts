@@ -11,3 +11,4 @@ export * from "./lead";
 export * from "./appointment";
 export * from "./agency";
 export * from "./today";
+export * from "./profile";
