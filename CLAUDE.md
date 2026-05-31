@@ -1108,6 +1108,92 @@ CSS handling — how CRA did it vs. how we handled it in Next.js:
   static). No backend changes — backend test floor (524)
   unaffected.
 
+### Ops Console port (May 2026)
+Full port of the CRA `OpsConsole.jsx` (1,561 lines) to the Next.js
+app at `/admin/ops`. Replaces the partial-port placeholder with the
+military-themed command center: classified header + live clock,
+6-dimension posture radar, threat monitor, data-integrity scanner,
+automation engine, compliance command (5-vendor BAA board), full
+AI Security Intelligence panel, and the lead/booking activity
+charts.
+
+Files (under `app/`):
+- `app/src/app/(authed)/admin/ops/page.tsx` — slimmed to a thin
+  shell: role gate (admin/owner OR `user.ops_access=true`,
+  matching the backend's `require_ops_access()` so a forbidden
+  user is bounced client-side before the backend 403 fires), then
+  renders `<OpsConsoleView />`.
+- `app/src/app/(authed)/admin/ops/_ops-console.tsx` — NEW. The
+  full military-themed view. One React Query against
+  `/api/ops/health` (refetch 60s). Live clock updates every
+  second via a separate interval that never re-fires the data
+  query. Every section component branches on `isOpsError()` and
+  renders `<UnavailableCard>` instead of crashing when its
+  section degrades. One-shot `<style>` injection in
+  `useOpsStyles()` for the bespoke keyframes (`ghw-ops-blink`
+  / scanline / pulse-dot variants / countup) — idempotent on
+  remount, doesn't pollute other pages.
+- `app/src/lib/api/ops-ext.ts` — NEW sibling to `ops.ts` holding
+  the richer `SecurityEventDetail` shape (`event_id` +
+  `ai_narrative` + `findings` + `auto_actions_taken`) the AI
+  panel renders inline when an event row expands, the
+  `getSecurityEventsDetail()` wrapper, the `IpLookupResult`
+  interface, and the `lookupIp()` wrapper hitting
+  `/api/security/ip/{ip}`. Kept beside `ops.ts` because
+  expanding the canonical `SecurityEvent` / `BannedIp` shapes
+  has knock-on typing impact on other callers; the sibling
+  split lets the Ops Console ship without disturbing those.
+
+What rendered with real data (against staging `/api/ops/health`):
+- Top KPI row (API ping, active agents, MFA adoption, threat level)
+- Posture radar — 6 derived scores + overall composite
+- Threat monitor — failed-logins / locked accts / IP bans /
+  booking attacks / no-MFA agents + 5-row threat log
+- Data integrity — total leads / orphans / dirty state / GHL
+  sync errors / unsynced / appt reminders + integrity bar
+- Automation engine — scheduler status banner + 8-job 7-day
+  send-count table
+- Compliance command — 5-row BAA board (Render = red, MongoDB =
+  red, AWS SES = amber pending, Sentry = amber pending, Vercel =
+  not required), HIPAA 7-year audit retention green card,
+  audit-log count + last-write timestamp
+- AI Security Intelligence — last-analysis card + threat-level
+  badge, RUN NOW (POST `/security/run-analysis`), kill-switch
+  toggle (PATCH `/security/config`), recent-events feed (last
+  10 from `/security/events`) with expandable findings,
+  banned-IPs table with Unban buttons (DELETE
+  `/security/ban-ip/{ip}`), IP lookup widget (GET
+  `/security/ip/{ip}`)
+- Lead-activity line chart + booking-activity bar chart from
+  the 7-day activity rollup
+- Usage section — 7 KPI tiles (logins/active agents, leads,
+  bookings, SOAs signed, enrollments — today + 7d splits)
+
+BAA cards confirmed: Render + MongoDB rendered RED ("NOT SIGNED —
+Action Required"), AWS SES + Sentry rendered AMBER ("Migration
+Pending"). Backend `_COMPLIANCE` table drives the first three;
+Sentry is hardcoded in the UI since the backend compliance
+section doesn't surface it.
+
+Backend API drift surfaced (tracked follow-ups — not fixed):
+- `/ops/health` doesn't return a per-agent activity breakdown,
+  so the spec's "Top active agents" list is shown as a planned
+  tile alongside the aggregate counts. Needs a new aggregation
+  pipeline on `audit_logs` grouped by `actor_id`.
+- No dedicated SOA-compliance metric on the compliance section —
+  the card surfaces `audit_log_count` as a proxy until a real
+  metric ships.
+- `OpsCompliance` from the backend exposes 3 BAAs (Render,
+  MongoDB, AWS SES); Sentry is hardcoded in the UI per existing
+  state. If we add `baa_sentry` to the backend later the UI
+  will pick it up via the same `baaState()` helper.
+
+- **Verification**: `npm run typecheck` clean, `npm run lint`
+  clean for changed files, `npm run build` clean
+  (`/admin/ops` 21.2 kB / 279 kB First Load JS, prerendered
+  static). No backend changes — backend test floor (524 passed)
+  unaffected.
+
 
 ## Pending
 
