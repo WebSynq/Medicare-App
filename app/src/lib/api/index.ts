@@ -33,6 +33,7 @@ import * as bookNs from "./book";
 import * as quoteNs from "./quote";
 import * as accountingNs from "./accounting";
 import * as cfoNs from "./cfo";
+import * as notificationsNs from "./notifications";
 
 export { api, isApiError, setImpersonationAgentId, getImpersonationAgentId } from "./client";
 
@@ -59,3 +60,4 @@ export const book = bookNs;
 export const quote = quoteNs;
 export const accounting = accountingNs;
 export const cfo = cfoNs;
+export const notifications = notificationsNs;
