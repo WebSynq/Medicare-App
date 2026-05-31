@@ -153,7 +153,7 @@ function AgencyDashboard() {
                     strokeDasharray="3 3"
                   />
                   <XAxis
-                    dataKey="week"
+                    dataKey="label"
                     tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
                     stroke="hsl(var(--border))"
                   />
@@ -243,7 +243,7 @@ function AgencyDashboard() {
               <PieChart>
                 <Pie
                   data={chartsQuery.data?.leads_by_source ?? []}
-                  dataKey="count"
+                  dataKey="total"
                   nameKey="source"
                   outerRadius={90}
                   label

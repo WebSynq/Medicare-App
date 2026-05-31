@@ -94,7 +94,7 @@ export default function RevenueReportPage() {
                     strokeDasharray="3 3"
                   />
                   <XAxis
-                    dataKey="week"
+                    dataKey="label"
                     tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
                     stroke="hsl(var(--border))"
                   />
