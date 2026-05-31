@@ -9,6 +9,7 @@ import {
   EyeOff,
   Link2,
   Loader2,
+  Lock,
   Power,
   Trash2,
   Users,
@@ -48,7 +49,47 @@ export function IntegrationsSettingsTab() {
         contactCountGhl={statusQuery.data?.contact_count_ghl ?? null}
         contactCountPortal={statusQuery.data?.contact_count_portal ?? null}
       />
+      <AgencyBlocComingSoonCard />
     </div>
+  );
+}
+
+/** AgencyBloc CRM is a planned future integration — the placeholder
+ *  card sets agency expectations + lets ops see at a glance which
+ *  integrations are wired. Stays grayed-out + lock-icon'd until the
+ *  backend connect endpoint ships. */
+function AgencyBlocComingSoonCard() {
+  return (
+    <Card className="opacity-70 border-dashed">
+      <CardContent className="p-5 md:p-6 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className="h-10 w-10 rounded-md bg-muted flex items-center justify-center text-muted-foreground">
+              <Lock className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold flex items-center gap-2">
+                AgencyBloc
+                <Badge
+                  variant="outline"
+                  className="bg-muted text-muted-foreground border-border text-[10px]"
+                >
+                  Coming soon
+                </Badge>
+              </h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                CRM bidirectional sync for life + health books of business.
+                Integration pending.
+              </p>
+            </div>
+          </div>
+        </div>
+        <Button variant="outline" disabled size="sm" className="cursor-not-allowed">
+          <Link2 className="h-3.5 w-3.5 mr-1.5" />
+          Connect AgencyBloc
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 
