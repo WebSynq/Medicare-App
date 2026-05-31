@@ -22,20 +22,30 @@ export async function saveCna(
   return data;
 }
 
+// Backend wraps the recommendation in `{ai_recommendation, ai_generated_at,
+// cache_fresh, exists}` — unwrap it so the panel can render `null` for a
+// brand new lead without crashing on the empty wrapper.
+interface AiAnalysisEnvelope {
+  ai_recommendation: CnaAiRecommendation | null;
+  ai_generated_at?: string | null;
+  cache_fresh?: boolean;
+  exists?: boolean;
+}
+
 export async function getAiAnalysis(
   leadId: string,
-): Promise<CnaAiRecommendation> {
-  const { data } = await api.get<CnaAiRecommendation>(
+): Promise<CnaAiRecommendation | null> {
+  const { data } = await api.get<AiAnalysisEnvelope>(
     `/api/cna/${leadId}/ai-analysis`,
   );
-  return data;
+  return data?.ai_recommendation ?? null;
 }
 
 export async function runAiAnalysis(
   leadId: string,
-): Promise<CnaAiRecommendation> {
-  const { data } = await api.post<CnaAiRecommendation>(
+): Promise<CnaAiRecommendation | null> {
+  const { data } = await api.post<AiAnalysisEnvelope>(
     `/api/cna/${leadId}/ai-analysis`,
   );
-  return data;
+  return data?.ai_recommendation ?? null;
 }

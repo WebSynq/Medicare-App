@@ -35,15 +35,15 @@ export interface CnaFetchResponse {
 export type CnaUrgencyLevel = "urgent" | "high" | "moderate" | "low";
 
 export interface CnaAiRecommendation {
-  urgency_score: number; // 0-100
-  urgency_level: CnaUrgencyLevel;
-  recommendation: string;
-  umbrella_tier: "essential" | "complete" | "premier" | null;
-  exposures: string[];
-  talking_points: string[];
-  cross_sell: string[];
-  objection_handles: { objection: string; response: string }[];
-  formal_script: string;
+  urgency_score?: number; // 0-100
+  urgency_level?: CnaUrgencyLevel;
+  recommendation?: string;
+  umbrella_tier?: "essential" | "complete" | "premier" | null;
+  exposures?: string[];
+  talking_points?: string[];
+  cross_sell?: string[];
+  objection_handles?: { objection: string; response: string }[];
+  formal_script?: string;
 }
 
 // ─── Documents ─────────────────────────────────────────────────────────────

@@ -148,7 +148,7 @@ export function DocumentsTab({ leadId }: { leadId: string }) {
               </tr>
             </thead>
             <tbody>
-              {query.data?.documents.map((doc) => (
+              {(query.data?.documents ?? []).map((doc) => (
                 <DocumentRow key={doc.id} doc={doc} />
               ))}
             </tbody>

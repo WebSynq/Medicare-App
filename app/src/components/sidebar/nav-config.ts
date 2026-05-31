@@ -131,12 +131,17 @@ export const NAV: readonly NavSection[] = [
   // Mirrors CRA Layout.jsx "Reports" section (lines 664-667). One
   // visible item today; designed as a section so additional reports
   // slot in alongside without churning the main nav.
+  //
+  // The Lead Sources report is the page at `/reports` (the page
+  // component is literally named `LeadSourcesPage`); link to that
+  // directly rather than a non-existent `/reports/lead-sources`
+  // subpath that 404s on every sidebar prefetch.
   {
     title: "Reports",
     items: [
       {
         label: "Lead Sources",
-        href: "/reports/lead-sources",
+        href: "/reports",
         icon: PieChart,
       },
     ],
@@ -184,8 +189,12 @@ export const NAV: readonly NavSection[] = [
     title: "Admin",
     items: [
       {
+        // Agency-level settings (name, tier, seats, billing) live on
+        // the Owner Settings surface at `/settings/agency`. There is
+        // no top-level `/agency` page — pointing the sidebar there
+        // 404s every prefetch.
         label: "Agency",
-        href: "/agency",
+        href: "/settings/agency",
         icon: Building2,
         roles: ADMIN_ROLES,
       },
