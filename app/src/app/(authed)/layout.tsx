@@ -9,6 +9,8 @@ import {
   MobileTopBar,
 } from "@/components/sidebar/app-sidebar";
 import { PageTransition } from "@/components/page-transition";
+import { AgentProvider } from "@/context/agent-context";
+import { SessionManager } from "@/components/providers/session-manager";
 import { useAuthStore } from "@/stores";
 
 /**
@@ -45,15 +47,18 @@ export default function AuthedLayout({
   }, [status, router]);
 
   return (
-    <div className="flex h-screen bg-background overflow-hidden">
-      <AppSidebar />
-      <AppSidebarMobile />
-      <div className="flex-1 flex flex-col min-w-0 bg-background">
-        <MobileTopBar />
-        <main className="flex-1 overflow-y-auto bg-background">
-          <PageTransition>{children}</PageTransition>
-        </main>
+    <AgentProvider>
+      <SessionManager />
+      <div className="flex h-screen bg-background overflow-hidden">
+        <AppSidebar />
+        <AppSidebarMobile />
+        <div className="flex-1 flex flex-col min-w-0 bg-background">
+          <MobileTopBar />
+          <main className="flex-1 overflow-y-auto bg-background">
+            <PageTransition>{children}</PageTransition>
+          </main>
+        </div>
       </div>
-    </div>
+    </AgentProvider>
   );
 }
