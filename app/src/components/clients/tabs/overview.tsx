@@ -146,7 +146,7 @@ function AiIntelligenceCard({ leadId }: { leadId: string }) {
   const qc = useQueryClient();
   const [copied, setCopied] = React.useState(false);
 
-  const query = useQuery<CnaAiRecommendation>({
+  const query = useQuery<CnaAiRecommendation | null>({
     queryKey: ["cna", leadId, "ai"],
     queryFn: () => cnaApi.getAiAnalysis(leadId),
     retry: false,
@@ -176,8 +176,11 @@ function AiIntelligenceCard({ leadId }: { leadId: string }) {
 
   if (query.isLoading) return <Skeleton className="h-72 w-full rounded-md" />;
 
-  const empty = query.isError || !query.data;
-  if (empty) {
+  // Brand new lead: no CNA saved → `getAiAnalysis` returns null. Show the
+  // empty-state card so the agent can run an analysis on whatever's on
+  // file. Same card on outright fetch failure.
+  const ai = query.data;
+  if (query.isError || !ai) {
     return (
       <Card className="border-border/70">
         <CardContent className="p-5 text-center space-y-3">
@@ -207,8 +210,6 @@ function AiIntelligenceCard({ leadId }: { leadId: string }) {
     );
   }
 
-  const ai = query.data;
-
   return (
     <Card className="border-border/70" data-testid="ai-intelligence-card">
       <CardContent className="p-5 space-y-4">
@@ -233,9 +234,14 @@ function AiIntelligenceCard({ leadId }: { leadId: string }) {
         </div>
 
         <div className="flex items-center gap-3">
-          <UrgencyScoreRing score={ai.urgency_score} level={ai.urgency_level} />
+          <UrgencyScoreRing
+            score={ai.urgency_score ?? 0}
+            level={ai.urgency_level ?? "low"}
+          />
           <div className="min-w-0">
-            <p className="text-sm font-medium">{ai.recommendation}</p>
+            <p className="text-sm font-medium">
+              {ai.recommendation ?? "Recommendation pending."}
+            </p>
             {ai.umbrella_tier ? (
               <p className="text-xs text-muted-foreground capitalize">
                 Recommended tier: {ai.umbrella_tier}
@@ -244,19 +250,19 @@ function AiIntelligenceCard({ leadId }: { leadId: string }) {
           </div>
         </div>
 
-        {ai.talking_points.length > 0 ? (
-          <BulletList title="Talking Points" items={ai.talking_points} />
+        {(ai.talking_points ?? []).length > 0 ? (
+          <BulletList title="Talking Points" items={ai.talking_points ?? []} />
         ) : null}
 
-        {ai.exposures.length > 0 ? (
-          <BulletList title="Coverage Gaps" items={ai.exposures} />
+        {(ai.exposures ?? []).length > 0 ? (
+          <BulletList title="Coverage Gaps" items={ai.exposures ?? []} />
         ) : null}
 
-        {ai.objection_handles.length > 0 ? (
+        {(ai.objection_handles ?? []).length > 0 ? (
           <div className="space-y-1.5">
             <p className="text-eyebrow">Objection Handles</p>
             <div className="space-y-2">
-              {ai.objection_handles.map((h, i) => (
+              {(ai.objection_handles ?? []).map((h, i) => (
                 <div key={i} className="rounded-md bg-secondary/40 p-2">
                   <p className="text-xs font-medium">{h.objection}</p>
                   <p className="text-[11px] text-muted-foreground mt-0.5">
@@ -275,7 +281,7 @@ function AiIntelligenceCard({ leadId }: { leadId: string }) {
               <Button
                 size="sm"
                 variant="ghost"
-                onClick={() => copyScript(ai.formal_script)}
+                onClick={() => copyScript(ai.formal_script ?? "")}
                 className="h-6 text-[11px]"
               >
                 {copied ? (
@@ -560,6 +566,8 @@ function ActivityFeed({ leadId }: { leadId: string }) {
     queryFn: () => notesApi.listByLead(leadId),
   });
 
+  const notes = query.data?.notes ?? [];
+
   return (
     <Card className="border-border/70">
       <CardContent className="p-5">
@@ -573,14 +581,14 @@ function ActivityFeed({ leadId }: { leadId: string }) {
               <Skeleton key={i} className="h-12 w-full rounded" />
             ))}
           </div>
-        ) : query.isError || query.data?.notes.length === 0 ? (
+        ) : query.isError || notes.length === 0 ? (
           <p className="text-xs text-muted-foreground">
             No notes yet. Drop one in the Notes & Tasks tab.
           </p>
         ) : (
           <ScrollArea className="max-h-[280px]">
             <ol className="space-y-2">
-              {query.data?.notes.slice(0, 6).map((n) => (
+              {notes.slice(0, 6).map((n) => (
                 <RecentNoteRow key={n.id} note={n} />
               ))}
             </ol>

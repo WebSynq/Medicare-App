@@ -34,6 +34,8 @@ export function PoliciesTab({ lead }: { lead: Lead }) {
     queryFn: () => policiesApi.listByLead(lead.id),
   });
 
+  const policies = query.data?.policies ?? [];
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 md:gap-6">
       <div className="space-y-3">
@@ -43,7 +45,7 @@ export function PoliciesTab({ lead }: { lead: Lead }) {
             Policies
             {query.data ? (
               <span className="ml-2 text-xs text-muted-foreground font-normal">
-                ({query.data.policies.length})
+                ({policies.length})
               </span>
             ) : null}
           </h3>
@@ -55,7 +57,7 @@ export function PoliciesTab({ lead }: { lead: Lead }) {
               <Skeleton key={i} className="h-28 w-full rounded" />
             ))}
           </div>
-        ) : query.isError || query.data?.policies.length === 0 ? (
+        ) : query.isError || policies.length === 0 ? (
           <Card>
             <CardContent className="p-10 text-center">
               <Wallet className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
@@ -70,7 +72,7 @@ export function PoliciesTab({ lead }: { lead: Lead }) {
             </CardContent>
           </Card>
         ) : (
-          query.data?.policies.map((p, i) => (
+          policies.map((p, i) => (
             <PolicyCard key={`${p.id}-${i}`} policy={p} />
           ))
         )}

@@ -153,7 +153,7 @@ function CurrentSoaCard({
             <Field label="IP" value={record.signed_ip ?? "—"} />
             <Field
               label="Products"
-              value={record.products.join(", ") || "—"}
+              value={(record.products ?? []).join(", ") || "—"}
             />
           </div>
         ) : (

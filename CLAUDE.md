@@ -78,10 +78,21 @@
 - `/admin/super-admin` — full 4-tab port; server-authoritative gate via `saApi.getSystem()` probe + self-mod guard
 
 ### Placeholder / 404
-- `/today`, `/pipeline`, `/birthday-rule`, `/renewals`, `/reports/lead-sources`, `/notifications` (bell target), `/agency` (footer agent-switcher target)
+- `/today`, `/pipeline`, `/birthday-rule`, `/renewals`, `/notifications` (bell target placeholder)
 - AgentContext + X-Agent-ID interceptor (impersonation) — not yet ported
 - NotificationPanel + unread-badge polling — not yet ported
 - Recharts dataKey strings on `/admin` and `/reports/revenue` use stale field names — render blank until migrated
+
+### Client profile hardening (May 2026)
+The `/clients/[id]` page white-screened on a brand new lead with zero data — Next.js prefetched three sidebar links that 404 and `OverviewTab` crashed reading `ai.talking_points.length` on the empty AI-analysis envelope. Fixes:
+- `lib/api/cna.ts` — `getAiAnalysis` / `runAiAnalysis` now unwrap the backend envelope (`{ai_recommendation, ai_generated_at, cache_fresh, exists}`) and return `CnaAiRecommendation | null`. The "No AI analysis yet" card now triggers correctly for brand new leads instead of crashing past it.
+- `types/profile.ts` — every `CnaAiRecommendation` array field made optional (`exposures?`, `talking_points?`, `cross_sell?`, `objection_handles?`, plus `umbrella_tier?`, `formal_script?`, `urgency_score?`, `urgency_level?`, `recommendation?`).
+- Null guards on every `.length` / `.map` / `.join` over API response arrays: `clients/tabs/overview.tsx` (AI panel + ActivityFeed notes), `clients/tabs/documents.tsx` (documents map), `clients/tabs/soa.tsx` (products join), `clients/tabs/policies.tsx` (policies length+map).
+- Sidebar nav-config: `/reports/lead-sources` → `/reports` (the existing `LeadSourcesPage`), `/agency` → `/settings/agency` (OwnerSettings is the real Agency surface). `/notifications` added as a `RoutePlaceholder` page so the footer bell link no longer 404s on prefetch.
+- Page renders cleanly across Overview / CNA / Documents / SOA / Policies / Notes for a lead with zero data.
+- Backend test floor unchanged (523 passed / 1 skipped / 524 collected). Frontend `npm run typecheck` clean, `npm run lint` clean for changed files, `npm run build` clean (`/clients/[id]` 16.1 kB / 216 kB First Load JS; `/notifications` 901 B / 88.5 kB prerendered static).
+
+**Backend follow-up (out of scope, not fixed here):** the actual `ai_recommendation` payload from the backend uses field names that differ from the frontend type (`key_exposures` not `exposures`, `cross_sell_opportunities` not `cross_sell`, `formal_recommendation_script` not `formal_script`, `recommended_umbrella` ("1"-"4") not `umbrella_tier` ("essential"/"complete"/"premier"), no `urgency_level` or `recommendation` text field). The page now renders without crashing in either shape but the AI panel body stays mostly empty until the field-name reconciliation lands.
 
 ## Auth Architecture
 
