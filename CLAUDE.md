@@ -1200,6 +1200,39 @@ Backend API drift surfaced (no backend changes here):
   modified surface). No backend changes — backend test floor
   (524) unaffected.
 
+### Super Admin route gate — server-authoritative (May 2026)
+The Super Admin console at `/admin/super-admin` was already a
+full port (1,372 lines, all 4 spec tabs — Agencies / Users /
+Usage / System — with EditAgencyDialog including
+`apply_tier_defaults`, UsersTab with self-mod guard via
+`meEmail.toLowerCase() === u.email.toLowerCase()`, UsageTab,
+and SystemTab with `isSystemError` partial-degrade handling).
+The only spec gap was the route guard.
+
+Before: the guard read `selectIsSuperAdmin` off the auth store —
+a client-side flag mirroring `User.super_admin` from
+`/api/auth/me`. A user with a stale store could briefly see the
+page chrome before any backend call started 403-ing.
+
+After: the guard fires `saApi.getSystem()` (a
+`require_super_admin()`-gated endpoint) on mount via React
+Query with `retry: false`. Any error — confirmed 403 OR a
+network/5xx blip — redirects to `/dashboard`. The skeleton
+holds until the probe resolves, so no console chrome leaks
+to a non-super-admin even for a frame. The `meEmail` from the
+auth store is still read (independent purpose: self-mod guard
+in UsersTab).
+
+Self-mod guard preserved unchanged at `super-admin/page.tsx:706`
+— the same row that highlights the caller's row in the table
+also disables the Edit button.
+
+- **Verification**: `npm run typecheck` clean, `npm run lint`
+  clean for changed files, `npm run build` clean
+  (`/admin/super-admin` 13.6 kB / 196 kB First Load JS,
+  prerendered static). No backend changes — backend test
+  floor (524) unaffected.
+
 
 ## Pending
 
