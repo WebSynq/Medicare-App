@@ -22,6 +22,7 @@ from deps import (
     get_current_user,
     get_effective_agent,
     agent_filter,
+    get_agency,
     get_agency_id,
     get_client_ip,
     get_frontend_url,
@@ -103,7 +104,7 @@ async def _auto_create_soa_for_medicare_lead(
             "signed_name": None,
             "signed_ip": None,
             "plan_types_discussed": [],
-            "agency_id": get_agency_id(),
+            "agency_id": lead.get("agency_id") or get_agency_id(),
         }
         await db.soa_records.insert_one(soa_doc.copy())
 
@@ -247,6 +248,7 @@ async def create_lead(
     db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
     effective: dict = Depends(get_effective_agent),
+    agency: dict = Depends(get_agency),
 ):
     """Create a lead from the (authenticated) intake wizard.
 
@@ -282,10 +284,10 @@ async def create_lead(
 
     lead = Lead(**lead_data)
     doc = lead.model_dump()
-    # Passive agency_id stamp — see deps.get_agency_id docstring.
-    # Single-tenant today; flips the multi-tenant cut into a filter
-    # change rather than a schema rebuild.
-    doc["agency_id"] = get_agency_id()
+    # Multi-tenant: stamp the caller's own agency_id, resolved from
+    # JWT via get_agency(). The process-wide get_agency_id() env
+    # default would silently file every tenant's leads under GHW.
+    doc["agency_id"] = agency["agency_id"]
     await db.leads.insert_one(safe_lead_set(doc.copy()))
     await write_audit(db, "lead_created", actor_email=current_user.get("email"),
                       actor_id=current_user.get("id"),
@@ -469,6 +471,7 @@ async def import_leads_csv(
     db: AsyncIOMotorDatabase = Depends(get_phi_db),
     current_user: dict = Depends(get_current_user),
     effective: dict = Depends(get_effective_agent),
+    agency: dict = Depends(get_agency),
 ):
     """Bulk-import leads from a CSV. Accepts the columns documented in
     the spec (case-insensitive header match), skips rows missing both
@@ -539,7 +542,9 @@ async def import_leads_csv(
         effective.get("agent_name") or effective.get("full_name") or None
     )
     now_iso = datetime.now(timezone.utc).isoformat()
-    agency = get_agency_id()
+    # Multi-tenant: stamp from the caller's JWT-resolved agency, not
+    # the env-driven default. See create_lead for the same fix.
+    agency_id = agency["agency_id"]
 
     # Pre-load the existing emails owned by the effective agent so we
     # can dedup without N round-trips. Scoped to this agent — admins
@@ -614,7 +619,7 @@ async def import_leads_csv(
             continue
 
         doc = lead.model_dump()
-        doc["agency_id"] = agency
+        doc["agency_id"] = agency_id
         doc["created_via"] = "csv_import"
         doc["created_at"] = now_iso
         doc["updated_at"] = now_iso

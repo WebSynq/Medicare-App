@@ -20,7 +20,7 @@
 | Matt Monacelli (legacy) | admin@grueninghw.com             | admin |
 
 ## Test Count
-**523 passed, 1 skipped — 524 collected** (mongomock-motor + TestClient). Never let this floor drop.
+**526 passed, 1 skipped — 527 collected** (mongomock-motor + TestClient). Never let this floor drop.
 
 ## What's Built (single-tenant core)
 - Auth: magic-link (primary), email/password, TOTP MFA opt-in, invite-only register, lockout, idle-timeout JWT (`idle_exp` + `/auth/refresh`)
@@ -170,8 +170,8 @@ Drop under page title. Renders null when not impersonating, orange "Viewing as: 
 `backend/scripts/migrate_agent_ownership.py` — idempotent, stamps `agent_id` on legacy records, assigns to first admin. **Already executed in prod — 6,666 records stamped.**
 
 ## Multi-Tenant Scoping Patterns (Phase 1+)
-- `get_agency()` — FastAPI dep; resolves caller's agency, caches on `request.state.agency`; falls back to GHW (`ghw_001`) for legacy auth.
-- `get_agency_id()` — static helper returning env-driven default; used by schedulers/batch jobs. All scheduler queries in `automations.py` filter on this.
+- `get_agency()` — FastAPI dep; resolves caller's agency, caches on `request.state.agency`; falls back to GHW (`ghw_001`) for legacy auth. **Use this for any request-scoped write that stamps `agency_id`** — the env-driven `get_agency_id()` would silently file every tenant's writes under GHW.
+- `get_agency_id()` — static helper returning env-driven default; used by schedulers/batch jobs only. All scheduler queries in `automations.py` filter on this. Never use inside a request handler for stamping new rows.
 - `require_feature(key)` — 403 unless `agency.features[key]` is True. Super admins bypass.
 - `require_super_admin()` — 403 unless `agency.super_admin=True` or email in `SUPER_ADMIN_EMAILS`.
 - `require_billing_active()` — 402 when `billing_status in {suspended, cancelled}`. Super admins bypass.
@@ -183,6 +183,7 @@ Drop under page title. Renders null when not impersonating, orange "Viewing as: 
 - GHL Import: mid-flight import dies on Render restart (`status="running"` orphan, no auto-resume). MVP-acceptable; resume-on-restart needs APScheduler integration.
 - `/admin` + `/reports/revenue` Recharts charts render blank — stale dataKey field names from pre-WS2 type drift.
 - AgentContext + X-Agent-ID interceptor not ported to `app/` — impersonation works only on CRA side.
+- **Cross-tenant write leak (rest-of-codebase sweep)**: `leads_router` was fixed to stamp `agency_id` from `get_agency()` (JWT-resolved) instead of `get_agency_id()` (env default). The same bug class still exists in request handlers in `appointments_router.py:575`, `notes_router.py:140`, `notifications_router.py:223`, `cna_router.py:615`, `application_router.py:1275` (already guarded with `or` fallback — fine), `tags_router.py` (5 sites), `agency_dashboard_router.py:151`, `auth_router.py:357`, `compliance_router.py` (4 sites — read paths). Schedulers (`automations.py`, `security_intelligence.py`) and the GHW seed correctly use the env helper. Sweep this before the first non-GHW tenant goes live.
 
 ## Pending
 
