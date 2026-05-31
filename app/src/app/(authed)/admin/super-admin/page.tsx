@@ -63,7 +63,7 @@ import {
   superAdmin as saApi,
 } from "@/lib/api";
 import { isSystemError } from "@/lib/api/super-admin";
-import { useAuthStore, selectIsSuperAdmin } from "@/stores/auth";
+import { useAuthStore } from "@/stores/auth";
 import type {
   SuperAdminAgencyRow,
   SuperAdminUserRow,
@@ -110,20 +110,48 @@ const STATUS_TINT: Record<string, string> = {
 };
 
 // ─── Route guard ───────────────────────────────────────────────────────────
+//
+// Server-authoritative: ping `/api/super-admin/system` (a require_super_admin
+// gated endpoint) on mount. A 403 → redirect to /dashboard. The client-side
+// `User.super_admin` flag is only used to pick `meEmail` for the self-mod
+// guard below — the actual access decision lives entirely on the server so
+// a stale auth store can't briefly leak the page chrome to a non-super-admin
+// before the API calls start 403-ing.
 
 export default function SuperAdminPage() {
   const router = useRouter();
   const status = useAuthStore((s) => s.status);
-  const isSuperAdmin = useAuthStore(selectIsSuperAdmin);
   const meEmail = useAuthStore((s) => s.user?.email ?? "");
 
-  React.useEffect(() => {
-    if (status === "authed" && !isSuperAdmin) {
-      router.replace("/dashboard");
-    }
-  }, [status, isSuperAdmin, router]);
+  // React Query handles the ping. We keep `enabled: status === "authed"`
+  // so we don't fire while the auth bootstrap is still resolving — the
+  // edge middleware has already kicked anonymous users to /login, but
+  // useAuthStore starts in "unknown" until /api/auth/me lands.
+  const probe = useQuery({
+    queryKey: ["super-admin", "system", "ping"],
+    queryFn: () => saApi.getSystem(),
+    enabled: status === "authed",
+    // Treat any failure as deny — React Query shouldn't retry a 403.
+    retry: false,
+  });
 
-  if (status !== "authed" || !isSuperAdmin) {
+  // Redirect on confirmed 403 (or any error — the endpoint itself
+  // raising 5xx is also reason enough to bounce; the page can't render
+  // anything useful without the system snapshot).
+  React.useEffect(() => {
+    if (!probe.isError) return;
+    const err = probe.error as unknown;
+    if (isApiError(err) && err.status === 403) {
+      router.replace("/dashboard");
+      return;
+    }
+    // Non-403 errors (network blip, 5xx) — also bounce. Showing a broken
+    // page to a confirmed non-super-admin is worse than a transient
+    // false-positive bounce.
+    router.replace("/dashboard");
+  }, [probe.isError, probe.error, router]);
+
+  if (status !== "authed" || probe.isLoading || probe.isError) {
     return (
       <div className="space-y-4">
         <Skeleton className="h-12 w-72" />
@@ -132,6 +160,9 @@ export default function SuperAdminPage() {
     );
   }
 
+  // Probe succeeded → server says we're a super admin. Render the console
+  // and pass the system snapshot down so the System tab can reuse it
+  // (one fewer API call on first render).
   return <SuperAdminConsole meEmail={meEmail} />;
 }
 
