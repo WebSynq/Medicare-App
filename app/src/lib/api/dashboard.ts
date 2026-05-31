@@ -190,3 +190,48 @@ export async function getAgencyAlerts(): Promise<AgencyAlertsResponse> {
   );
   return data;
 }
+
+// ─── Agency dashboard drilldown ────────────────────────────────────────────
+
+export type DrilldownMetric =
+  | "leads"
+  | "enrolled"
+  | "policies"
+  | "revenue"
+  | "birthday_windows"
+  | "renewals"
+  | "stale_leads";
+
+/** Row shape is metric-specific — see backend agency_dashboard_router.py
+ *  `drilldown()`. The page's column registry knows which keys to render
+ *  per metric. Kept as a loose record so a backend column add doesn't
+ *  break the typecheck before the column registry is updated. */
+export type DrilldownRow = Record<string, unknown>;
+
+export interface DrilldownResponse {
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+  rows: DrilldownRow[];
+}
+
+export async function getAgencyDrilldown(
+  metric: DrilldownMetric,
+  opts: {
+    period?: "mtd" | "last30" | "last90" | "ytd" | "all";
+    agent_id?: string | null;
+    page?: number;
+  } = {},
+): Promise<DrilldownResponse> {
+  const params: Record<string, string | number> = {
+    period: opts.period ?? "mtd",
+    page: opts.page ?? 1,
+  };
+  if (opts.agent_id) params.agent_id = opts.agent_id;
+  const { data } = await api.get<DrilldownResponse>(
+    `/api/agency-dashboard/drilldown/${metric}`,
+    { params },
+  );
+  return data;
+}
