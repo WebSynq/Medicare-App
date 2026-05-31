@@ -131,9 +131,7 @@ function AgencyDashboard() {
         </Select>
       </div>
 
-      {alertsQuery.data?.alerts && alertsQuery.data.alerts.length > 0 ? (
-        <AlertsRow alerts={alertsQuery.data.alerts} />
-      ) : null}
+      <CategoryAlertsRow alerts={alertsQuery.data} />
 
       <KpiGrid loading={kpisQuery.isLoading} kpis={kpisQuery.data} />
 
@@ -280,49 +278,96 @@ function AgencyDashboard() {
 
 // ─── Alerts ────────────────────────────────────────────────────────────────
 
-function AlertsRow({
+function CategoryAlertsRow({
   alerts,
 }: {
-  alerts: { level: string; title: string; message: string; count?: number }[];
+  alerts: Awaited<ReturnType<typeof dashboardApi.getAgencyAlerts>> | undefined;
 }) {
+  if (!alerts) return null;
+  const stale = alerts.stale_leads ?? [];
+  const birthdays = alerts.birthday_windows ?? [];
+  const renewals = alerts.renewals_due ?? [];
+  const cards: Array<{
+    key: string;
+    level: "critical" | "warning" | "info";
+    title: string;
+    message: string;
+    count: number;
+    icon: typeof AlertCircle;
+  }> = [];
+  if (stale.length > 0) {
+    cards.push({
+      key: "stale",
+      level: "warning",
+      title: "Agents with stale leads",
+      message: `${stale.length} agent${stale.length === 1 ? "" : "s"} have leads needing follow-up.`,
+      count: stale.reduce((acc, r) => acc + r.count, 0),
+      icon: AlertTriangle,
+    });
+  }
+  if (birthdays.length > 0) {
+    cards.push({
+      key: "birthdays",
+      level: "info",
+      title: "Birthday windows open",
+      message: `${birthdays.length} client${birthdays.length === 1 ? "" : "s"} in an active switch window.`,
+      count: birthdays.length,
+      icon: CheckCircle2,
+    });
+  }
+  if (renewals.length > 0) {
+    cards.push({
+      key: "renewals",
+      level: "critical",
+      title: "Renewals due soon",
+      message: `${renewals.length} policy renewal${renewals.length === 1 ? "" : "s"} inside the 30-day window.`,
+      count: renewals.length,
+      icon: AlertCircle,
+    });
+  }
+  if (cards.length === 0) return null;
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-      {alerts.slice(0, 3).map((a, i) => (
-        <Card
-          key={i}
-          className={cn(
-            "border-2",
-            a.level === "critical"
-              ? "border-destructive/40 bg-destructive/5"
-              : a.level === "warning"
-                ? "border-ghw-copper/40 bg-ghw-copper/5"
-                : "border-primary/40 bg-primary/5",
-          )}
-        >
-          <CardContent className="p-3 flex items-start gap-2">
-            {a.level === "critical" ? (
-              <AlertCircle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
-            ) : a.level === "warning" ? (
-              <AlertTriangle className="h-4 w-4 text-ghw-copper flex-shrink-0 mt-0.5" />
-            ) : (
-              <CheckCircle2 className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+      {cards.slice(0, 3).map((a) => {
+        const Icon = a.icon;
+        return (
+          <Card
+            key={a.key}
+            className={cn(
+              "border-2",
+              a.level === "critical"
+                ? "border-destructive/40 bg-destructive/5"
+                : a.level === "warning"
+                  ? "border-ghw-copper/40 bg-ghw-copper/5"
+                  : "border-primary/40 bg-primary/5",
             )}
-            <div className="min-w-0">
-              <p className="text-xs font-semibold truncate">
-                {a.title}
-                {a.count != null ? (
+          >
+            <CardContent className="p-3 flex items-start gap-2">
+              <Icon
+                className={cn(
+                  "h-4 w-4 flex-shrink-0 mt-0.5",
+                  a.level === "critical"
+                    ? "text-destructive"
+                    : a.level === "warning"
+                      ? "text-ghw-copper"
+                      : "text-primary",
+                )}
+              />
+              <div className="min-w-0">
+                <p className="text-xs font-semibold truncate">
+                  {a.title}
                   <Badge variant="outline" className="ml-1.5 text-[10px]">
                     {a.count}
                   </Badge>
-                ) : null}
-              </p>
-              <p className="text-[11px] text-muted-foreground line-clamp-2">
-                {a.message}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      ))}
+                </p>
+                <p className="text-[11px] text-muted-foreground line-clamp-2">
+                  {a.message}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })}
     </div>
   );
 }
