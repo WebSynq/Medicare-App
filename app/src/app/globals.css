@@ -211,13 +211,50 @@
   color: hsl(var(--muted-foreground));
   background: hsl(var(--secondary) / 0.4);
 }
+/* Cell + row backgrounds — react-big-calendar's stock CSS sets these
+ * to white. Without explicit dark overrides the month grid shows
+ * white patches between the .rbc-today / .rbc-off-range cells and
+ * the surrounding theme. Day cells inherit the card surface, row
+ * wrappers stay transparent so the day-bg shows through, off-range
+ * days drop to the page background (a touch darker than card) so
+ * the leading/trailing days of the visible month are visually
+ * receded. */
+.rbc-month-view,
+.rbc-month-row,
+.rbc-row-content,
+.rbc-time-view,
+.rbc-time-content,
+.rbc-time-header,
+.rbc-time-header-content,
+.rbc-allday-cell {
+  background: transparent;
+}
+.rbc-row-bg {
+  background: transparent;
+}
+.rbc-day-bg {
+  background: hsl(var(--card));
+}
 .rbc-off-range-bg,
 .rbc-off-range {
-  background: hsl(var(--secondary) / 0.2);
+  background: hsl(var(--background));
   color: hsl(var(--muted-foreground));
+}
+.rbc-date-cell {
+  color: hsl(var(--foreground));
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.rbc-date-cell.rbc-off-range {
+  color: hsl(var(--muted-foreground) / 0.6);
 }
 .rbc-today {
   background: hsl(var(--primary) / 0.08);
+}
+.rbc-day-slot,
+.rbc-day-slot .rbc-events-container,
+.rbc-time-column {
+  background: transparent;
 }
 .rbc-time-slot {
   color: hsl(var(--muted-foreground));
