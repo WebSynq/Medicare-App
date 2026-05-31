@@ -972,6 +972,41 @@ minified), no runtime config.
   149 kB after wiring the TV button). No backend changes —
   backend test floor (524) unaffected.
 
+### Settings page — Notifications tab + tab augmentations (May 2026)
+The Settings shell was already a multi-route tabbed layout (one
+page per tab) — Profile / Booking / Integrations / Calendars /
+Security / Agency. Profile + Booking were full ports of CRA
+Settings.jsx; Security + Integrations needed small additions
+and the spec's Notifications tab was a net-new build.
+
+Tabs vs spec status:
+
+| Spec tab | Existing depth | This branch's work |
+|---|---|---|
+| Profile | Full port (363 lines): identity + password change w/ 12-char + last-5 history check + current-password gate + server-side error surfacing | Unchanged |
+| Booking | Full port (440 lines): slug + bio + working hours per day + meeting types + duration + buffer + advance notice + booking window | Unchanged |
+| Integrations | GHL connect/disconnect/replace token (319 lines) | Added grayed-out **AgencyBloc "Coming soon"** card per spec |
+| Security | Recent sign-ins table (110 lines) — UA parsing, IP, relative time | Added **"Sign out everywhere"** placeholder card. Backend has no /sessions/revoke-all endpoint today — disabled button + helper text pointing at the password-change flow (which bumps token_version and invalidates every JWT issued before the change) |
+| Notifications | **Did not exist** | NEW `app/src/components/settings/notifications-tab.tsx` + route at `/settings/notifications`. 6 toggles (new lead assigned / appointment reminders / birthday window / stale lead / daily brief / SOA signed). Persists per-user to `localStorage` (survives refresh) with a clear "Saved locally" banner — backend `notification_prefs` field is a tracked follow-up. Toggles don't yet stop the actual email sends; categories align with what the automation scheduler ships today. |
+
+Layout: `/settings/notifications` added to the BASE_TABS list in
+`app/src/app/(authed)/settings/layout.tsx` between Calendars and
+Security.
+
+Backend gaps surfaced (tracked follow-ups, none fixed here):
+- `users.notification_prefs` (or `/api/profile/notification-prefs`)
+  doesn't exist. Notifications tab persists to `localStorage` only.
+- `/sessions/revoke-all` endpoint doesn't exist. Security tab
+  placeholder button points at the password-change flow (which
+  invalidates other sessions via `token_version`).
+
+- **Verification**: `npm run typecheck` clean, `npm run lint`
+  clean for changed files, `npm run build` clean
+  (`/settings/notifications` 10.1 kB / 144 kB First Load JS,
+  prerendered static; `/settings/integrations` 5.15 kB and
+  `/settings/security` 3.92 kB after augmentations). No backend
+  changes — backend test floor (524) unaffected.
+
 
 ## Pending
 

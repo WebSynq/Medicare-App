@@ -2,8 +2,9 @@
 
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Globe, History, Smartphone } from "lucide-react";
+import { Globe, History, LogOut, ShieldAlert, Smartphone } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { profile as profileApi } from "@/lib/api";
@@ -72,7 +73,7 @@ export function SecuritySettingsTab() {
             </p>
           ) : (
             <ul className="divide-y divide-border">
-              {query.data?.sessions.map((s, i) => (
+              {(query.data?.sessions ?? []).map((s, i) => (
                 <li
                   key={i}
                   className="py-2.5 flex flex-wrap items-center gap-3 text-sm"
@@ -103,6 +104,40 @@ export function SecuritySettingsTab() {
               ))}
             </ul>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Bulk-revoke placeholder.
+       *
+       * Backend has no `/sessions/revoke-all` endpoint today; JWT
+       * auth without a server-side session store relies on the
+       * user's `token_version` to invalidate sessions, and that's
+       * bumped automatically on password change. Until a dedicated
+       * revoke endpoint ships, point the user at the password-change
+       * flow — which is the closest functional equivalent. */}
+      <Card>
+        <CardContent className="p-5 md:p-6 space-y-2">
+          <div className="flex items-center gap-2">
+            <LogOut className="h-4 w-4 text-primary" />
+            <h3 className="text-sm font-semibold">Sign out other sessions</h3>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            A dedicated revoke endpoint is a tracked follow-up. For now,
+            changing your password on the Profile tab immediately invalidates
+            every other JWT issued before the change.
+          </p>
+          <Button
+            variant="outline"
+            disabled
+            className="opacity-60 cursor-not-allowed"
+            data-testid="security-revoke-all"
+          >
+            <ShieldAlert className="h-3.5 w-3.5 mr-1.5" />
+            Sign out everywhere
+            <span className="ml-2 text-[10px] uppercase tracking-widest text-muted-foreground">
+              Coming soon
+            </span>
+          </Button>
         </CardContent>
       </Card>
     </div>

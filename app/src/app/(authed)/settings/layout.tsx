@@ -10,6 +10,7 @@ const BASE_TABS = [
   { label: "Booking", href: "/settings/booking" },
   { label: "Integrations", href: "/settings/integrations" },
   { label: "Calendars", href: "/settings/calendars" },
+  { label: "Notifications", href: "/settings/notifications" },
   { label: "Security", href: "/settings/security" },
 ];
 
