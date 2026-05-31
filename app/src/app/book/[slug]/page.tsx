@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { use as usePromise } from "react";
+import { useParams } from "next/navigation";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -46,16 +46,20 @@ const REASONS: BookingReason[] = [
   "Other",
 ];
 
-export default function PublicBookingPage({
-  params,
-}: {
-  params: Promise<{ slug: string }>;
-}) {
-  const { slug } = usePromise(params);
+export default function PublicBookingPage() {
+  // Next.js 14 / React 18: `params` on a client component is a plain
+  // object, not a Promise — calling `React.use(params)` crashes the
+  // SSR pass with a non-thenable error (visible in the browser as
+  // "Minified React error #438"). useParams() is the supported hook
+  // for this version pair and matches the pattern used in
+  // /clients/[id]/page.tsx and the rest of the app.
+  const params = useParams<{ slug: string }>();
+  const slug = params?.slug ?? "";
 
   const infoQuery = useQuery({
     queryKey: ["book", slug, "info"],
     queryFn: () => bookApi.getInfo(slug),
+    enabled: slug.length > 0,
     retry: false,
   });
 
@@ -200,16 +204,18 @@ function AgentHeader({
           <Badge variant="outline" className="text-[10px]">
             {info.appointment_duration} min
           </Badge>
-          {info.meeting_types.map((m) => (
-            <Badge key={m} variant="outline" className="text-[10px] capitalize">
-              {m === "phone" ? (
-                <Phone className="h-2.5 w-2.5 mr-1" />
-              ) : m === "video" ? (
-                <Video className="h-2.5 w-2.5 mr-1" />
-              ) : null}
-              {m}
-            </Badge>
-          ))}
+          {(info.meeting_types ?? [])
+            .filter((m): m is string => typeof m === "string")
+            .map((m) => (
+              <Badge key={m} variant="outline" className="text-[10px] capitalize">
+                {m === "phone" ? (
+                  <Phone className="h-2.5 w-2.5 mr-1" />
+                ) : m === "video" ? (
+                  <Video className="h-2.5 w-2.5 mr-1" />
+                ) : null}
+                {m}
+              </Badge>
+            ))}
         </div>
       </CardContent>
     </Card>
@@ -355,7 +361,7 @@ function Step2Form({
   const [phone, setPhone] = React.useState("");
   const [email, setEmail] = React.useState("");
   const [meetingType, setMeetingType] = React.useState<"phone" | "video">(
-    (info.meeting_types[0] as "phone" | "video") ?? "phone",
+    (info.meeting_types?.[0] as "phone" | "video") ?? "phone",
   );
   const [reason, setReason] = React.useState<BookingReason>("Plan Review");
   const [notes, setNotes] = React.useState("");
@@ -460,10 +466,10 @@ function Step2Form({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {info.meeting_types.includes("phone") ? (
+                {(info.meeting_types ?? []).includes("phone") ? (
                   <SelectItem value="phone">Phone</SelectItem>
                 ) : null}
-                {info.meeting_types.includes("video") ? (
+                {(info.meeting_types ?? []).includes("video") ? (
                   <SelectItem value="video">Video</SelectItem>
                 ) : null}
               </SelectContent>
