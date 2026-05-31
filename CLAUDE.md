@@ -1007,6 +1007,107 @@ Backend gaps surfaced (tracked follow-ups, none fixed here):
   `/settings/security` 3.92 kB after augmentations). No backend
   changes — backend test floor (524) unaffected.
 
+### Calendar page port (May 2026)
+Closes the WS1 `/calendar` 404 gap by porting the CRA
+`CalendarPage.jsx` (864 lines + 177 lines of overrides) to
+the Next.js app. Uses the existing `react-big-calendar@^1.19.6`
+dep already pinned in `app/package.json`.
+
+Files:
+- `app/src/app/(authed)/calendar/page.tsx` — page shell.
+  Self-scope on `useAuthStore().user?.id` so admin/owner roles
+  see only their own appointments unless impersonating (mirrors
+  CRA's `agent_id` query-param pattern). React Query keys on
+  `[start, end, agent_id]` so view-change refetches dedupe with
+  the sidebar stats. Modal state lives here so cross-modal
+  handoffs (detail → reschedule) work without remount churn.
+- `_calendar-view.tsx` — `react-big-calendar` wrapper. Stock
+  CSS imported as `import "react-big-calendar/lib/css/react-big-
+  calendar.css"` directly in this `'use client'` component (App
+  Router allows third-party CSS imports from any client
+  component — file only loads on `/calendar`). Custom toolbar
+  (prev / today / next + Month/Week/Day/Agenda switcher + New
+  Appointment button), color-coded by `booking_type`, eventprop
+  getter dims non-scheduled rows.
+- `_sidebar.tsx` — right rail. Today / This Week stats / Next
+  appointment + booking-source legend. Pulls from the same
+  React Query cache.
+- `_modals.tsx` — three colocated modals:
+  - **AppointmentDetailModal** — fields + 6 outcome buttons.
+    The 4 strict outcomes (`showed` / `no_show` / `sold` /
+    `not_sold`) go through `POST /api/appointments/{id}/outcome`
+    (auto-flips status, fires the no-show reschedule email,
+    audits). `Sold` additionally `router.push("/applications?
+    client_id=…")` per spec. `Cancelled` uses
+    `PATCH status="cancelled"` because the AppointmentOutcome
+    enum is locked to the 4 above. `Reschedule` opens the
+    Reschedule modal.
+  - **RescheduleModal** — single date picker → `PATCH
+    appointment_date`. Helper text spells out the backend
+    limitation: the `AppointmentUpdate` model doesn't accept
+    `appointment_time`, so changing the time of day requires
+    cancel + rebook (tracked follow-up).
+  - **CreateAppointmentModal** — full form with debounced
+    `LeadTypeahead` against `/api/leads?q=`. Supports walk-ins
+    (no lead → free-text `client_name`) per backend's two-flow
+    create.
+- `_helpers.ts` — color/label maps + `parseDateTime` + `view-
+  Window`. `BOOKING_TYPE_COLOR.manual` mapped to blue per spec
+  (autobook → green, va → purple, ae → orange, manual → blue).
+- `app/src/app/globals.css` — added ~95 lines of `.rbc-*`
+  overrides so the stock light-theme calendar reads correctly
+  on the GHW dark navy palette. Hides the stock toolbar so it
+  doesn't double-render with the custom one slotted via
+  `components.toolbar`.
+- `app/src/lib/api/calendars.ts` — added 3 wrappers:
+  `getGoogleStatus` / `startGoogleConnect` / `disconnectGoogle`
+  hitting `/api/calendar/google/*`. The existing file dealt
+  with multi-calendar surfaces (`/api/calendars/*`); Google
+  OAuth lives on the singular `/api/calendar/*` prefix on the
+  backend — both live in the same TS file under clearly
+  commented sections to keep API surface organized.
+
+Backend API drift surfaced (logged for follow-up — not fixed
+in this branch):
+- Spec called for "PATCH /api/appointments/{id} with outcome
+  field". The actual production endpoint is **POST /api/
+  appointments/{id}/outcome** with a strict 4-value enum body
+  (`AppointmentOutcome = Literal["showed","no_show","sold",
+  "not_sold"]`). The PATCH endpoint does still accept a free-
+  text `outcome` field but skips the side effects (auto-flip
+  status, no-show reschedule email, dedicated audit row). The
+  page uses POST for the 4 strict outcomes and PATCH only for
+  `Cancelled` (sets `status="cancelled"`).
+- `AppointmentUpdate` doesn't accept `appointment_time`, only
+  `appointment_date` — so the Reschedule modal can change date
+  only. Adding `appointment_time` to the PATCH model is a tiny
+  backend change worth queuing.
+- `/api/appointments/{id}/ics` is mounted on a separate
+  `ics_router` (calendar_router.py:63 declares the prefix); the
+  path is `/api/appointments/{id}/ics` exactly as the spec
+  says — `window.open()` triggers the browser's calendar-import
+  flow.
+
+CSS handling — how CRA did it vs. how we handled it in Next.js:
+- **CRA:** two side-effect imports inside `CalendarPage.jsx` —
+  `import "react-big-calendar/lib/css/react-big-calendar.css"`
+  + `import "./CalendarPage.css"` (local override file).
+- **Next.js:** the third-party stock CSS imports the same way
+  inside `_calendar-view.tsx` (App Router permits third-party
+  CSS imports from any client component, scoped to that
+  component's chunk). Local overrides have to be global (rbc's
+  classes are not CSS-module-friendly), so they live in
+  `globals.css` instead of a colocated `.css` file — Next.js
+  forbids non-module global CSS imports outside the root
+  layout. Slight payload trade-off (~95 lines loaded on every
+  page) for theme correctness on `/calendar`.
+
+- **Verification**: `npm run typecheck` clean, `npm run lint`
+  clean for changed files, `npm run build` clean
+  (`/calendar` 10.2 kB / 251 kB First Load JS, prerendered
+  static). No backend changes — backend test floor (524)
+  unaffected.
+
 
 ## Pending
 
