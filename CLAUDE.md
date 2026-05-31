@@ -1108,6 +1108,98 @@ CSS handling — how CRA did it vs. how we handled it in Next.js:
   static). No backend changes — backend test floor (524)
   unaffected.
 
+### Agency Command Center port (May 2026)
+Replaces the `/agency-dashboard` placeholder with the full
+Command Center, porting CRA `frontend/src/pages/AgencyCommandCenter.jsx`
+(1,096 lines) to the Next.js app. This is the dedicated
+leadership surface — sidebar's "Command Center" link lands
+here. The `/dashboard` combined view still surfaces an
+Agency Overview section below an agent's personal Today, but
+without the drilldown sheet.
+
+Files:
+- `app/src/app/(authed)/agency-dashboard/page.tsx` — replaces
+  `<RoutePlaceholder>`. Role-gated to `COMMAND_CENTER_ROLES`
+  (owner / admin / coach / sales_manager / compliance /
+  accounting); off-role users client-side redirect to
+  `/dashboard`, anonymous users to `/login`. Skeleton renders
+  until `useAuthStore.status` resolves so off-role users never
+  see chrome flash. Period state persists to `localStorage`
+  under `ghw_period_pref` (key shared with combined dashboard).
+  Header has period tabs (MTD / Last 30 / Last 90 / YTD) +
+  last-updated pill (re-ticks every 30s) + manual refresh
+  button.
+- `app/src/lib/api/dashboard.ts` — adds typed wrapper
+  `getAgencyDrilldown(metric, opts)` hitting
+  `/api/agency-dashboard/drilldown/{metric}`. Row shape is
+  metric-specific so it's typed as `Record<string, unknown>`;
+  the page's column registry maps the per-metric keys to
+  labels + formatters. Plus `DrilldownMetric` + `DrilldownResponse`
+  types.
+
+Sections (top to bottom):
+- **KPI grid (8 cards)** — Total Leads, Enrolled MTD,
+  Est. Revenue MTD, Policies Written, Active Agents, Active
+  Carriers, Birthday Windows, Renewals · 30d. Each card shows
+  value + trend arrow (when backend returns `trend_pct`) +
+  context subline. **Revenue gate**: only `admin / owner /
+  compliance` see actual dollars; `coach / sales_manager /
+  accounting` see `—` with "Restricted" subline. Same gate
+  applies in the agent table (Revenue + Avg Premium columns).
+  Click a card → drilldown sheet opens for that metric.
+- **Charts row (Recharts)** — 3 bar charts: Enrollments by
+  Week (`label`/`count`), Revenue by Carrier (`carrier`/`revenue`,
+  horizontal, top 8), Lead Sources (`source` x `total` + `enrolled`).
+  Theme-aware via `hsl(var(--primary))` / `hsl(var(--chart-2))`
+  / `hsl(var(--border))`.
+- **Agent Performance table** — sortable by Agent / Enrolled /
+  Revenue / Policies (3 numeric headers click-to-sort, others
+  static). "You" badge on the current user's row (matched on
+  `useAuthStore.user.id` vs `row.agent_id`). Avg Premium column
+  is derived client-side (`estimated_revenue / enrolled_count`).
+  Click row → `router.push("/clients?agent_id={id}")` — a
+  filter-by-agent affordance, distinct from impersonation
+  (X-Agent-ID interceptor).
+- **Alert cards (3)** — Stale Leads (agent rollup with counts),
+  Birthday Windows (top 5 with days remaining), Renewals Due
+  (top 5 with days until). Each card "View All →" button
+  opens the corresponding drilldown sheet.
+- **Drilldown sheet (right-side Sheet)** — keyed on
+  `{metric, period, page, agent_filter}` so opening a different
+  metric re-runs the query with reset paging. Per-metric column
+  registry (`DRILLDOWN_COLUMNS`) drives the table; supports
+  agent filter (`<Select>` populated from the perf-table rows)
+  + page navigation (Prev / Next) + CSV export
+  (client-side, sanitizes quotes/commas/newlines per RFC 4180).
+
+Patterns ported from CRA: 30s "last updated" tick (
+`setInterval` + `setNowTick` state to force re-render without
+re-firing queries), `localStorage` period persistence
+(silent-fail when disabled), self-modification refused at the
+card level (revenue masked, not omitted, so the grid layout
+doesn't reflow per-role), Recharts theme tokens. CRA-side
+`viewAsAgent()` (sets AgentContext + redirects to /today)
+becomes `router.push("/clients?agent_id=...")` here — the
+AgentContext + X-Agent-ID interceptor port is a tracked
+follow-up; the clients-filter handoff is the next-best
+affordance until impersonation is wired.
+
+Backend API drift surfaced (no backend changes here):
+- `/agency-dashboard/drilldown/{metric}` accepts metrics
+  `leads / enrolled / policies / revenue / birthday_windows /
+  renewals / stale_leads` (7 total). Confirmed against
+  `backend/agency_dashboard_router.py:879`.
+- Spec listed an `Avg Premium` column for the agent table but
+  the backend doesn't carry it on `AgentPerfRow`. Derived
+  client-side here; if business logic changes (e.g. weighted
+  premium across multiple product lines), this needs to move
+  server-side.
+
+- **Verification**: `npm run typecheck` clean, `npm run lint`
+  clean for changed files (zero warnings or errors on the
+  modified surface). No backend changes — backend test floor
+  (524) unaffected.
+
 ### Super Admin route gate — server-authoritative (May 2026)
 The Super Admin console at `/admin/super-admin` was already a
 full port (1,372 lines, all 4 spec tabs — Agencies / Users /
