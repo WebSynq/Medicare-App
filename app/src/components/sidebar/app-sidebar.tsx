@@ -3,6 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import { LogOut, Menu } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -10,11 +11,26 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { auth } from "@/lib/api";
+import { auth, notifications as notifApi } from "@/lib/api";
 import { useAuthStore, useUIStore } from "@/stores";
 import type { UserRole } from "@/types";
 
 import { NAV, NAV_FOOTER, type NavItem } from "./nav-config";
+
+/** Polls /api/notifications/unread-count every 60s. Backend limiter
+ *  is 120/hour per IP (notifications_router.unread_count) which
+ *  comfortably absorbs this cadence plus a focus-refetch burst. */
+function useUnreadNotificationCount(enabled: boolean): number {
+  const query = useQuery({
+    queryKey: ["notifications-unread-count"],
+    queryFn: notifApi.getUnreadCount,
+    enabled,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+    staleTime: 30_000,
+  });
+  return query.data?.count ?? 0;
+}
 
 const SIDEBAR_WIDTH = 256;
 
@@ -32,13 +48,17 @@ function SidebarNavLink({
   Icon,
   active,
   onNavigate,
+  badge,
 }: {
   href: string;
   label: string;
   Icon: NavItem["icon"];
   active: boolean;
   onNavigate?: () => void;
+  badge?: number;
 }) {
+  const showBadge = typeof badge === "number" && badge > 0;
+  const badgeLabel = showBadge ? (badge > 99 ? "99+" : String(badge)) : null;
   return (
     <Link
       href={href}
@@ -59,7 +79,15 @@ function SidebarNavLink({
           active ? "text-primary" : "text-foreground-subtle group-hover:text-foreground",
         )}
       />
-      <span className="truncate">{label}</span>
+      <span className="truncate flex-1">{label}</span>
+      {badgeLabel ? (
+        <span
+          className="ml-auto inline-flex items-center justify-center h-5 min-w-[20px] px-1.5 rounded-full bg-primary text-primary-foreground text-[10px] font-semibold"
+          data-testid={`nav-badge-${href.replace(/\W+/g, "-").replace(/^-|-$/g, "")}`}
+        >
+          {badgeLabel}
+        </span>
+      ) : null}
     </Link>
   );
 }
@@ -70,6 +98,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const user = useAuthStore((s) => s.user);
   const role = user?.role ?? null;
   const isSuperAdmin = user?.super_admin ?? false;
+  const unreadCount = useUnreadNotificationCount(!!user);
 
   const handleLogout = React.useCallback(async () => {
     try {
@@ -141,6 +170,13 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
               const active =
                 pathname === item.href ||
                 pathname.startsWith(item.href + "/");
+              const badge =
+                item.href === "/notifications" ? unreadCount : undefined;
+              const visible =
+                !item.roles ||
+                item.roles.length === 0 ||
+                canSee(item, role, isSuperAdmin);
+              if (!visible) return null;
               return (
                 <SidebarNavLink
                   key={item.href}
@@ -149,6 +185,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                   Icon={item.icon}
                   active={active}
                   onNavigate={onNavigate}
+                  badge={badge}
                 />
               );
             })}
