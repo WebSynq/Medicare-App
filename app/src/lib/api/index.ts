@@ -33,6 +33,12 @@ import * as bookNs from "./book";
 import * as quoteNs from "./quote";
 import * as accountingNs from "./accounting";
 import * as cfoNs from "./cfo";
+import * as birthdayRuleNs from "./birthday-rule";
+import * as renewalsNs from "./renewals";
+import * as pipelineNs from "./pipeline";
+import * as adminCommissionsNs from "./admin-commissions";
+import * as adminImportNs from "./admin-import";
+import * as agentsNs from "./agents";
 
 export { api, isApiError, setImpersonationAgentId, getImpersonationAgentId } from "./client";
 
@@ -59,3 +65,9 @@ export const book = bookNs;
 export const quote = quoteNs;
 export const accounting = accountingNs;
 export const cfo = cfoNs;
+export const birthdayRule = birthdayRuleNs;
+export const renewals = renewalsNs;
+export const pipeline = pipelineNs;
+export const adminCommissions = adminCommissionsNs;
+export const adminImport = adminImportNs;
+export const agents = agentsNs;
